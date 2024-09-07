@@ -1,0 +1,11 @@
+[package]
+name = "moat"
+description = "moat for your cloud storage"
+version = "0.0.0"
+edition = "2021"
+authors = ["MrCroxx <mrcroxx@outlook.com>"]
+license = "Apache-2.0"
+repository = "https://github.com/mrcroxx/moat"
+homepage = "https://github.com/mrcroxx/moat"
+
+[dependencies]
