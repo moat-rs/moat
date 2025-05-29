@@ -1,11 +1,18 @@
-[package]
-name = "moat"
-description = "moat for your cloud storage"
+[workspace]
+resolver = "3"
+members = [
+  # examples
+  "examples",
+  "moat",
+]
+
+[workspace.package]
 version = "0.0.0"
-edition = "2021"
-authors = ["MrCroxx <mrcroxx@outlook.com>"]
-license = "Apache-2.0"
+edition = "2024"
 repository = "https://github.com/mrcroxx/moat"
 homepage = "https://github.com/mrcroxx/moat"
-
-[dependencies]
+keywords = ["cache", "hybrid"]
+authors = ["MrCroxx <mrcroxx.cs@gmail.com>"]
+license = "Apache-2.0"
+readme = "README.md"
+rust-version = "1.87"
