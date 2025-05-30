@@ -1,1 +1,6 @@
 /target
+/.tmp
+
+# Ignore docker compose customized configurations.
+*.override.yaml
+.env

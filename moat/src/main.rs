@@ -73,17 +73,6 @@ impl S3ProxyApp {
 
         // Ok(false)
     }
-
-    fn normalize_request(&self, request_header: &mut RequestHeader) {
-        let endpoint = Url::parse(&self.config.endpoint).expect("Invalid endpoint URL");
-        request_header
-            .insert_header("Host", endpoint.host_str().expect("Endpoint must have a host"))
-            .expect("Failed to insert Host header");
-        request_header
-            .insert_header("X-Amz-Content-Sha256", "UNSIGNED-PAYLOAD".to_string())
-            .expect("Failed to insert X-Amz-Content-Sha256 header");
-        request_header.remove_header("Context-Length");
-    }
 }
 
 #[derive(Debug)]
@@ -99,6 +88,10 @@ impl Default for S3ProxyCtx {
     fn default() -> Self {
         Self
     }
+}
+
+impl S3ProxyApp {
+    const UNSIGNED_PAYLOAD: &'static str = "UNSIGNED-PAYLOAD";
 }
 
 #[async_trait]
@@ -154,9 +147,19 @@ impl ProxyHttp for S3ProxyApp {
     {
         tracing::debug!(?upstream_request, "Upstream request before filtering");
 
-        let hashed_payload = "UNSIGNED-PAYLOAD".to_string();
+        let request_date_time = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
 
-        self.normalize_request(upstream_request);
+        // normalize request headrs
+        let endpoint = Url::parse(&self.config.endpoint).expect("Invalid endpoint URL");
+        upstream_request
+            .insert_header("Host", endpoint.host_str().expect("Endpoint must have a host"))
+            .expect("Failed to insert Host header");
+        upstream_request
+            .insert_header("X-Amz-Content-Sha256", "UNSIGNED-PAYLOAD".to_string())
+            .expect("Failed to insert X-Amz-Content-Sha256 header");
+        upstream_request
+            .insert_header("X-Amz-Date", request_date_time.clone())
+            .expect("Failed to insert X-Amz-Date header");
 
         let urlencode = |s: &str| url::form_urlencoded::byte_serialize(s.as_bytes()).collect::<String>();
 
@@ -203,17 +206,15 @@ impl ProxyHttp for S3ProxyApp {
         let signed_headers = headers.keys().map(|s| s.to_string()).collect::<Vec<String>>().join(";");
 
         let canonical_request = format!(
-            "{http_method}\n{canonical_uri}\n{canonical_query_string}\n{canonical_headers}\n{signed_headers}\n{hashed_payload}",
+            "{http_method}\n{canonical_uri}\n{canonical_query_string}\n{canonical_headers}\n{signed_headers}\n{payload_hash}",
+            payload_hash = Self::UNSIGNED_PAYLOAD,
         );
         tracing::debug!(canonical_request, "Canonical Request");
-        println!("Canonical Request:\n{}", canonical_request);
 
         let hashed_canonical_request = hex::encode(Sha256::digest(canonical_request.as_bytes()));
         tracing::debug!(hashed_canonical_request, "Hashed Canonical Request");
-        println!("Hashed Canonical Request: {}", hashed_canonical_request);
 
         let algorithm = "AWS4-HMAC-SHA256";
-        let request_date_time = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
         let credential_scope = format!(
             "{YYYYMMDD}/{region}/{service}/aws4_request",
             YYYYMMDD = &request_date_time[..8],
@@ -224,7 +225,6 @@ impl ProxyHttp for S3ProxyApp {
         let string_to_sign =
             format!("{algorithm}\n{request_date_time}\n{credential_scope}\n{hashed_canonical_request}");
         tracing::debug!(string_to_sign, "String to Sign");
-        println!("String to Sign:\n{}", string_to_sign);
 
         let hmac_sha256 = |key: &[u8], data: &[u8]| {
             let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC-SHA256 key must be valid");
@@ -241,7 +241,6 @@ impl ProxyHttp for S3ProxyApp {
         let signing_key = hmac_sha256(&date_region_service_key, b"aws4_request");
         let signature = hex::encode(hmac_sha256(&signing_key, string_to_sign.as_bytes()));
         tracing::debug!(signature, "Signature");
-        println!("Signature: {}", signature);
 
         upstream_request
             .insert_header(
