@@ -1,3 +1,5 @@
+use std::io::Read;
+
 use clap::Parser;
 use opendal::{Operator, layers::LoggingLayer, services::S3};
 use tracing_subscriber::EnvFilter;
@@ -6,10 +8,6 @@ use tracing_subscriber::EnvFilter;
 struct Args {
     #[clap(long)]
     endpoint: String,
-    #[clap(long)]
-    access_key_id: String,
-    #[clap(long)]
-    secret_access_key: String,
     #[clap(long)]
     region: String,
     #[clap(long)]
@@ -26,10 +24,11 @@ async fn main() -> std::io::Result<()> {
 
     let builder = S3::default()
         .endpoint(&args.endpoint)
-        .bucket(&args.bucket)
         .region(&args.region)
-        .access_key_id(&args.access_key_id)
-        .secret_access_key(&args.secret_access_key);
+        .bucket(&args.bucket)
+        .disable_config_load()
+        .disable_ec2_metadata()
+        .allow_anonymous();
 
     let op = Operator::new(builder)?.layer(LoggingLayer::default()).finish();
 
@@ -40,6 +39,20 @@ async fn main() -> std::io::Result<()> {
         payload.append(&mut format!("{i:016x}").into_bytes());
     }
     op.write("obj-2", payload).await?;
+
+    let res = op.list("/").await?;
+    tracing::info!(?res, "list");
+
+    let mut s = String::new();
+    op.read("obj-1").await?.read_to_string(&mut s)?;
+    tracing::info!(data = s, "read obj-1");
+
+    let mut s = String::new();
+    op.read("obj-2").await?.read_to_string(&mut s)?;
+    tracing::info!(len = s.len(), "read obj-2");
+
+    op.delete("obj-1").await?;
+    op.delete("obj-2").await?;
 
     let res = op.list("/").await?;
     tracing::info!(?res, "list");
