@@ -10,9 +10,9 @@ ENV no_proxy=${NO_PROXY}
 
 WORKDIR /
 
-COPY . .
-
 RUN apt-get update && apt-get install -y cmake && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+COPY . .
 RUN cargo build
 
 FROM ubuntu:24.04 AS runner

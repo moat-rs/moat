@@ -47,9 +47,8 @@ async fn main() -> std::io::Result<()> {
     op.read("obj-1").await?.read_to_string(&mut s)?;
     tracing::info!(data = s, "read obj-1");
 
-    let mut s = String::new();
-    op.read("obj-2").await?.read_to_string(&mut s)?;
-    tracing::info!(len = s.len(), "read obj-2");
+    let len = op.stat("obj-2").await?.content_length();
+    tracing::info!(len, "stat obj-2");
 
     op.delete("obj-1").await?;
     op.delete("obj-2").await?;
