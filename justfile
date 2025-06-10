@@ -31,3 +31,6 @@ buf-install:
 
 buf-uninstall:
     rm -f "{{bin}}/buf"
+
+dev:
+    docker compose up --build
