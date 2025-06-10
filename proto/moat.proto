@@ -1,0 +1,31 @@
+syntax = "proto3";
+package moat;
+
+message Member {
+  Endpoint s3_endpoint = 1;
+  Endpoint api_endpoint = 2;
+}
+
+message Endpoint {
+  string host = 1;
+  uint32 port = 2;
+}
+
+message CheckHealthRequest {
+  // If no member is specified, return the current member status.
+  //
+  // If a member is specified, it is used for secondary fault detection in the SWIM algorithm, returning the corresponding member status.
+  Member member = 1;
+}
+
+message CheckHealthResponse {}
+
+message PushRequest {}
+
+message PushResponse {}
+
+
+service MetaService {
+  rpc CheckHealth(CheckHealthRequest) returns (CheckHealthResponse);
+  rpc Push(PushRequest) returns (PushResponse);
+}
