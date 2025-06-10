@@ -12,5 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub mod manager;
-pub mod model;
+use clap::ValueEnum;
+use serde::{Deserialize, Serialize};
+use url::Url;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, ValueEnum)]
+pub enum Identity {
+    Proxy,
+    Provider,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Member {
+    endpoint: Url,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemberList {
+    providers: Vec<Member>,
+}

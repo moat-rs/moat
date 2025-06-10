@@ -37,7 +37,7 @@ services:
       mc mb minio/dev;
       "
  
-  s3proxy:
+  moat:
     build:
       context: .
       dockerfile: Dockerfile
@@ -50,7 +50,7 @@ services:
       RUST_LOG: debug
       RUST_BACKTRACE: 1
     command:
-      - --endpoint
+      - --listen
       - 0.0.0.0:23456
       - --s3-endpoint
       - http://minio:9000

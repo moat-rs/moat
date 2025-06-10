@@ -14,20 +14,31 @@
 
 mod api;
 mod aws;
+mod meta;
 mod server;
+
+use std::net::SocketAddr;
 
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
+use url::Url;
 
-use crate::server::{Moat, MoatConfig};
+use crate::{
+    meta::model::Identity,
+    server::{Moat, MoatConfig},
+};
 
 #[derive(Debug, Parser)]
 struct Args {
     #[clap(long, default_value = "127.0.0.1:23456")]
-    endpoint: String,
+    listen: SocketAddr,
+    #[clap(long, default_value = "provider")]
+    identity: Identity,
+    #[clap(long, required = false)]
+    bootstrap_peers: Vec<SocketAddr>,
 
     #[clap(long)]
-    s3_endpoint: String,
+    s3_endpoint: Url,
     #[clap(long)]
     s3_access_key_id: String,
     #[clap(long)]
@@ -45,10 +56,12 @@ fn main() {
     tracing::info!(?args, "Start Moat");
 
     Moat::run(MoatConfig {
+        listen: args.listen,
+        identity: args.identity,
+        bootstrap_peers: args.bootstrap_peers,
         s3_endpoint: args.s3_endpoint,
         s3_access_key_id: args.s3_access_key_id,
         s3_secret_access_key: args.s3_secret_access_key,
         s3_region: args.s3_region,
-        endpoint: args.endpoint,
     });
 }

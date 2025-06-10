@@ -17,11 +17,12 @@ use std::io::Read;
 use clap::Parser;
 use opendal::{Operator, layers::LoggingLayer, services::S3};
 use tracing_subscriber::EnvFilter;
+use url::Url;
 
 #[derive(Debug, Parser)]
 struct Args {
     #[clap(long)]
-    endpoint: String,
+    endpoint: Url,
     #[clap(long)]
     region: String,
     #[clap(long)]
@@ -37,7 +38,7 @@ async fn main() -> std::io::Result<()> {
     let args = Args::parse();
 
     let builder = S3::default()
-        .endpoint(&args.endpoint)
+        .endpoint(args.endpoint.as_str())
         .region(&args.region)
         .bucket(&args.bucket)
         .disable_config_load()

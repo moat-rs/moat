@@ -12,24 +12,77 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::{net::SocketAddr, sync::Arc};
+
 use pingora::{Error, ErrorType, Result, http::ResponseHeader, proxy::Session};
-use poem::{Body, Endpoint, Request, Route, get, handler};
+use poem::{
+    Body, Endpoint, EndpointExt, IntoEndpoint, IntoResponse, Request, Response, Route,
+    endpoint::{DynEndpoint, ToDynEndpoint},
+    get, handler,
+    middleware::AddData,
+    web::{Data, Json, Query},
+};
+use reqwest::{Client, StatusCode};
+use serde::Deserialize;
+
+use crate::meta::manager::MetaManager;
 
 #[handler]
 async fn hello() -> &'static str {
     "Hello, Moat!"
 }
 
+#[derive(Debug, Deserialize)]
+struct HealthParams {
+    peer: Option<SocketAddr>,
+}
+
+#[handler]
+async fn health(Query(params): Query<HealthParams>) -> Response {
+    tracing::debug!(?params, "check health for peer");
+
+    if let Some(peer) = params.peer {
+        let peer = peer.to_string();
+        match Client::new()
+            .get(format!("http://{peer}/health"))
+            .header(ApiService::MOAT_API_HEADER, "true")
+            .send()
+            .await
+        {
+            Ok(r) if r.status().is_success() => ().into_response(),
+            _ => Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .body(format!("Cannot reach peer {peer}"))
+                .into_response(),
+        }
+    } else {
+        ().into_response()
+    }
+}
+
+#[handler]
+async fn peers(Data(meta_manager): Data<&MetaManager>) -> Response {
+    tracing::debug!("get peers");
+    let peers = meta_manager.peers();
+    Json(peers).into_response()
+}
+
 pub struct ApiService {
-    route: Route,
+    endpoint: Arc<dyn DynEndpoint<Output = Response>>,
 }
 
 impl ApiService {
     pub const MOAT_API_HEADER: &str = "X-Moat-Api";
 
-    pub fn new() -> Self {
-        let route = Route::new().at("/hello", get(hello));
-        ApiService { route }
+    pub fn new(meta_manager: MetaManager) -> Self {
+        let endpoint = Route::new()
+            .at("/hello", get(hello))
+            .at("/health", get(health))
+            .at("/peers", get(peers))
+            .with(AddData::new(meta_manager.clone()));
+        let endpoint = Arc::new(ToDynEndpoint(endpoint.into_endpoint().map_to_response()));
+
+        ApiService { endpoint }
     }
 
     pub async fn handle(&self, session: &mut Session) -> Result<()> {
@@ -52,7 +105,7 @@ impl ApiService {
         };
 
         let poem_request = builder.body(body);
-        let poem_response = self.route.get_response(poem_request).await;
+        let poem_response = self.endpoint.get_response(poem_request).await;
 
         let mut header = ResponseHeader::build_no_case(poem_response.status(), None)?;
         for (key, value) in poem_response.headers().iter() {
