@@ -19,7 +19,9 @@ hex = { workspace = true }
 hmac = { workspace = true }
 pingora = { workspace = true, features = ["proxy", "openssl"] }
 poem = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 sha2 = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }
-url = { workspace = true }
+url = { workspace = true, features = ["serde"] }

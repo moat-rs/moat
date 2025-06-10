@@ -13,11 +13,12 @@ readme = { workspace = true }
 publish = false
 
 [dependencies]
-clap = { version = "4", features = ["derive"] }
+clap = { workspace = true, features = ["derive"] }
 opendal = { version = "0.53", features = ["services-s3"] }
-tokio = { version = "1", features = ["full"] }
-tracing = { version = "0.1" }
-tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+tokio = { workspace = true, features = ["full"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }
+url = { workspace = true, features = ["serde"] }
 
 [[example]]
 name = "opendal"
