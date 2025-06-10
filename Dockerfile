@@ -13,7 +13,13 @@ WORKDIR /
 RUN apt-get update && apt-get install -y cmake && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 COPY . .
-RUN cargo build
+RUN mkdir -p /bin
+RUN --mount=type=cache,target=/target/ \
+    --mount=type=cache,target=/usr/local/cargo/git/db \
+    --mount=type=cache,target=/usr/local/cargo/registry/ \
+    cargo build && \
+    cp /target/debug/moat /bin/
+
 
 FROM ubuntu:24.04 AS runner
 
@@ -21,6 +27,7 @@ RUN mkdir -p /moat
 
 WORKDIR /moat
 
-COPY --from=builder /target/debug/moat .
+COPY --from=builder /bin/moat .
 
-CMD ["./moat", "-h"]
+ENTRYPOINT ["./moat"]
+CMD ["-h"]

@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use clap::Parser;
 use hmac::{Hmac, Mac};
 use pingora::proxy::http_proxy_service_with_name;
+use pingora::server::configuration::ServerConf;
 use pingora::{http::ResponseHeader, prelude::*};
 use sha2::{Digest, Sha256};
 use tracing_subscriber::EnvFilter;
@@ -380,18 +381,22 @@ struct Args {
 }
 
 fn main() {
-    let args = Args::parse();
-
     let _ = tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .try_init();
+
+    let args = Args::parse();
+    tracing::info!(?args, "Start Moat");
 
     let _runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .expect("Failed to create Tokio runtime");
 
-    let mut server = Server::new(Some(Opt::default())).unwrap();
+    let mut conf = ServerConf::new().unwrap();
+    conf.grace_period_seconds = Some(0);
+
+    let mut server = Server::new_with_opt_and_conf(None, conf);
     server.bootstrap();
 
     let app = S3ProxyApp::new(S3ProxyConfig {
