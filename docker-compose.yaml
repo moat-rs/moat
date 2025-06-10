@@ -51,15 +51,13 @@ services:
       RUST_BACKTRACE: 1
     command:
       - ./moat
-      - --endpoint
+      - --s3-endpoint
       - http://minio:9000
-      - --access-key-id
+      - --s3-access-key-id
       - minioadmin
-      - --secret-access-key
+      - --s3-secret-access-key
       - minioadmin
-      - --region
+      - --s3-region
       - us-east-1
-      - --host
-      - 0.0.0.0
 
 

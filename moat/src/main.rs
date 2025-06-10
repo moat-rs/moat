@@ -3,11 +3,22 @@ use std::collections::BTreeMap;
 use async_trait::async_trait;
 use clap::Parser;
 use hmac::{Hmac, Mac};
-use pingora::prelude::*;
 use pingora::proxy::http_proxy_service_with_name;
+use pingora::{http::ResponseHeader, prelude::*};
 use sha2::{Digest, Sha256};
 use tracing_subscriber::EnvFilter;
 use url::Url;
+
+// use crate::meta::{MetaManager, MetaServiceConfig};
+
+const MOAT_API_HEADER: &str = "x-moat-api";
+
+use poem::{get, handler};
+
+#[handler]
+async fn hello() -> &'static str {
+    "Hello, Moat!"
+}
 
 #[derive(Debug, Clone)]
 pub struct S3ProxyConfig {
@@ -63,16 +74,67 @@ impl S3ProxyApp {
 
         // Ok(false)
     }
+
+    async fn handle_moat_api(&self, session: &mut Session) -> Result<bool> {
+        tracing::debug!("Handling Moat API request");
+
+        use poem::Endpoint;
+
+        let route: poem::Route = poem::Route::new().at("/hello", get(hello));
+
+        let header = session.req_header();
+
+        let mut builder = poem::Request::builder()
+            .method(header.method.clone())
+            .uri(header.uri.clone())
+            .version(header.version);
+
+        for (key, value) in header.headers.iter() {
+            builder = builder.header(key, value);
+        }
+
+        let body = match session.read_request_body().await? {
+            Some(bytes) => poem::Body::from(bytes),
+            None => poem::Body::empty(),
+        };
+
+        let poem_request = builder.body(body);
+        let poem_response = route.get_response(poem_request).await;
+
+        let mut header = ResponseHeader::build_no_case(poem_response.status(), None)?;
+        for (key, value) in poem_response.headers().iter() {
+            header.append_header(key, value)?;
+        }
+        header.set_version(poem_response.version());
+
+        let body = poem_response
+            .into_body()
+            .into_bytes()
+            .await
+            .map_err(|e| pingora::Error::because(ErrorType::InternalError, "", e))?;
+
+        header.set_content_length(body.len())?;
+        session.write_response_header(Box::new(header), true).await?;
+
+        session.write_response_body(Some(body), true).await?;
+
+        Ok(true)
+    }
 }
 
 #[derive(Debug)]
-enum S3Request {
-    GetObject { bucket: String, key: String },
-    Other,
+enum MoatRequest {
+    MoatApi,
+    S3GetObject { bucket: String, key: String },
+    S3Other,
 }
 
-impl S3Request {
+impl MoatRequest {
     fn parse(request: &RequestHeader) -> Self {
+        if request.headers.get(MOAT_API_HEADER).is_some() {
+            return MoatRequest::MoatApi;
+        }
+
         let path = request.uri.path();
         let method = request.method.as_str();
 
@@ -80,14 +142,14 @@ impl S3Request {
         if method == "GET" && path.len() > 1 {
             let parts: Vec<&str> = path[1..].splitn(2, '/').collect();
             if parts.len() == 2 {
-                return S3Request::GetObject {
+                return MoatRequest::S3GetObject {
                     bucket: parts[0].to_string(),
                     key: parts[1].to_string(),
                 };
             }
         }
 
-        S3Request::Other
+        MoatRequest::S3Other
     }
 }
 
@@ -244,7 +306,9 @@ impl ProxyHttp for S3ProxyApp {
         S3ProxyCtx
     }
 
-    async fn upstream_peer(&self, _: &mut Session, _: &mut Self::CTX) -> Result<Box<HttpPeer>> {
+    async fn upstream_peer(&self, session: &mut Session, _: &mut Self::CTX) -> Result<Box<HttpPeer>> {
+        tracing::debug!(header = ?session.req_header(), "looking up upstream peer");
+
         let url =
             Url::parse(&self.config.endpoint).map_err(|e| Error::explain(ErrorType::InternalError, format!("{e}")))?;
 
@@ -264,17 +328,21 @@ impl ProxyHttp for S3ProxyApp {
         Self::CTX: Send + Sync,
     {
         let request = session.req_header();
-        let request = S3Request::parse(request);
+        let request = MoatRequest::parse(request);
         match request {
-            S3Request::GetObject { bucket, key } => match self.handle_get_object(&bucket, &key, session).await {
+            MoatRequest::MoatApi => {
+                tracing::debug!("Handling Moat API request");
+                return self.handle_moat_api(session).await;
+            }
+            MoatRequest::S3GetObject { bucket, key } => match self.handle_get_object(&bucket, &key, session).await {
                 Ok(true) => return Ok(true),
                 Ok(false) => {}
                 Err(e) => tracing::error!(?e, "Error handling GetObject"),
             },
-            S3Request::Other => {}
+            MoatRequest::S3Other => {}
         }
 
-        Ok(false)
+        Ok(true)
     }
 
     async fn upstream_request_filter(
@@ -298,20 +366,17 @@ impl ProxyHttp for S3ProxyApp {
 
 #[derive(Debug, Parser)]
 struct Args {
-    /// S3 proxy listening host.
-    #[clap(long, default_value = "127.0.0.1")]
-    host: String,
-    /// S3 proxy listening port.
-    #[clap(long, default_value = "23456")]
-    port: u16,
-    #[clap(long)]
+    #[clap(long, default_value = "127.0.0.1:23456")]
     endpoint: String,
+
     #[clap(long)]
-    access_key_id: String,
+    s3_endpoint: String,
     #[clap(long)]
-    secret_access_key: String,
+    s3_access_key_id: String,
     #[clap(long)]
-    region: String,
+    s3_secret_access_key: String,
+    #[clap(long)]
+    s3_region: String,
 }
 
 fn main() {
@@ -321,41 +386,26 @@ fn main() {
         .with_env_filter(EnvFilter::from_default_env())
         .try_init();
 
+    let _runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("Failed to create Tokio runtime");
+
     let mut server = Server::new(Some(Opt::default())).unwrap();
     server.bootstrap();
 
     let app = S3ProxyApp::new(S3ProxyConfig {
-        endpoint: args.endpoint,
-        access_key_id: args.access_key_id,
-        secret_access_key: args.secret_access_key,
-        region: args.region,
+        endpoint: args.s3_endpoint,
+        access_key_id: args.s3_access_key_id,
+        secret_access_key: args.s3_secret_access_key,
+        region: args.s3_region,
     });
 
     let mut service = http_proxy_service_with_name(&server.configuration, app, "S3 Proxy");
 
-    let listen = format!("{}:{}", args.host, args.port);
-    service.add_tcp(&listen);
+    service.add_tcp(&args.endpoint);
 
     server.add_service(service);
 
     server.run_forever();
 }
-
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-
-//     #[test]
-//     fn test_parse_s3_request() {
-//         let app = S3ProxyApp::new();
-
-//         let mut req = RequestHeader::build("GET", b"/my-bucket/path/to/file.txt", None).unwrap();
-
-//         if let Some(S3Request::GetObject { bucket, key }) = app.parse_s3_request(&req) {
-//             assert_eq!(bucket, "my-bucket");
-//             assert_eq!(key, "path/to/file.txt");
-//         } else {
-//             panic!("Should parse as GetObject request");
-//         }
-//     }
-// }
