@@ -1405,7 +1405,6 @@ dependencies = [
  "pingora",
  "poem",
  "sha2",
- "tokio",
  "tracing",
  "tracing-subscriber",
  "url",

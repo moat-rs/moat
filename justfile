@@ -8,6 +8,8 @@ machine := `uname -m`
 
 all: misc check ffmt udeps
 
+ci: misc check-ci ffmt-ci udeps
+
 misc:
     typos
 
@@ -17,8 +19,17 @@ check:
 	cargo fmt --all
 	cargo clippy --all-targets
 
+check-ci:
+    cargo sort -w -c
+    taplo fmt --check
+    cargo fmt --all --check
+    cargo clippy --all-targets -- -D warnings
+
 ffmt:
 	cargo +nightly fmt --all -- --config-path rustfmt.nightly.toml
+
+ffmt-ci:
+	cargo +nightly fmt --all --check -- --config-path rustfmt.nightly.toml
 
 udeps:
 	cargo machete
@@ -34,3 +45,4 @@ buf-uninstall:
 
 dev:
     docker compose up --build
+
