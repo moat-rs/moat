@@ -12,13 +12,15 @@ license = { workspace = true }
 readme = { workspace = true }
 
 [dependencies]
-async-trait = "0.1"
-chrono = "0.4"
-clap = { version = "4", features = ["derive", "color"] }
-hex = "0.4"
-hmac = "0.12"
-pingora = { version = "0.5", features = ["proxy", "openssl"] }
-sha2 = "0.10"
-tracing = { version = "0.1" }
-tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
-url = "2.0"
+async-trait = { workspace = true }
+chrono = { workspace = true }
+clap = { workspace = true, features = ["derive", "color"] }
+hex = { workspace = true }
+hmac = { workspace = true }
+pingora = { workspace = true, features = ["proxy", "openssl"] }
+poem = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true, features = ["rt", "net"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }
+url = { workspace = true }
