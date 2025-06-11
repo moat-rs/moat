@@ -34,15 +34,6 @@ ffmt-ci:
 udeps:
 	cargo machete
 
-buf-install:
-    curl -sSL \
-    "https://github.com/bufbuild/buf/releases/download/v{{buf-version}}/buf-{{kernel}}-{{machine}}" \
-    -o "{{bin}}/buf"
-    chmod +x "{{bin}}/buf"
-
-buf-uninstall:
-    rm -f "{{bin}}/buf"
-
 dev:
     docker compose up --build
 

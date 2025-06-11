@@ -12,11 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::{collections::BTreeMap, net::SocketAddr, time::SystemTime};
+
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
-use url::Url;
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
 pub enum Identity {
     Proxy,
     Provider,
@@ -24,10 +25,10 @@ pub enum Identity {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Member {
-    endpoint: Url,
+    pub peer: SocketAddr,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemberList {
-    providers: Vec<Member>,
+    pub providers: BTreeMap<SocketAddr, SystemTime>,
 }

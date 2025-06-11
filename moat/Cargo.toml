@@ -1,15 +1,29 @@
+# Copyright 2025 Moat Project Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 [package]
 name = "moat"
 description = "moat for your object storage"
-version = { workspace = true }
-edition = { workspace = true }
-rust-version = { workspace = true }
-repository = { workspace = true }
-homepage = { workspace = true }
-keywords = { workspace = true }
-authors = { workspace = true }
-license = { workspace = true }
-readme = { workspace = true }
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+authors.workspace = true
+license.workspace = true
+readme.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 async-trait = { workspace = true }
@@ -17,11 +31,16 @@ chrono = { workspace = true }
 clap = { workspace = true, features = ["derive", "color"] }
 hex = { workspace = true }
 hmac = { workspace = true }
+humantime = { workspace = true }
 pingora = { workspace = true, features = ["proxy", "openssl"] }
 poem = { workspace = true }
-reqwest = { workspace = true }
+reqwest = { workspace = true, features = ["json"] }
 serde = { workspace = true, features = ["derive"] }
 sha2 = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }
 url = { workspace = true, features = ["serde"] }
+futures = { workspace = true }
+tokio = { workspace = true, features = ["rt", "sync"] }
+rand = { workspace = true }
+itertools = { workspace = true }

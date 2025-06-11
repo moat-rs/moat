@@ -12,19 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::net::SocketAddr;
+use std::{net::SocketAddr, time::Duration};
 
 use async_trait::async_trait;
+use clap::Parser;
 use pingora::{prelude::*, proxy::http_proxy_service_with_name, server::configuration::ServerConf};
+use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::{
-    api::ApiService,
+    api::service::ApiService,
     aws::{AwsSigV4Resigner, AwsSigV4ResignerConfig},
     meta::{
-        manager::{MetaManager, MetaManagerConfig},
+        manager::{Gossip, MetaManager, MetaManagerConfig},
         model::Identity,
     },
+    runtime::Runtime,
 };
 
 #[derive(Debug)]
@@ -58,31 +61,63 @@ impl MoatRequest {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Parser, Serialize, Deserialize)]
 pub struct MoatConfig {
-    pub listen: SocketAddr,
-    pub identity: Identity,
-    pub bootstrap_peers: Vec<SocketAddr>,
-    pub s3_endpoint: Url,
-    pub s3_access_key_id: String,
-    pub s3_secret_access_key: String,
-    pub s3_region: String,
+    #[clap(long, default_value = "127.0.0.1:23456")]
+    listen: SocketAddr,
+    #[clap(long, default_value = "provider")]
+    identity: Identity,
+    #[clap(long, required = false)]
+    bootstrap_peers: Vec<SocketAddr>,
+    #[clap(long, value_parser = humantime::parse_duration, default_value = "10s")]
+    provider_eviction_timeout: Duration,
+    #[clap(long, value_parser = humantime::parse_duration, default_value = "3s")]
+    health_check_timeout: Duration,
+    #[clap(long, value_parser = humantime::parse_duration, default_value = "1s")]
+    health_check_interval: Duration,
+    #[clap(long, default_value_t = 3)]
+    health_check_peers: usize,
+    #[clap(long, value_parser = humantime::parse_duration, default_value = "3s")]
+    sync_timeout: Duration,
+    #[clap(long, value_parser = humantime::parse_duration, default_value = "1s")]
+    sync_interval: Duration,
+    #[clap(long, default_value_t = 3)]
+    sync_peers: usize,
+
+    #[clap(long)]
+    s3_endpoint: Url,
+    #[clap(long)]
+    s3_access_key_id: String,
+    #[clap(long)]
+    s3_secret_access_key: String,
+    #[clap(long)]
+    s3_region: String,
 }
 
 pub struct Moat;
 
 impl Moat {
     pub fn run(config: MoatConfig) {
-        // let _runtime = tokio::runtime::Builder::new_multi_thread()
-        //     .enable_all()
-        //     .build()
-        //     .expect("Failed to create Tokio runtime");
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("Failed to create Tokio runtime");
+        let runtime = Runtime::new(runtime);
 
         let meta_manager = MetaManager::new(MetaManagerConfig {
             identity: config.identity,
             listen: config.listen,
             bootstrap_peers: config.bootstrap_peers,
+            provider_eviction_timeout: config.provider_eviction_timeout,
+            health_check_timeout: config.health_check_timeout,
+            health_check_interval: config.health_check_interval,
+            health_check_peers: config.health_check_peers,
+            sync_timeout: config.sync_timeout,
+            sync_interval: config.sync_interval,
+            sync_peers: config.sync_peers,
         });
+        let gossip = Gossip::new(runtime.clone(), meta_manager.clone());
+        runtime.spawn(async move { gossip.run().await });
 
         let api = ApiService::new(meta_manager);
         let resigner = AwsSigV4Resigner::new(AwsSigV4ResignerConfig {
