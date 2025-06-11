@@ -138,4 +138,33 @@ services:
       - --s3-region
       - us-east-1
 
-
+  moat-4:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: moat:latest
+    container_name: moat-4
+    networks:
+      - dev
+    ports:
+      - "23459:23459"
+    environment:
+      RUST_LOG: debug
+      RUST_BACKTRACE: 1
+    command:
+      - --listen
+      - 0.0.0.0:23459
+      - --peer
+      - moat-4:23459
+      - --bootstrap-peers
+      - moat-1:23456
+      - --s3-endpoint
+      - http://minio:9000
+      - --s3-access-key-id
+      - minioadmin
+      - --s3-secret-access-key
+      - minioadmin
+      - --s3-region
+      - us-east-1
+    profiles:
+      - scale
