@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{net::SocketAddr, sync::Arc};
+use std::sync::Arc;
 
 use pingora::{Error, ErrorType, Result, http::ResponseHeader, proxy::Session};
 use poem::{
@@ -28,7 +28,10 @@ use serde::Deserialize;
 
 use crate::{
     api::client::ApiClient,
-    meta::{manager::MetaManager, model::MemberList},
+    meta::{
+        manager::MetaManager,
+        model::{MemberList, Peer},
+    },
 };
 
 #[handler]
@@ -38,7 +41,7 @@ async fn hello() -> &'static str {
 
 #[derive(Debug, Deserialize)]
 struct HealthParams {
-    peer: Option<SocketAddr>,
+    peer: Option<Peer>,
 }
 
 #[handler]

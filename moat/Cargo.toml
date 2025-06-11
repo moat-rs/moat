@@ -29,18 +29,21 @@ rust-version.workspace = true
 async-trait = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true, features = ["derive", "color"] }
+futures = { workspace = true }
 hex = { workspace = true }
 hmac = { workspace = true }
 humantime = { workspace = true }
+itertools = { workspace = true }
 pingora = { workspace = true, features = ["proxy", "openssl"] }
 poem = { workspace = true }
+rand = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
 serde = { workspace = true, features = ["derive"] }
 sha2 = { workspace = true }
+tokio = { workspace = true, features = ["rt", "sync"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }
 url = { workspace = true, features = ["serde"] }
-futures = { workspace = true }
-tokio = { workspace = true, features = ["rt", "sync"] }
-rand = { workspace = true }
-itertools = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

@@ -19,7 +19,6 @@ mod runtime;
 mod server;
 
 use clap::Parser;
-
 use tracing_subscriber::EnvFilter;
 
 use crate::server::{Moat, MoatConfig};

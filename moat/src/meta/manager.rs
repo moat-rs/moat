@@ -14,28 +14,26 @@
 
 use std::{
     collections::btree_map::{BTreeMap, Entry},
-    net::SocketAddr,
     sync::Arc,
     time::{Duration, SystemTime},
 };
 
 use futures::future::join_all;
-
 use itertools::Itertools;
 use rand::{rng, seq::IndexedRandom};
 use tokio::sync::RwLock;
 
 use crate::{
     api::client::ApiClient,
-    meta::model::{Identity, MemberList},
+    meta::model::{Identity, MemberList, Peer},
     runtime::Runtime,
 };
 
 #[derive(Debug)]
 pub struct MetaManagerConfig {
     pub identity: Identity,
-    pub listen: SocketAddr,
-    pub bootstrap_peers: Vec<SocketAddr>,
+    pub peer: Peer,
+    pub bootstrap_peers: Vec<Peer>,
     pub provider_eviction_timeout: Duration,
     pub health_check_timeout: Duration,
     pub health_check_interval: Duration,
@@ -47,14 +45,14 @@ pub struct MetaManagerConfig {
 
 #[derive(Debug)]
 struct Mutable {
-    providers: BTreeMap<SocketAddr, SystemTime>,
+    providers: BTreeMap<Peer, SystemTime>,
 }
 
 #[derive(Debug)]
 struct Inner {
     mutable: RwLock<Mutable>,
     identity: Identity,
-    listen: SocketAddr,
+    peer: Peer,
     provider_eviction_timeout: Duration,
     health_check_timeout: Duration,
     health_check_interval: Duration,
@@ -71,19 +69,19 @@ pub struct MetaManager {
 
 impl MetaManager {
     pub fn new(config: MetaManagerConfig) -> Self {
-        let mut providers: BTreeMap<SocketAddr, SystemTime> = config
+        let mut providers: BTreeMap<Peer, SystemTime> = config
             .bootstrap_peers
             .into_iter()
             .map(|peer| (peer, SystemTime::now()))
             .collect();
         if config.identity == Identity::Provider {
-            providers.insert(config.listen, SystemTime::now());
+            providers.insert(config.peer.clone(), SystemTime::now());
         }
         let mutable = RwLock::new(Mutable { providers });
         let inner = Arc::new(Inner {
             mutable,
             identity: config.identity,
-            listen: config.listen,
+            peer: config.peer,
             provider_eviction_timeout: config.provider_eviction_timeout,
             health_check_timeout: config.health_check_timeout,
             health_check_interval: config.health_check_interval,
@@ -95,12 +93,12 @@ impl MetaManager {
         Self { inner }
     }
 
-    pub async fn providers(&self) -> BTreeMap<SocketAddr, SystemTime> {
+    pub async fn providers(&self) -> BTreeMap<Peer, SystemTime> {
         let mutable = self.inner.mutable.read().await;
         mutable
             .providers
             .iter()
-            .map(|(peer, last_seen)| (*peer, *last_seen))
+            .map(|(peer, last_seen)| (peer.clone(), *last_seen))
             .collect()
     }
 
@@ -113,7 +111,7 @@ impl MetaManager {
         let mut mutable = self.inner.mutable.write().await;
         let current = &mutable.providers;
         let other = &members.providers;
-        let mut merged: BTreeMap<SocketAddr, SystemTime> = BTreeMap::new();
+        let mut merged: BTreeMap<Peer, SystemTime> = BTreeMap::new();
         for (peer, last_seen) in current.iter().chain(other.iter()) {
             let now = SystemTime::now();
             // Remove stale providers.
@@ -121,7 +119,7 @@ impl MetaManager {
                 continue;
             }
             // Update provider last seen time.
-            match merged.entry(*peer) {
+            match merged.entry(peer.clone()) {
                 Entry::Occupied(mut o) => {
                     let last_seen = std::cmp::max(*o.get(), *last_seen);
                     o.insert(last_seen);
@@ -132,7 +130,7 @@ impl MetaManager {
             }
         }
         if self.inner.identity == Identity::Provider {
-            merged.insert(self.inner.listen, SystemTime::now());
+            merged.insert(self.inner.peer.clone(), SystemTime::now());
         }
         // Give evicted providers another chance to respond.
         let futures = mutable
@@ -140,16 +138,16 @@ impl MetaManager {
             .keys()
             .filter(|peer| !merged.contains_key(peer))
             .map(|peer| async {
-                ApiClient::new(*peer)
+                ApiClient::new(peer.clone())
                     .with_timeout(self.inner.health_check_timeout)
                     .health()
                     .await
-                    .then_some((*peer, SystemTime::now()))
+                    .then_some((peer.clone(), SystemTime::now()))
             });
         join_all(futures)
             .await
             .into_iter()
-            .filter_map(|v| v)
+            .flatten()
             .for_each(|(peer, last_seen)| {
                 merged.insert(peer, last_seen);
             });
@@ -164,14 +162,14 @@ impl MetaManager {
             .providers()
             .await
             .into_iter()
-            .filter(|(peer, _)| *peer != self.inner.listen)
+            .filter(|(peer, _)| *peer != self.inner.peer)
             .collect_vec();
         providers.sort_by(|(p1, l1), (p2, l2)| l1.cmp(l2).then_with(|| p1.cmp(p2)));
         let futures = providers
             .into_iter()
             .take(self.inner.health_check_peers)
             .map(|(peer, _)| async move {
-                ApiClient::new(peer)
+                ApiClient::new(peer.clone())
                     .with_timeout(self.inner.health_check_timeout)
                     .health()
                     .await
@@ -179,10 +177,10 @@ impl MetaManager {
             });
         let res = join_all(futures).await;
         let mut mutable = self.inner.mutable.write().await;
-        res.into_iter().filter_map(|v| v).for_each(|(peer, last_seen)| {
+        res.into_iter().flatten().for_each(|(peer, last_seen)| {
             mutable.providers.insert(peer, last_seen);
         });
-        mutable.providers.insert(self.inner.listen, SystemTime::now());
+        mutable.providers.insert(self.inner.peer.clone(), SystemTime::now());
     }
 
     pub async fn sync(&self) {
@@ -199,7 +197,7 @@ impl MetaManager {
                     None
                 }
             })
-            .filter(|peer| *peer != self.inner.listen)
+            .filter(|peer| *peer != self.inner.peer)
             .collect_vec();
 
         let peers = {
@@ -211,14 +209,14 @@ impl MetaManager {
         let futures = peers.into_iter().map(|peer| {
             let members = members.clone();
             async move {
-                ApiClient::new(*peer)
+                ApiClient::new(peer.clone())
                     .with_timeout(self.inner.sync_timeout)
                     .sync(members)
                     .await
             }
         });
         let res = join_all(futures).await;
-        for members in res.into_iter().filter_map(|v| v) {
+        for members in res.into_iter().flatten() {
             self.merge(members).await;
         }
     }

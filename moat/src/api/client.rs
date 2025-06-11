@@ -12,20 +12,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{net::SocketAddr, time::Duration};
+use std::time::Duration;
 
 use reqwest::Client;
 
-use crate::{api::service::ApiService, meta::model::MemberList};
+use crate::{
+    api::service::ApiService,
+    meta::model::{MemberList, Peer},
+};
 
 #[derive(Debug, Clone)]
 pub struct ApiClient {
-    peer: SocketAddr,
+    peer: Peer,
     timeout: Option<Duration>,
 }
 
 impl ApiClient {
-    pub fn new(peer: SocketAddr) -> Self {
+    pub fn new(peer: Peer) -> Self {
         ApiClient { peer, timeout: None }
     }
 
@@ -36,34 +39,34 @@ impl ApiClient {
 
     fn client(&self) -> Client {
         Client::builder()
-            .timeout(self.timeout.clone().unwrap_or(Duration::ZERO))
+            .connection_verbose(true)
+            .timeout(self.timeout.unwrap_or(Duration::ZERO))
             .build()
             .unwrap()
     }
 
     pub async fn health(&self) -> bool {
-        match self
+        matches! {
+            self
             .client()
-            .get(format!("http://{peer}/health", peer = self.peer.to_string()))
+            .get(format!("http://{peer}/health", peer = self.peer))
             .header(ApiService::MOAT_API_HEADER, "true")
             .send()
-            .await
-        {
-            Ok(r) if r.status().is_success() => true,
-            _ => false,
+            .await,
+            Ok(r) if r.status().is_success()
         }
     }
 
     pub async fn sync(&self, members: MemberList) -> Option<MemberList> {
         let response = match self
             .client()
-            .post(format!("http://{peer}/sync", peer = self.peer.to_string()))
+            .post(format!("http://{peer}/sync", peer = self.peer))
             .header(ApiService::MOAT_API_HEADER, "true")
             .json(&members)
             .send()
             .await
         {
-            Ok(r) if !r.status().is_success() => r,
+            Ok(r) if r.status().is_success() => r,
             Ok(r) => {
                 tracing::error!(peer = ?self.peer, status = ?r.status(), "Failed to sync with peer");
                 return None;

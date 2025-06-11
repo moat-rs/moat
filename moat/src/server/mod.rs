@@ -25,7 +25,7 @@ use crate::{
     aws::{AwsSigV4Resigner, AwsSigV4ResignerConfig},
     meta::{
         manager::{Gossip, MetaManager, MetaManagerConfig},
-        model::Identity,
+        model::{Identity, Peer},
     },
     runtime::Runtime,
 };
@@ -67,8 +67,10 @@ pub struct MoatConfig {
     listen: SocketAddr,
     #[clap(long, default_value = "provider")]
     identity: Identity,
-    #[clap(long, required = false)]
-    bootstrap_peers: Vec<SocketAddr>,
+    #[clap(long)]
+    peer: Peer,
+    #[clap(long, num_args = 1.., value_delimiter = ',')]
+    bootstrap_peers: Vec<Peer>,
     #[clap(long, value_parser = humantime::parse_duration, default_value = "10s")]
     provider_eviction_timeout: Duration,
     #[clap(long, value_parser = humantime::parse_duration, default_value = "3s")]
@@ -106,8 +108,8 @@ impl Moat {
 
         let meta_manager = MetaManager::new(MetaManagerConfig {
             identity: config.identity,
-            listen: config.listen,
-            bootstrap_peers: config.bootstrap_peers,
+            peer: config.peer.clone(),
+            bootstrap_peers: config.bootstrap_peers.clone(),
             provider_eviction_timeout: config.provider_eviction_timeout,
             health_check_timeout: config.health_check_timeout,
             health_check_interval: config.health_check_interval,
