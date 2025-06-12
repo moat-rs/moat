@@ -12,26 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod api;
-mod aws;
-mod meta;
-mod runtime;
-mod server;
+use clap::Args;
+use serde::{Deserialize, Serialize};
+use url::Url;
 
-use clap::Parser;
-use tracing_subscriber::EnvFilter;
-
-use crate::server::{Moat, MoatConfig};
-
-fn main() {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .try_init();
-
-    let config = MoatConfig::parse();
-    tracing::info!(?config, "Start Moat");
-
-    if let Err(e) = Moat::run(config) {
-        tracing::error!(?e, "Failed to run Moat");
-    }
+#[derive(Debug, Args, Serialize, Deserialize)]
+pub struct S3Config {
+    #[clap(long = "s3-endpoint")]
+    pub endpoint: Url,
+    #[clap(long = "s3-access-key-id")]
+    pub access_key_id: String,
+    #[clap(long = "s3-secret-access-key")]
+    pub secret_access_key: String,
+    #[clap(long = "s3-region")]
+    pub region: String,
 }

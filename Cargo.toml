@@ -28,14 +28,19 @@ readme = "README.md"
 rust-version = "1.87"
 
 [workspace.dependencies]
+anyhow = "1"
 # Moat components
 
 # Other dependencies
 async-trait = "0.1"
+bytes = "1"
+bytesize = "2"
 chrono = "0.4"
 clap = "4"
 colored = "3"
-foyer = "0.17"
+# TODO(MrCroxx): switch to a released version
+# foyer = "0.17"
+foyer = { git = "https://github.com/foyer-rs/foyer", rev = "29585648a5ff95f08f940cb54d55e42fa2726593" }
 futures = "0.3"
 hex = "0.4"
 hmac = "0.12"
