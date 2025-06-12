@@ -87,14 +87,15 @@ impl Display for ParsePeerError {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Member {
-    pub peer: Peer,
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Membership {
+    pub last_seen: SystemTime,
+    pub weight: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemberList {
-    pub providers: BTreeMap<Peer, SystemTime>,
+    pub providers: BTreeMap<Peer, Membership>,
 }
 
 #[cfg(test)]
@@ -113,9 +114,27 @@ mod tests {
     #[test]
     fn test_member_list_serde_json() {
         let mut providers = BTreeMap::new();
-        providers.insert("moat-1:23456".parse().unwrap(), SystemTime::now());
-        providers.insert("moat-2:23457".parse().unwrap(), SystemTime::now());
-        providers.insert("moat-3:23458".parse().unwrap(), SystemTime::now());
+        providers.insert(
+            "moat-1:23456".parse().unwrap(),
+            Membership {
+                last_seen: SystemTime::now(),
+                weight: 1,
+            },
+        );
+        providers.insert(
+            "moat-2:23457".parse().unwrap(),
+            Membership {
+                last_seen: SystemTime::now(),
+                weight: 1,
+            },
+        );
+        providers.insert(
+            "moat-3:23458".parse().unwrap(),
+            Membership {
+                last_seen: SystemTime::now(),
+                weight: 1,
+            },
+        );
         let m = MemberList { providers };
         let json = serde_json::to_string(&m).unwrap();
         let md = serde_json::from_str::<MemberList>(&json).unwrap();

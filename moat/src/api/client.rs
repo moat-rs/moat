@@ -39,7 +39,7 @@ impl ApiClient {
 
     fn client(&self) -> Client {
         Client::builder()
-            .connection_verbose(true)
+            .connection_verbose(cfg!(debug_assertions))
             .timeout(self.timeout.unwrap_or(Duration::ZERO))
             .build()
             .unwrap()

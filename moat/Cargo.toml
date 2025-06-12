@@ -43,6 +43,7 @@ sha2 = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }
+twox-hash = { workspace = true, features = ["std", "xxhash64"] }
 url = { workspace = true, features = ["serde"] }
 
 [dev-dependencies]
