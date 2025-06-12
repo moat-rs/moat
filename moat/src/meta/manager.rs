@@ -14,6 +14,7 @@
 
 use std::{
     collections::btree_map::{BTreeMap, Entry},
+    hash::Hash,
     sync::Arc,
     time::{Duration, SystemTime},
 };
@@ -25,7 +26,10 @@ use tokio::sync::RwLock;
 
 use crate::{
     api::client::ApiClient,
-    meta::model::{Identity, MemberList, Membership, Peer},
+    meta::{
+        hash::ConsistentHash,
+        model::{Identity, MemberList, Membership, Peer},
+    },
     runtime::Runtime,
 };
 
@@ -46,7 +50,19 @@ pub struct MetaManagerConfig {
 
 #[derive(Debug)]
 struct Mutable {
-    providers: BTreeMap<Peer, Membership>,
+    members: MemberList,
+    locator: ConsistentHash<Peer>,
+}
+
+impl Mutable {
+    fn update_locator(&mut self) {
+        let weights = self
+            .members
+            .providers
+            .iter()
+            .map(|(peer, membership)| (peer.clone(), membership.weight));
+        self.locator = weights.into();
+    }
 }
 
 #[derive(Debug)]
@@ -93,7 +109,11 @@ impl MetaManager {
                 },
             );
         }
-        let mutable = RwLock::new(Mutable { providers });
+        let members = MemberList { providers };
+        let locator = ConsistentHash::default();
+        let mut mutable = Mutable { members, locator };
+        mutable.update_locator();
+        let mutable = RwLock::new(mutable);
         let inner = Arc::new(Inner {
             mutable,
             identity: config.identity,
@@ -110,23 +130,14 @@ impl MetaManager {
         Self { inner }
     }
 
-    pub async fn providers(&self) -> BTreeMap<Peer, Membership> {
-        let mutable = self.inner.mutable.read().await;
-        mutable
-            .providers
-            .iter()
-            .map(|(peer, membership)| (peer.clone(), membership.clone()))
-            .collect()
-    }
-
     pub async fn members(&self) -> MemberList {
-        let providers = self.providers().await;
-        MemberList { providers }
+        let mutable = self.inner.mutable.read().await;
+        mutable.members.clone()
     }
 
     pub async fn merge(&self, members: MemberList) -> MemberList {
         let mut mutable = self.inner.mutable.write().await;
-        let current = &mutable.providers;
+        let current = &mutable.members.providers;
         let other = &members.providers;
         let mut merged: BTreeMap<Peer, Membership> = BTreeMap::new();
         for (peer, membership) in current.iter().chain(other.iter()) {
@@ -159,6 +170,7 @@ impl MetaManager {
         }
         // Give evicted providers another chance to respond.
         let futures = mutable
+            .members
             .providers
             .iter()
             .filter(|(peer, _)| !merged.contains_key(peer))
@@ -182,16 +194,18 @@ impl MetaManager {
             .for_each(|(peer, membership)| {
                 merged.insert(peer, membership);
             });
-        mutable.providers = merged;
+        mutable.members.providers = merged;
+        mutable.update_locator();
         MemberList {
-            providers: mutable.providers.clone(),
+            providers: mutable.members.providers.clone(),
         }
     }
 
     pub async fn health_check(&self) {
         let mut providers = self
-            .providers()
+            .members()
             .await
+            .providers
             .into_iter()
             .filter(|(peer, _)| *peer != self.inner.peer)
             .collect_vec();
@@ -214,9 +228,9 @@ impl MetaManager {
         let mut mutable = self.inner.mutable.write().await;
         // TODO(MrCroxx): handle unhealthy peers with SWIM algorithm
         res.into_iter().flatten().for_each(|(peer, membership)| {
-            mutable.providers.insert(peer, membership);
+            mutable.members.providers.insert(peer, membership);
         });
-        mutable.providers.insert(
+        mutable.members.providers.insert(
             self.inner.peer.clone(),
             Membership {
                 last_seen: SystemTime::now(),
@@ -227,8 +241,9 @@ impl MetaManager {
 
     pub async fn sync(&self) {
         let providers = self
-            .providers()
+            .members()
             .await
+            .providers
             .into_iter()
             .filter_map(|(peer, membership)| {
                 if SystemTime::now()
@@ -267,6 +282,14 @@ impl MetaManager {
 
     pub fn health_check_timeout(&self) -> Duration {
         self.inner.health_check_timeout
+    }
+
+    pub async fn locate<H>(&self, item: H) -> Option<Peer>
+    where
+        H: Hash,
+    {
+        let mutable = self.inner.mutable.read().await;
+        mutable.locator.locate(item).cloned()
     }
 }
 
