@@ -25,7 +25,7 @@ use tokio::sync::RwLock;
 
 use crate::{
     api::client::ApiClient,
-    meta::model::{Identity, MemberList, Peer},
+    meta::model::{Identity, MemberList, Membership, Peer},
     runtime::Runtime,
 };
 
@@ -41,11 +41,12 @@ pub struct MetaManagerConfig {
     pub sync_timeout: Duration,
     pub sync_interval: Duration,
     pub sync_peers: usize,
+    pub weight: usize,
 }
 
 #[derive(Debug)]
 struct Mutable {
-    providers: BTreeMap<Peer, SystemTime>,
+    providers: BTreeMap<Peer, Membership>,
 }
 
 #[derive(Debug)]
@@ -60,6 +61,7 @@ struct Inner {
     sync_timeout: Duration,
     sync_interval: Duration,
     sync_peers: usize,
+    weight: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -69,13 +71,27 @@ pub struct MetaManager {
 
 impl MetaManager {
     pub fn new(config: MetaManagerConfig) -> Self {
-        let mut providers: BTreeMap<Peer, SystemTime> = config
+        let mut providers: BTreeMap<Peer, Membership> = config
             .bootstrap_peers
             .into_iter()
-            .map(|peer| (peer, SystemTime::now()))
+            .map(|peer| {
+                (
+                    peer,
+                    Membership {
+                        last_seen: SystemTime::now(),
+                        weight: 0,
+                    },
+                )
+            })
             .collect();
         if config.identity == Identity::Provider {
-            providers.insert(config.peer.clone(), SystemTime::now());
+            providers.insert(
+                config.peer.clone(),
+                Membership {
+                    last_seen: SystemTime::now(),
+                    weight: config.weight,
+                },
+            );
         }
         let mutable = RwLock::new(Mutable { providers });
         let inner = Arc::new(Inner {
@@ -89,16 +105,17 @@ impl MetaManager {
             sync_timeout: config.sync_timeout,
             sync_interval: config.sync_interval,
             sync_peers: config.sync_peers,
+            weight: config.weight,
         });
         Self { inner }
     }
 
-    pub async fn providers(&self) -> BTreeMap<Peer, SystemTime> {
+    pub async fn providers(&self) -> BTreeMap<Peer, Membership> {
         let mutable = self.inner.mutable.read().await;
         mutable
             .providers
             .iter()
-            .map(|(peer, last_seen)| (peer.clone(), *last_seen))
+            .map(|(peer, membership)| (peer.clone(), membership.clone()))
             .collect()
     }
 
@@ -111,45 +128,59 @@ impl MetaManager {
         let mut mutable = self.inner.mutable.write().await;
         let current = &mutable.providers;
         let other = &members.providers;
-        let mut merged: BTreeMap<Peer, SystemTime> = BTreeMap::new();
-        for (peer, last_seen) in current.iter().chain(other.iter()) {
+        let mut merged: BTreeMap<Peer, Membership> = BTreeMap::new();
+        for (peer, membership) in current.iter().chain(other.iter()) {
             let now = SystemTime::now();
             // Remove stale providers.
-            if now.duration_since(*last_seen).unwrap_or(Duration::ZERO) > self.inner.provider_eviction_timeout {
+            if now.duration_since(membership.last_seen).unwrap_or(Duration::ZERO) > self.inner.provider_eviction_timeout
+            {
                 continue;
             }
             // Update provider last seen time.
             match merged.entry(peer.clone()) {
                 Entry::Occupied(mut o) => {
-                    let last_seen = std::cmp::max(*o.get(), *last_seen);
-                    o.insert(last_seen);
+                    if o.get().last_seen < membership.last_seen {
+                        o.insert(membership.clone());
+                    }
                 }
                 Entry::Vacant(v) => {
-                    v.insert(*last_seen);
+                    v.insert(membership.clone());
                 }
             }
         }
         if self.inner.identity == Identity::Provider {
-            merged.insert(self.inner.peer.clone(), SystemTime::now());
+            merged.insert(
+                self.inner.peer.clone(),
+                Membership {
+                    last_seen: SystemTime::now(),
+                    weight: self.inner.weight,
+                },
+            );
         }
         // Give evicted providers another chance to respond.
         let futures = mutable
             .providers
-            .keys()
-            .filter(|peer| !merged.contains_key(peer))
-            .map(|peer| async {
+            .iter()
+            .filter(|(peer, _)| !merged.contains_key(peer))
+            .map(|(peer, membership)| async {
                 ApiClient::new(peer.clone())
                     .with_timeout(self.inner.health_check_timeout)
                     .health()
                     .await
-                    .then_some((peer.clone(), SystemTime::now()))
+                    .then_some((
+                        peer.clone(),
+                        Membership {
+                            last_seen: SystemTime::now(),
+                            weight: membership.weight,
+                        },
+                    ))
             });
         join_all(futures)
             .await
             .into_iter()
             .flatten()
-            .for_each(|(peer, last_seen)| {
-                merged.insert(peer, last_seen);
+            .for_each(|(peer, membership)| {
+                merged.insert(peer, membership);
             });
         mutable.providers = merged;
         MemberList {
@@ -164,23 +195,34 @@ impl MetaManager {
             .into_iter()
             .filter(|(peer, _)| *peer != self.inner.peer)
             .collect_vec();
-        providers.sort_by(|(p1, l1), (p2, l2)| l1.cmp(l2).then_with(|| p1.cmp(p2)));
-        let futures = providers
-            .into_iter()
-            .take(self.inner.health_check_peers)
-            .map(|(peer, _)| async move {
-                ApiClient::new(peer.clone())
-                    .with_timeout(self.inner.health_check_timeout)
-                    .health()
-                    .await
-                    .then_some((peer, SystemTime::now()))
-            });
+        providers.sort_by(|(p1, m1), (p2, m2)| m1.last_seen.cmp(&m2.last_seen).then_with(|| p1.cmp(p2)));
+        let futures =
+            providers
+                .into_iter()
+                .take(self.inner.health_check_peers)
+                .map(|(peer, mut membership)| async move {
+                    ApiClient::new(peer.clone())
+                        .with_timeout(self.inner.health_check_timeout)
+                        .health()
+                        .await
+                        .then_some((peer, {
+                            membership.last_seen = SystemTime::now();
+                            membership
+                        }))
+                });
         let res = join_all(futures).await;
         let mut mutable = self.inner.mutable.write().await;
-        res.into_iter().flatten().for_each(|(peer, last_seen)| {
-            mutable.providers.insert(peer, last_seen);
+        // TODO(MrCroxx): handle unhealthy peers with SWIM algorithm
+        res.into_iter().flatten().for_each(|(peer, membership)| {
+            mutable.providers.insert(peer, membership);
         });
-        mutable.providers.insert(self.inner.peer.clone(), SystemTime::now());
+        mutable.providers.insert(
+            self.inner.peer.clone(),
+            Membership {
+                last_seen: SystemTime::now(),
+                weight: self.inner.weight,
+            },
+        );
     }
 
     pub async fn sync(&self) {
@@ -188,8 +230,10 @@ impl MetaManager {
             .providers()
             .await
             .into_iter()
-            .filter_map(|(peer, last_seen)| {
-                if SystemTime::now().duration_since(last_seen).unwrap_or(Duration::ZERO)
+            .filter_map(|(peer, membership)| {
+                if SystemTime::now()
+                    .duration_since(membership.last_seen)
+                    .unwrap_or(Duration::ZERO)
                     < self.inner.provider_eviction_timeout
                 {
                     Some(peer)

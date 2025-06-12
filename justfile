@@ -5,10 +5,9 @@ bin := x'~/.local/bin'
 kernel := `uname -s`
 machine := `uname -m`
 
+all: misc ffmt check test udeps
 
-all: misc check ffmt udeps
-
-ci: misc check-ci ffmt-ci udeps
+ci: misc ffmt-ci check-ci test udeps
 
 misc:
     typos
@@ -30,6 +29,9 @@ ffmt:
 
 ffmt-ci:
 	cargo +nightly fmt --all --check -- --config-path rustfmt.nightly.toml
+
+test:
+	cargo nextest run
 
 udeps:
 	cargo machete

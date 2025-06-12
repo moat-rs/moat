@@ -72,6 +72,7 @@ async fn providers(Data(meta_manager): Data<&MetaManager>) -> Response {
 
 #[handler]
 async fn sync(Json(members): Json<MemberList>, Data(meta_manager): Data<&MetaManager>) -> Response {
+    tracing::debug!(?members, "sync with");
     let merged = meta_manager.merge(members).await;
     Json(merged).into_response()
 }

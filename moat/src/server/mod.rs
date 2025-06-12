@@ -85,6 +85,8 @@ pub struct MoatConfig {
     sync_interval: Duration,
     #[clap(long, default_value_t = 3)]
     sync_peers: usize,
+    #[clap(long, default_value_t = 1)]
+    weight: usize,
 
     #[clap(long)]
     s3_endpoint: Url,
@@ -117,6 +119,7 @@ impl Moat {
             sync_timeout: config.sync_timeout,
             sync_interval: config.sync_interval,
             sync_peers: config.sync_peers,
+            weight: config.weight,
         });
         let gossip = Gossip::new(runtime.clone(), meta_manager.clone());
         runtime.spawn(async move { gossip.run().await });
