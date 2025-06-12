@@ -18,9 +18,7 @@ use pingora::{Error, ErrorType, Result, http::ResponseHeader, proxy::Session};
 use poem::{
     Body, Endpoint, EndpointExt, IntoEndpoint, IntoResponse, Request, Response, Route,
     endpoint::{DynEndpoint, ToDynEndpoint},
-    get, handler,
-    middleware::AddData,
-    post,
+    get, handler, post,
     web::{Data, Json, Query},
 };
 use reqwest::StatusCode;
@@ -49,14 +47,16 @@ async fn health(Query(params): Query<HealthParams>, Data(meta_manager): Data<&Me
     tracing::debug!(?params, "check health for peer");
 
     if let Some(peer) = params.peer {
-        if ApiClient::new(peer)
+        if ApiClient::new(peer.clone())
             .with_timeout(meta_manager.health_check_timeout())
             .health()
             .await
         {
             ().into_response()
         } else {
-            Response::builder().status(StatusCode::BAD_REQUEST).finish()
+            Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .body(format!("cannot reach peer {peer}"))
         }
     } else {
         ().into_response()
@@ -64,17 +64,35 @@ async fn health(Query(params): Query<HealthParams>, Data(meta_manager): Data<&Me
 }
 
 #[handler]
-async fn providers(Data(meta_manager): Data<&MetaManager>) -> Response {
-    tracing::debug!("get providers");
-    let providers = meta_manager.providers().await;
-    Json(providers).into_response()
+async fn members(Data(meta_manager): Data<&MetaManager>) -> Response {
+    tracing::debug!("get members");
+    let members = meta_manager.members().await;
+    Json(members).into_response()
 }
 
 #[handler]
-async fn sync(Json(members): Json<MemberList>, Data(meta_manager): Data<&MetaManager>) -> Response {
-    tracing::debug!(?members, "sync with");
-    let merged = meta_manager.merge(members).await;
+async fn sync(Json(ms): Json<MemberList>, Data(meta_manager): Data<&MetaManager>) -> Response {
+    tracing::debug!(members = ?ms, "sync members");
+    let merged = meta_manager.merge(ms).await;
     Json(merged).into_response()
+}
+
+#[handler]
+async fn locate(body: Body, Data(meta_manager): Data<&MetaManager>) -> Response {
+    tracing::debug!(?body, "locate");
+
+    let bytes = match body.into_bytes().await {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            return Response::builder().status(StatusCode::BAD_REQUEST).body(e.to_string());
+        }
+    };
+
+    if let Some(peer) = meta_manager.locate(bytes).await {
+        Response::builder().status(StatusCode::OK).body(peer.to_string())
+    } else {
+        Response::builder().status(StatusCode::OK).finish()
+    }
 }
 
 pub struct ApiService {
@@ -88,9 +106,10 @@ impl ApiService {
         let endpoint = Route::new()
             .at("/hello", get(hello))
             .at("/health", get(health))
-            .at("/providers", get(providers))
+            .at("/members", get(members))
             .at("/sync", post(sync))
-            .with(AddData::new(meta_manager.clone()));
+            .at("/locate", post(locate))
+            .data(meta_manager.clone());
         let endpoint = Arc::new(ToDynEndpoint(endpoint.into_endpoint().map_to_response()));
 
         ApiService { endpoint }

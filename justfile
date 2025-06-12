@@ -5,9 +5,9 @@ bin := x'~/.local/bin'
 kernel := `uname -s`
 machine := `uname -m`
 
-all: misc ffmt check test udeps
+all: misc ffmt check test udeps license
 
-ci: misc ffmt-ci check-ci test udeps
+ci: misc ffmt-ci check-ci test udeps license
 
 misc:
     typos
@@ -35,6 +35,9 @@ test:
 
 udeps:
 	cargo machete
+
+license:
+	license-eye header check
 
 dev:
     docker compose up --build
