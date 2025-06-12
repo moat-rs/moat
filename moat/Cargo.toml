@@ -26,9 +26,13 @@ readme.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+anyhow = { workspace = true }
 async-trait = { workspace = true }
+bytes = { workspace = true, features = ["serde"] }
+bytesize = { workspace = true, features = ["serde"] }
 chrono = { workspace = true }
 clap = { workspace = true, features = ["derive", "color"] }
+foyer = { workspace = true, features = ["serde", "clap"] }
 futures = { workspace = true }
 hex = { workspace = true }
 hmac = { workspace = true }
