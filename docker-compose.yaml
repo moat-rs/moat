@@ -79,6 +79,8 @@ services:
       - minioadmin
       - --s3-region
       - us-east-1
+      - --s3-bucket
+      - dev
       - --weight
       - "1"
 
@@ -110,6 +112,8 @@ services:
       - minioadmin
       - --s3-region
       - us-east-1
+      - --s3-bucket
+      - dev
       - --weight
       - "2"
 
@@ -141,6 +145,8 @@ services:
       - minioadmin
       - --s3-region
       - us-east-1
+      - --s3-bucket
+      - dev
       - --weight
       - "3"
 
@@ -172,6 +178,8 @@ services:
       - minioadmin
       - --s3-region
       - us-east-1
+      - --s3-bucket
+      - dev
       - --weight
       - "4"
     profiles:
