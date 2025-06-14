@@ -14,21 +14,19 @@
 
 mod api;
 mod aws;
+mod logger;
 mod meta;
 mod runtime;
 mod server;
 
 use clap::Parser;
-use tracing_subscriber::EnvFilter;
 
 use crate::server::{Moat, MoatConfig};
 
 fn main() {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .try_init();
-
     let config = MoatConfig::parse();
+
+    logger::init_logger(&config);
     tracing::info!(?config, "Start Moat");
 
     if let Err(e) = Moat::run(config) {

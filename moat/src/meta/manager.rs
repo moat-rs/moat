@@ -284,6 +284,7 @@ impl MetaManager {
         self.inner.health_check_timeout
     }
 
+    // TODO(MrCroxx): Use `ArcSwap` to optimize the locator access.
     pub async fn locate<H>(&self, item: H) -> Option<Peer>
     where
         H: Hash,
