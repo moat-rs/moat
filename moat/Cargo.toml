@@ -36,8 +36,10 @@ foyer = { workspace = true, features = ["serde", "clap"] }
 futures = { workspace = true }
 hex = { workspace = true }
 hmac = { workspace = true }
+http = { workspace = true }
 humantime = { workspace = true }
 itertools = { workspace = true }
+opendal = { workspace = true, features = ["services-s3"] }
 pingora = { workspace = true, features = ["proxy", "openssl"] }
 poem = { workspace = true }
 rand = { workspace = true }

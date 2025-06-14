@@ -18,6 +18,13 @@ use url::Url;
 
 #[derive(Debug, Args, Serialize, Deserialize)]
 pub struct S3Config {
+    /// Endpoint must be full uri, e.g.
+    ///
+    /// AWS S3: https://s3.amazonaws.com or https://s3.{region}.amazonaws.com
+    /// Cloudflare R2: https://<ACCOUNT_ID>.r2.cloudflarestorage.com
+    /// Aliyun OSS: https://{region}.aliyuncs.com
+    /// Tencent COS: https://cos.{region}.myqcloud.com
+    /// Minio: http://127.0.0.1:9000
     #[clap(long = "s3-endpoint")]
     pub endpoint: Url,
     #[clap(long = "s3-access-key-id")]
@@ -26,4 +33,6 @@ pub struct S3Config {
     pub secret_access_key: String,
     #[clap(long = "s3-region")]
     pub region: String,
+    #[clap(long = "s3-bucket")]
+    pub bucket: String,
 }

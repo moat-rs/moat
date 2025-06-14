@@ -22,7 +22,11 @@ use foyer::{
     DirectFsDeviceOptions, Engine, HybridCache, LargeEngineOptions, RecoverMode, RuntimeOptions, Throttle,
     TokioRuntimeOptions,
 };
-use pingora::{prelude::*, proxy::http_proxy_service_with_name, server::configuration::ServerConf};
+use http::{StatusCode, Version, header::CONTENT_TYPE};
+use opendal::{Operator, layers::LoggingLayer, services::S3};
+use pingora::{
+    http::ResponseHeader, prelude::*, proxy::http_proxy_service_with_name, server::configuration::ServerConf,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -41,7 +45,7 @@ use crate::{
 #[derive(Debug)]
 enum MoatRequest {
     MoatApi,
-    S3GetObject { bucket: String, key: String },
+    S3GetObject { bucket: String, path: String },
     S3Other,
 }
 
@@ -54,13 +58,13 @@ impl MoatRequest {
         let path = request.uri.path();
         let method = request.method.as_str();
 
-        // S3 GetObject schema: GET /{bucket}/{key}
+        // S3 GetObject schema: GET /{bucket}/{path}
         if method == "GET" && path.len() > 1 {
             let parts: Vec<&str> = path[1..].splitn(2, '/').collect();
             if parts.len() == 2 {
                 return MoatRequest::S3GetObject {
                     bucket: parts[0].to_string(),
-                    key: parts[1].to_string(),
+                    path: parts[1].to_string(),
                 };
             }
         }
@@ -176,6 +180,19 @@ impl Moat {
             })
         }?;
 
+        let operator = Operator::new(
+            S3::default()
+                .endpoint(config.s3_config.endpoint.as_str())
+                .region(&config.s3_config.region)
+                .bucket(&config.s3_config.bucket)
+                .access_key_id(&config.s3_config.access_key_id)
+                .secret_access_key(&config.s3_config.secret_access_key)
+                .disable_config_load()
+                .disable_ec2_metadata(),
+        )?
+        .layer(LoggingLayer::default())
+        .finish();
+
         let meta_manager = MetaManager::new(MetaManagerConfig {
             identity: config.identity,
             peer: config.peer.clone(),
@@ -217,6 +234,7 @@ impl Moat {
                 80
             });
         let s3_tls = config.s3_config.endpoint.scheme() == "https";
+        let s3_bucket = config.s3_config.bucket.clone();
 
         let proxy = Proxy {
             api,
@@ -224,7 +242,9 @@ impl Moat {
             s3_host,
             s3_port,
             s3_tls,
-            _cache: cache,
+            s3_bucket,
+            cache,
+            operator,
         };
         let mut service = http_proxy_service_with_name(&server.configuration, proxy, "moat");
         service.add_tcp(&config.listen.to_string());
@@ -250,15 +270,53 @@ struct Proxy {
     s3_host: String,
     s3_port: u16,
     s3_tls: bool,
+    s3_bucket: String,
 
-    _cache: HybridCache<String, Bytes>,
+    cache: HybridCache<String, Bytes>,
+    operator: Operator,
 }
 
 impl Proxy {
-    async fn handle_get_object(&self, bucket: &str, key: &str, _: &mut Session) -> Result<bool> {
-        tracing::debug!(bucket, key, "Handling S3 GetObject request");
+    async fn handle_get_object(&self, bucket: &str, path: &str, session: &mut Session) -> Result<()> {
+        tracing::debug!(bucket, path, "Handling S3 GetObject request");
 
-        Ok(true)
+        let bytes = match self
+            .cache
+            .fetch(path.to_string(), || {
+                let op = self.operator.clone();
+                let path = path.to_string();
+                async move {
+                    let res = op.read(&path).await;
+                    res.map(|buf| buf.to_bytes()).map_err(anyhow::Error::from)
+                }
+            })
+            .await
+            .map_err(|e| Error::because(ErrorType::InternalError, "cache get object error", e))
+        {
+            Ok(entry) => entry.value().clone(),
+            Err(e) => {
+                tracing::warn!(
+                    ?e,
+                    "Failed to fetch object from cache, attempting to fetch from S3 directly"
+                );
+                self.operator
+                    .read(path)
+                    .await
+                    .map(|buf| buf.to_bytes())
+                    .map_err(|e| Error::because(ErrorType::InternalError, "s3 get object error", e))?
+            }
+        };
+
+        let mut header = ResponseHeader::build_no_case(StatusCode::OK, None)?;
+
+        header.append_header(CONTENT_TYPE, "application/octet-stream")?;
+        header.set_version(Version::HTTP_11);
+        header.set_content_length(bytes.len())?;
+
+        session.write_response_header(Box::new(header), true).await?;
+        session.write_response_body(Some(bytes), true).await?;
+
+        Ok(())
     }
 }
 
@@ -292,15 +350,13 @@ impl ProxyHttp for Proxy {
                 self.api.handle(session).await?;
                 return Ok(true);
             }
-            MoatRequest::S3GetObject { bucket, key } => match self.handle_get_object(&bucket, &key, session).await {
-                Ok(true) => return Ok(true),
-                Ok(false) => {}
-                Err(e) => tracing::error!(?e, "Error handling GetObject"),
-            },
-            MoatRequest::S3Other => {}
+            MoatRequest::S3GetObject { bucket, path } if bucket == self.s3_bucket => {
+                return self.handle_get_object(&bucket, &path, session).await.map(|_| true);
+            }
+            MoatRequest::S3GetObject { .. } | MoatRequest::S3Other => {}
         }
 
-        Ok(true)
+        Ok(false)
     }
 
     async fn upstream_request_filter(
