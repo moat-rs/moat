@@ -64,6 +64,8 @@ services:
     environment:
       RUST_LOG: debug
       RUST_BACKTRACE: 1
+    volumes:
+       - .moat:/moat/.moat
     command:
       - --listen
       - 0.0.0.0:23456
@@ -97,6 +99,8 @@ services:
     environment:
       RUST_LOG: debug
       RUST_BACKTRACE: 1
+    volumes:
+       - .moat:/moat/.moat
     command:
       - --listen
       - 0.0.0.0:23457
@@ -130,6 +134,8 @@ services:
     environment:
       RUST_LOG: debug
       RUST_BACKTRACE: 1
+    volumes:
+       - .moat:/moat/.moat
     command:
       - --listen
       - 0.0.0.0:23458
@@ -163,6 +169,8 @@ services:
     environment:
       RUST_LOG: debug
       RUST_BACKTRACE: 1
+    volumes:
+       - .moat:/moat/.moat
     command:
       - --listen
       - 0.0.0.0:23459

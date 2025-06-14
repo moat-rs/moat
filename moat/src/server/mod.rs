@@ -35,6 +35,7 @@ use crate::{
         resigner::{AwsSigV4Resigner, AwsSigV4ResignerConfig},
         s3::S3Config,
     },
+    logger::LoggingConfig,
     meta::{
         manager::{Gossip, MetaManager, MetaManagerConfig},
         model::{Identity, Peer},
@@ -111,35 +112,41 @@ pub struct CacheConfig {
 #[derive(Debug, Parser, Serialize, Deserialize)]
 pub struct MoatConfig {
     #[clap(long, default_value = "127.0.0.1:23456")]
-    listen: SocketAddr,
+    pub listen: SocketAddr,
     #[clap(long, default_value = "provider")]
-    identity: Identity,
+    pub identity: Identity,
     #[clap(long)]
-    peer: Peer,
+    pub peer: Peer,
+    // TODO(MrCroxx): Handle tls configuration.
+    #[clap(long, default_value = "false")]
+    pub tls: bool,
     #[clap(long, num_args = 1.., value_delimiter = ',')]
-    bootstrap_peers: Vec<Peer>,
+    pub bootstrap_peers: Vec<Peer>,
     #[clap(long, value_parser = humantime::parse_duration, default_value = "10s")]
-    provider_eviction_timeout: Duration,
+    pub provider_eviction_timeout: Duration,
     #[clap(long, value_parser = humantime::parse_duration, default_value = "3s")]
-    health_check_timeout: Duration,
+    pub health_check_timeout: Duration,
     #[clap(long, value_parser = humantime::parse_duration, default_value = "1s")]
-    health_check_interval: Duration,
+    pub health_check_interval: Duration,
     #[clap(long, default_value_t = 3)]
-    health_check_peers: usize,
+    pub health_check_peers: usize,
     #[clap(long, value_parser = humantime::parse_duration, default_value = "3s")]
-    sync_timeout: Duration,
+    pub sync_timeout: Duration,
     #[clap(long, value_parser = humantime::parse_duration, default_value = "1s")]
-    sync_interval: Duration,
+    pub sync_interval: Duration,
     #[clap(long, default_value_t = 3)]
-    sync_peers: usize,
+    pub sync_peers: usize,
     #[clap(long, default_value_t = 1)]
-    weight: usize,
+    pub weight: usize,
 
     #[clap(flatten)]
-    s3_config: S3Config,
+    pub s3_config: S3Config,
 
     #[clap(flatten)]
-    cache: CacheConfig,
+    pub cache: CacheConfig,
+
+    #[clap(flatten)]
+    pub logging: LoggingConfig,
 }
 
 pub struct Moat;
@@ -211,7 +218,7 @@ impl Moat {
         let gossip = Gossip::new(runtime.clone(), meta_manager.clone());
         runtime.spawn(async move { gossip.run().await });
 
-        let api = ApiService::new(meta_manager);
+        let api = ApiService::new(meta_manager.clone());
         let resigner = AwsSigV4Resigner::new(AwsSigV4ResignerConfig {
             endpoint: config.s3_config.endpoint.clone(),
             region: config.s3_config.region.clone(),
@@ -247,6 +254,9 @@ impl Moat {
             s3_bucket,
             cache,
             operator,
+            meta_manager,
+            peer: config.peer.clone(),
+            tls: config.tls,
         };
         let mut service = http_proxy_service_with_name(&server.configuration, proxy, "moat");
         service.add_tcp(&config.listen.to_string());
@@ -255,13 +265,17 @@ impl Moat {
     }
 }
 
-#[derive(Debug)]
-pub struct ProxyCtx;
+#[derive(Debug, Default)]
+pub enum UpstreamPeer {
+    #[default]
+    None,
+    S3,
+    Peer(Peer),
+}
 
-impl Default for ProxyCtx {
-    fn default() -> Self {
-        Self
-    }
+#[derive(Debug, Default)]
+pub struct ProxyCtx {
+    upstream_peer: UpstreamPeer,
 }
 
 struct Proxy {
@@ -276,11 +290,38 @@ struct Proxy {
 
     cache: HybridCache<String, Bytes>,
     operator: Operator,
+    meta_manager: MetaManager,
+
+    peer: Peer,
+    tls: bool,
 }
 
 impl Proxy {
-    async fn handle_get_object(&self, bucket: &str, path: &str, session: &mut Session) -> Result<()> {
+    async fn handle_get_object(
+        &self,
+        bucket: &str,
+        path: &str,
+        session: &mut Session,
+        ctx: &mut ProxyCtx,
+    ) -> Result<bool> {
         tracing::debug!(bucket, path, "Handling S3 GetObject request");
+
+        // Find the suitable peer for the request.
+        let peer = match self.meta_manager.locate(path).await {
+            Some(p) => p,
+            None => {
+                tracing::warn!(path, "No available peer found, attempting to fetch from S3 directly");
+                let bytes = self.s3_get_object_directly(path).await?;
+                self.write_get_object_response(session, bytes).await?;
+                return Ok(true);
+            }
+        };
+
+        if peer != self.peer {
+            tracing::debug!(bucket, path, ?peer, "Found another peer for S3 GetObject request");
+            ctx.upstream_peer = UpstreamPeer::Peer(peer);
+            return Ok(false);
+        }
 
         let bytes = match self
             .cache
@@ -305,14 +346,15 @@ impl Proxy {
                     path,
                     "Failed to fetch object from cache, attempting to fetch from S3 directly"
                 );
-                self.operator
-                    .read(path)
-                    .await
-                    .map(|buf| buf.to_bytes())
-                    .map_err(|e| Error::because(ErrorType::InternalError, "s3 get object error", e))?
+                self.s3_get_object_directly(path).await?
             }
         };
 
+        self.write_get_object_response(session, bytes).await?;
+        Ok(true)
+    }
+
+    async fn write_get_object_response(&self, session: &mut Session, bytes: Bytes) -> Result<()> {
         let mut header = ResponseHeader::build_no_case(StatusCode::OK, None)?;
 
         header.append_header(CONTENT_TYPE, "application/octet-stream")?;
@@ -321,8 +363,15 @@ impl Proxy {
 
         session.write_response_header(Box::new(header), true).await?;
         session.write_response_body(Some(bytes), true).await?;
+        todo!()
+    }
 
-        Ok(())
+    async fn s3_get_object_directly(&self, path: &str) -> Result<Bytes> {
+        self.operator
+            .read(path)
+            .await
+            .map(|buf| buf.to_bytes())
+            .map_err(|e| Error::because(ErrorType::InternalError, "s3 get object error", e))
     }
 }
 
@@ -331,20 +380,29 @@ impl ProxyHttp for Proxy {
     type CTX = ProxyCtx;
 
     fn new_ctx(&self) -> Self::CTX {
-        ProxyCtx
+        ProxyCtx::default()
     }
 
-    async fn upstream_peer(&self, session: &mut Session, _: &mut Self::CTX) -> Result<Box<HttpPeer>> {
-        tracing::debug!(header = ?session.req_header(), "looking up upstream peer");
-        let s3_upstream_peer = Box::new(HttpPeer::new(
-            format!("{}:{}", self.s3_host, self.s3_port),
-            self.s3_tls,
-            self.s3_host.clone(),
-        ));
-        Ok(s3_upstream_peer.clone())
+    async fn upstream_peer(&self, _: &mut Session, ctx: &mut Self::CTX) -> Result<Box<HttpPeer>> {
+        tracing::debug!(?ctx, "looking up upstream peer");
+        let upstream_peer = match &ctx.upstream_peer {
+            UpstreamPeer::None => {
+                return Err(Error::explain(
+                    ErrorType::ConnectProxyFailure,
+                    "no upstream peer to route",
+                ));
+            }
+            UpstreamPeer::S3 => Box::new(HttpPeer::new(
+                format!("{}:{}", self.s3_host, self.s3_port),
+                self.s3_tls,
+                self.s3_host.clone(),
+            )),
+            UpstreamPeer::Peer(peer) => Box::new(HttpPeer::new(peer.to_string(), self.tls, peer.host.clone())),
+        };
+        Ok(upstream_peer)
     }
 
-    async fn request_filter(&self, session: &mut Session, _ctx: &mut Self::CTX) -> Result<bool>
+    async fn request_filter(&self, session: &mut Session, ctx: &mut Self::CTX) -> Result<bool>
     where
         Self::CTX: Send + Sync,
     {
@@ -357,9 +415,11 @@ impl ProxyHttp for Proxy {
                 return Ok(true);
             }
             MoatRequest::S3GetObject { bucket, path } if bucket == self.s3_bucket => {
-                return self.handle_get_object(&bucket, &path, session).await.map(|_| true);
+                return self.handle_get_object(&bucket, &path, session, ctx).await;
             }
-            MoatRequest::S3GetObject { .. } | MoatRequest::S3Other => {}
+            MoatRequest::S3GetObject { .. } | MoatRequest::S3Other => {
+                ctx.upstream_peer = UpstreamPeer::S3;
+            }
         }
 
         Ok(false)
@@ -374,11 +434,11 @@ impl ProxyHttp for Proxy {
     where
         Self::CTX: Send + Sync,
     {
-        tracing::debug!(?upstream_request, "Upstream request before filtering");
+        tracing::trace!(?upstream_request, "Upstream request before filtering");
 
         self.resigner.resign(upstream_request);
 
-        tracing::debug!(?upstream_request, "Upstream request after filtering");
+        tracing::trace!(?upstream_request, "Upstream request after filtering");
 
         Ok(())
     }
