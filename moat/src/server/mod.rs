@@ -46,6 +46,8 @@ use crate::{
 enum MoatRequest {
     MoatApi,
     S3GetObject { bucket: String, path: String },
+    // TODO(MrCroxx): cache insertion
+    // S3PutObject {}
     S3Other,
 }
 
