@@ -295,10 +295,14 @@ impl Proxy {
             .await
             .map_err(|e| Error::because(ErrorType::InternalError, "cache get object error", e))
         {
-            Ok(entry) => entry.value().clone(),
+            Ok(entry) => {
+                tracing::debug!(path, "Fetched object from cache");
+                entry.value().clone()
+            }
             Err(e) => {
                 tracing::warn!(
                     ?e,
+                    path,
                     "Failed to fetch object from cache, attempting to fetch from S3 directly"
                 );
                 self.operator
