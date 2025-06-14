@@ -85,6 +85,13 @@ services:
       - dev
       - --weight
       - "1"
+      - --mem
+      - 64MiB
+      - --disk
+      - 1GiB
+      - --dir
+      - .moat/cache/moat-1
+
 
   moat-2:
     build:
@@ -120,6 +127,12 @@ services:
       - dev
       - --weight
       - "2"
+      - --mem
+      - 64MiB
+      - --disk
+      - 1GiB
+      - --dir
+      - .moat/cache/moat-2
 
   moat-3:
     build:
@@ -155,6 +168,12 @@ services:
       - dev
       - --weight
       - "3"
+      - --mem
+      - 64MiB
+      - --disk
+      - 1GiB
+      - --dir
+      - .moat/cache/moat-3
 
   moat-4:
     build:
@@ -190,5 +209,11 @@ services:
       - dev
       - --weight
       - "4"
+      - --mem
+      - 64MiB
+      - --disk
+      - 1GiB
+      - --dir
+      - .moat/cache/moat-4
     profiles:
       - scale
