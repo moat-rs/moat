@@ -31,6 +31,7 @@ services:
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin
     command: server /data --console-address ":9001"
+    user: "${UID}:${GID}"
     volumes:
       - minio:/data
     networks:
@@ -64,6 +65,7 @@ services:
     environment:
       RUST_LOG: debug
       RUST_BACKTRACE: 1
+    user: "${UID}:${GID}"
     volumes:
        - .moat:/moat/.moat
     command:
@@ -106,6 +108,7 @@ services:
     environment:
       RUST_LOG: debug
       RUST_BACKTRACE: 1
+    user: "${UID}:${GID}"
     volumes:
        - .moat:/moat/.moat
     command:
@@ -147,6 +150,7 @@ services:
     environment:
       RUST_LOG: debug
       RUST_BACKTRACE: 1
+    user: "${UID}:${GID}"
     volumes:
        - .moat:/moat/.moat
     command:
@@ -188,6 +192,7 @@ services:
     environment:
       RUST_LOG: debug
       RUST_BACKTRACE: 1
+    user: "${UID}:${GID}"
     volumes:
        - .moat:/moat/.moat
     command:

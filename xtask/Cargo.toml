@@ -12,5 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-[alias]
-x = "run --package xtask --"
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+authors.workspace = true
+license.workspace = true
+readme.workspace = true
+rust-version.workspace = true
+publish = true
+
+[dependencies]
+clap = { workspace = true, features = ["derive"] }
+colored = { workspace = true }
+libc = { workspace = true }
