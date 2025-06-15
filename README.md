@@ -14,10 +14,55 @@ If a HTTP cache service is all your need, please consider it.
 
 ## Development
 
-***Moat*** use [just](https://github.com/casey/just) for building and developing.
+***Moat*** use the way called [cargo-xtask](https://github.com/matklad/cargo-xtask) for development. You only need to setup the rust toolchain to run the tasks.
 
-`just` can be installed via:
+To install rust toolchain with rustup if you didn't set it up:
 
 ```sh
-curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to DEST
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
+
+Then run `cargo x -h` for usage.
+
+E.g.
+
+`cargo x`: Run the default task sult, alias for `cargo x all`.
+
+`cargo x dev up [<service>]`: Start moat cluster development environment.
+`cargo x dev up [<service>]`: Start moat cluster development environment.
+`cargo x dev clean`: Stop moat cluster development environment if it is running, and clean the volumes, logs and caches. (Build caches will NOT be cleaned.)
+
+### Develop moat cluster with a proxy to the internet
+
+In some countries and regions, accessing the complete internet requires the use of a proxy. To ensure that the build and run of moat can access the internet normally without affecting communication between them, the following configuration can be implemented:
+
+- `docker-compose.override.yaml`
+
+```yaml
+services:
+  minio:
+    environment:
+      - no_proxy=${MOAT_NO_PROXY}
+  moat-1: &moat
+    build:
+      args:
+        - HTTP_PROXY={MOAT_PROXY}
+        - HTTPS_PROXY={MOAT_PROXY}
+        - NO_PROXY=${MOAT_NO_PROXY}
+    environment:
+      - http_proxy={MOAT_PROXY}
+      - https_proxy={MOAT_PROXY}
+      - no_proxy=${MOAT_NO_PROXY}
+  moat-2: *moat
+  moat-3: *moat
+  moat-4: *moat
+```
+
+- `.env`
+
+```properties
+MOAT_NO_PROXY=localhost,127.0.0.1,minio,moat,moat-1,moat-2,moat-3,moat-4
+MOAT_PROXY=<YOUR PROXY ENDPOINT>
+```
+
+Additionally, the docker-daemon may also need a proxy to fetch images. Please refer to the [docker official document](https://docs.docker.com/engine/cli/proxy/).
