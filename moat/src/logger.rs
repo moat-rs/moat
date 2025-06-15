@@ -14,26 +14,55 @@
 
 use std::fs::create_dir_all;
 
-use clap::Args;
+use clap::{Args, ValueEnum};
 use serde::{Deserialize, Serialize};
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::{EnvFilter, prelude::*};
 
 use crate::server::MoatConfig;
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, ValueEnum)]
+pub enum LogRotation {
+    Minutely,
+    Hourly,
+    Daily,
+    Never,
+}
+
+impl From<LogRotation> for Rotation {
+    fn from(value: LogRotation) -> Self {
+        match value {
+            LogRotation::Minutely => Rotation::MINUTELY,
+            LogRotation::Hourly => Self::HOURLY,
+            LogRotation::Daily => Self::DAILY,
+            LogRotation::Never => Self::NEVER,
+        }
+    }
+}
+
 #[derive(Debug, Args, Serialize, Deserialize)]
 pub struct LoggingConfig {
     #[clap(long = "log_dir", default_value = ".moat/log/")]
     log_dir: String,
+    #[clap(long = "log_rotation", default_value = "never")]
+    rotation: LogRotation,
+    #[clap(long = "log_color", default_value_t = false)]
+    color: bool,
 }
 
 pub fn init_logger(config: &MoatConfig) {
     let stdout_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stdout);
 
     create_dir_all(&config.logging.log_dir).expect("Failed to create log directory");
-    let prefix = format!("{peer}.log", peer = config.peer);
-    let file_appender = RollingFileAppender::new(Rotation::DAILY, &config.logging.log_dir, prefix);
-    let file_layer = tracing_subscriber::fmt::layer().with_writer(file_appender);
+    let file_appender = RollingFileAppender::builder()
+        .rotation(config.logging.rotation.into())
+        .filename_prefix(config.peer.to_string())
+        .filename_suffix("log")
+        .build(&config.logging.log_dir)
+        .unwrap();
+    let file_layer = tracing_subscriber::fmt::layer()
+        .with_writer(file_appender)
+        .with_ansi(config.logging.color);
 
     tracing_subscriber::registry()
         .with(EnvFilter::from_default_env())
