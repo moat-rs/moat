@@ -15,9 +15,6 @@
 networks:
   dev:
     driver: bridge
-  
-volumes:
-  minio:
 
 services:
   minio:
@@ -28,12 +25,10 @@ services:
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
-      MINIO_ACCESS_KEY: minioadmin
-      MINIO_SECRET_KEY: minioadmin
     command: server /data --console-address ":9001"
     user: "${UID}:${GID}"
     volumes:
-      - minio:/data
+      - .moat/minio:/data
     networks:
       - dev
   init:

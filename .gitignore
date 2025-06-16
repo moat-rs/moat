@@ -1,6 +1,7 @@
 /target
 /.tmp
 /.moat
+*.log
 
 # Ignore docker compose customized configurations.
 *.override.yaml
