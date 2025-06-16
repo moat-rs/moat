@@ -41,6 +41,9 @@ pub struct Up {
 
 pub fn up(args: Up) {
     create_dir_all(".moat").unwrap();
+    create_dir_all(".moat/log").unwrap();
+    create_dir_all(".moat/cache").unwrap();
+    create_dir_all(".moat/minio").unwrap();
 
     let cmd = format!(
         "docker compose up --build -d {services}",
