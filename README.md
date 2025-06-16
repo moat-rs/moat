@@ -50,7 +50,10 @@ services:
   minio:
     environment:
       - no_proxy=${MOAT_NO_PROXY}
-  moat-1: &moat
+  init:
+    environment:
+      - no_proxy=${MOAT_NO_PROXY}
+  moat-cache-1: &moat
     build:
       args:
         - HTTP_PROXY={MOAT_PROXY}
@@ -60,15 +63,18 @@ services:
       - http_proxy={MOAT_PROXY}
       - https_proxy={MOAT_PROXY}
       - no_proxy=${MOAT_NO_PROXY}
-  moat-2: *moat
-  moat-3: *moat
-  moat-4: *moat
+  moat-cache-2: *moat
+  moat-cache-3: *moat
+  moat-cache-4: *moat
+  moat-agent-1: *moat
+  moat-agent-2: *moat
+
 ```
 
 - `.env`
 
 ```properties
-MOAT_NO_PROXY=localhost,127.0.0.1,minio,moat,moat-1,moat-2,moat-3,moat-4
+MOAT_NO_PROXY=localhost,127.0.0.1,minio,moat,moat-cache-1,moat-cache-2,moat-cache-3,moat-cache-4,moat-agent-1,moat-agent-2
 MOAT_PROXY=<YOUR PROXY ENDPOINT>
 ```
 
