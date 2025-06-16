@@ -38,7 +38,7 @@ use crate::{
     logger::LoggingConfig,
     meta::{
         manager::{Gossip, MetaManager, MetaManagerConfig},
-        model::{Identity, Peer},
+        model::{Peer, Role},
     },
     runtime::Runtime,
 };
@@ -113,8 +113,8 @@ pub struct CacheConfig {
 pub struct MoatConfig {
     #[clap(long, default_value = "127.0.0.1:23456")]
     pub listen: SocketAddr,
-    #[clap(long, default_value = "provider")]
-    pub identity: Identity,
+    #[clap(long, default_value = "cache")]
+    pub role: Role,
     #[clap(long)]
     pub peer: Peer,
     // TODO(MrCroxx): Handle tls configuration.
@@ -203,7 +203,7 @@ impl Moat {
         .finish();
 
         let meta_manager = MetaManager::new(MetaManagerConfig {
-            identity: config.identity,
+            role: config.role,
             peer: config.peer.clone(),
             bootstrap_peers: config.bootstrap_peers.clone(),
             provider_eviction_timeout: config.provider_eviction_timeout,
@@ -297,6 +297,8 @@ struct Proxy {
 }
 
 impl Proxy {
+    const MOAT_PEER_HEADER: &str = "X-Moat-Peer";
+
     async fn handle_get_object(
         &self,
         bucket: &str,
@@ -363,7 +365,8 @@ impl Proxy {
 
         session.write_response_header(Box::new(header), true).await?;
         session.write_response_body(Some(bytes), true).await?;
-        todo!()
+
+        Ok(())
     }
 
     async fn s3_get_object_directly(&self, path: &str) -> Result<Bytes> {
@@ -406,8 +409,11 @@ impl ProxyHttp for Proxy {
     where
         Self::CTX: Send + Sync,
     {
-        let request = session.req_header();
-        let request = MoatRequest::parse(request);
+        let header = session.req_header();
+        let request = MoatRequest::parse(header);
+
+        tracing::trace!(?header, ?request, "Receive request");
+
         match request {
             MoatRequest::MoatApi => {
                 tracing::debug!("Handling Moat API request");
@@ -439,6 +445,23 @@ impl ProxyHttp for Proxy {
         self.resigner.resign(upstream_request);
 
         tracing::trace!(?upstream_request, "Upstream request after filtering");
+
+        Ok(())
+    }
+
+    async fn response_filter(
+        &self,
+        _session: &mut Session,
+        upstream_response: &mut ResponseHeader,
+        ctx: &mut Self::CTX,
+    ) -> Result<()>
+    where
+        Self::CTX: Send + Sync,
+    {
+        if let UpstreamPeer::Peer(peer) = &ctx.upstream_peer {
+            tracing::trace!(?peer, "Inserting peer header into response header");
+            upstream_response.insert_header(Self::MOAT_PEER_HEADER, peer.to_string())?;
+        }
 
         Ok(())
     }

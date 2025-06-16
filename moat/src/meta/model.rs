@@ -19,9 +19,9 @@ use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
-pub enum Identity {
-    Proxy,
-    Provider,
+pub enum Role {
+    Agent,
+    Cache,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
