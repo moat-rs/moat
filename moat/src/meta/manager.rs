@@ -38,7 +38,7 @@ pub struct MetaManagerConfig {
     pub role: Role,
     pub peer: Peer,
     pub bootstrap_peers: Vec<Peer>,
-    pub provider_eviction_timeout: Duration,
+    pub peer_eviction_timeout: Duration,
     pub health_check_timeout: Duration,
     pub health_check_interval: Duration,
     pub health_check_peers: usize,
@@ -58,7 +58,7 @@ impl Mutable {
     fn update_locator(&mut self) {
         let weights = self
             .members
-            .providers
+            .caches
             .iter()
             .map(|(peer, membership)| (peer.clone(), membership.weight));
         self.locator = weights.into();
@@ -70,7 +70,7 @@ struct Inner {
     mutable: RwLock<Mutable>,
     role: Role,
     peer: Peer,
-    provider_eviction_timeout: Duration,
+    peer_eviction_timeout: Duration,
     health_check_timeout: Duration,
     health_check_interval: Duration,
     health_check_peers: usize,
@@ -87,7 +87,7 @@ pub struct MetaManager {
 
 impl MetaManager {
     pub fn new(config: MetaManagerConfig) -> Self {
-        let mut providers: BTreeMap<Peer, Membership> = config
+        let mut caches: BTreeMap<Peer, Membership> = config
             .bootstrap_peers
             .into_iter()
             .map(|peer| {
@@ -101,7 +101,7 @@ impl MetaManager {
             })
             .collect();
         if config.role == Role::Cache {
-            providers.insert(
+            caches.insert(
                 config.peer.clone(),
                 Membership {
                     last_seen: SystemTime::now(),
@@ -109,7 +109,7 @@ impl MetaManager {
                 },
             );
         }
-        let members = MemberList { providers };
+        let members = MemberList { caches };
         let locator = ConsistentHash::default();
         let mut mutable = Mutable { members, locator };
         mutable.update_locator();
@@ -118,7 +118,7 @@ impl MetaManager {
             mutable,
             role: config.role,
             peer: config.peer,
-            provider_eviction_timeout: config.provider_eviction_timeout,
+            peer_eviction_timeout: config.peer_eviction_timeout,
             health_check_timeout: config.health_check_timeout,
             health_check_interval: config.health_check_interval,
             health_check_peers: config.health_check_peers,
@@ -137,18 +137,17 @@ impl MetaManager {
 
     pub async fn merge(&self, members: MemberList) -> MemberList {
         let mut mutable = self.inner.mutable.write().await;
-        let current = &mutable.members.providers;
-        let other = &members.providers;
+        let current = &mutable.members.caches;
+        let other = &members.caches;
         tracing::trace!(?current, ?other, "Merging members");
         let mut merged: BTreeMap<Peer, Membership> = BTreeMap::new();
         for (peer, membership) in current.iter().chain(other.iter()) {
             let now = SystemTime::now();
-            // Remove stale providers.
-            if now.duration_since(membership.last_seen).unwrap_or(Duration::ZERO) > self.inner.provider_eviction_timeout
-            {
+            // Remove stale caches.
+            if now.duration_since(membership.last_seen).unwrap_or(Duration::ZERO) > self.inner.peer_eviction_timeout {
                 continue;
             }
-            // Update provider last seen time.
+            // Update cache last seen time.
             match merged.entry(peer.clone()) {
                 Entry::Occupied(mut o) => {
                     if o.get().last_seen < membership.last_seen {
@@ -172,10 +171,10 @@ impl MetaManager {
                 },
             );
         }
-        // Give evicted providers another chance to respond.
+        // Give evicted caches another chance to respond.
         let futures = mutable
             .members
-            .providers
+            .caches
             .iter()
             .filter(|(peer, _)| !merged.contains_key(peer))
             .map(|(peer, membership)| async {
@@ -198,10 +197,10 @@ impl MetaManager {
             .for_each(|(peer, membership)| {
                 merged.insert(peer, membership);
             });
-        mutable.members.providers = merged;
+        mutable.members.caches = merged;
         mutable.update_locator();
         MemberList {
-            providers: mutable.members.providers.clone(),
+            caches: mutable.members.caches.clone(),
         }
     }
 
@@ -213,36 +212,35 @@ impl MetaManager {
     }
 
     pub async fn health_check(&self) {
-        let mut providers = self
+        let mut caches = self
             .members()
             .await
-            .providers
+            .caches
             .into_iter()
             .filter(|(peer, _)| *peer != self.inner.peer)
             .collect_vec();
-        providers.sort_by(|(p1, m1), (p2, m2)| m1.last_seen.cmp(&m2.last_seen).then_with(|| p1.cmp(p2)));
-        let futures =
-            providers
-                .into_iter()
-                .take(self.inner.health_check_peers)
-                .map(|(peer, mut membership)| async move {
-                    ApiClient::new(peer.clone())
-                        .with_timeout(self.inner.health_check_timeout)
-                        .health()
-                        .await
-                        .then_some((peer, {
-                            membership.last_seen = SystemTime::now();
-                            membership
-                        }))
-                });
+        caches.sort_by(|(p1, m1), (p2, m2)| m1.last_seen.cmp(&m2.last_seen).then_with(|| p1.cmp(p2)));
+        let futures = caches
+            .into_iter()
+            .take(self.inner.health_check_peers)
+            .map(|(peer, mut membership)| async move {
+                ApiClient::new(peer.clone())
+                    .with_timeout(self.inner.health_check_timeout)
+                    .health()
+                    .await
+                    .then_some((peer, {
+                        membership.last_seen = SystemTime::now();
+                        membership
+                    }))
+            });
         let res = join_all(futures).await;
         let mut mutable = self.inner.mutable.write().await;
         // TODO(MrCroxx): handle unhealthy peers with SWIM algorithm
         res.into_iter().flatten().for_each(|(peer, membership)| {
-            mutable.members.providers.insert(peer, membership);
+            mutable.members.caches.insert(peer, membership);
         });
         if self.inner.role == Role::Cache {
-            mutable.members.providers.insert(
+            mutable.members.caches.insert(
                 self.inner.peer.clone(),
                 Membership {
                     last_seen: SystemTime::now(),
@@ -253,16 +251,16 @@ impl MetaManager {
     }
 
     pub async fn sync(&self) {
-        let providers = self
+        let caches = self
             .members()
             .await
-            .providers
+            .caches
             .into_iter()
             .filter_map(|(peer, membership)| {
                 if SystemTime::now()
                     .duration_since(membership.last_seen)
                     .unwrap_or(Duration::ZERO)
-                    < self.inner.provider_eviction_timeout
+                    < self.inner.peer_eviction_timeout
                 {
                     Some(peer)
                 } else {
@@ -272,11 +270,7 @@ impl MetaManager {
             .filter(|peer| *peer != self.inner.peer)
             .collect_vec();
 
-        let peers = {
-            providers
-                .choose_multiple(&mut rng(), self.inner.sync_peers)
-                .collect_vec()
-        };
+        let peers = { caches.choose_multiple(&mut rng(), self.inner.sync_peers).collect_vec() };
         let members = self.members().await;
         let futures = peers.into_iter().map(|peer| {
             let members = members.clone();
@@ -294,13 +288,13 @@ impl MetaManager {
     }
 
     pub async fn observe(&self) {
-        let providers = self.members().await.providers.into_iter().collect_vec();
-        if providers.is_empty() {
-            tracing::warn!("No providers available.");
+        let caches = self.members().await.caches.into_iter().collect_vec();
+        if caches.is_empty() {
+            tracing::warn!("No caches available.");
             return;
         }
         let peer = {
-            let (peer, _) = providers.choose(&mut rng()).unwrap();
+            let (peer, _) = caches.choose(&mut rng()).unwrap();
             peer.clone()
         };
         if let Some(members) = ApiClient::new(peer.clone())

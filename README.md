@@ -32,7 +32,7 @@ E.g.
 `cargo x dev up [<service>]`: Start moat cluster development environment.
 `cargo x dev clean`: Stop moat cluster development environment if it is running, and clean the volumes, logs and caches. (Build caches will NOT be cleaned.)
 
-> It will be more smoother with the following settings:
+> ***HINT:*** It will be much smoother with the following alias:
 >
 > ```sh
 > alias x="cargo x"

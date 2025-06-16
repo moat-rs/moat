@@ -95,7 +95,7 @@ pub struct Membership {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemberList {
-    pub providers: BTreeMap<Peer, Membership>,
+    pub caches: BTreeMap<Peer, Membership>,
 }
 
 #[cfg(test)]
@@ -113,29 +113,29 @@ mod tests {
 
     #[test]
     fn test_member_list_serde_json() {
-        let mut providers = BTreeMap::new();
-        providers.insert(
+        let mut caches = BTreeMap::new();
+        caches.insert(
             "moat-1:23456".parse().unwrap(),
             Membership {
                 last_seen: SystemTime::now(),
                 weight: 1,
             },
         );
-        providers.insert(
+        caches.insert(
             "moat-2:23457".parse().unwrap(),
             Membership {
                 last_seen: SystemTime::now(),
                 weight: 1,
             },
         );
-        providers.insert(
+        caches.insert(
             "moat-3:23458".parse().unwrap(),
             Membership {
                 last_seen: SystemTime::now(),
                 weight: 1,
             },
         );
-        let m = MemberList { providers };
+        let m = MemberList { caches };
         let json = serde_json::to_string(&m).unwrap();
         let md = serde_json::from_str::<MemberList>(&json).unwrap();
         assert_eq!(m, md);
