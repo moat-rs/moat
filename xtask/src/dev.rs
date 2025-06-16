@@ -46,7 +46,7 @@ pub fn up(args: Up) {
     create_dir_all(".moat/minio").unwrap();
 
     let cmd = format!(
-        "docker compose up --build -d {services}",
+        r#"docker compose up --build -d {services}"#,
         services = args.services.join(" ")
     );
     run_with_env(&cmd, env());
@@ -58,11 +58,14 @@ pub struct Down {
 }
 
 pub fn down(args: Down) {
-    let cmd = format!("docker compose down {services}", services = args.services.join(" "));
+    let cmd = format!(
+        r#"docker compose --profile "*" down {services}"#,
+        services = args.services.join(" ")
+    );
     run_with_env(&cmd, env());
 }
 
 pub fn clean() {
-    run_with_env("docker compose down --volumes --remove-orphans", env());
+    run_with_env(r#"docker compose --profile "*" down --volumes --remove-orphans"#, env());
     run("rm -rf .moat");
 }

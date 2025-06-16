@@ -139,6 +139,7 @@ impl MetaManager {
         let mut mutable = self.inner.mutable.write().await;
         let current = &mutable.members.providers;
         let other = &members.providers;
+        tracing::trace!(?current, ?other, "Merging members");
         let mut merged: BTreeMap<Peer, Membership> = BTreeMap::new();
         for (peer, membership) in current.iter().chain(other.iter()) {
             let now = SystemTime::now();
@@ -151,7 +152,10 @@ impl MetaManager {
             match merged.entry(peer.clone()) {
                 Entry::Occupied(mut o) => {
                     if o.get().last_seen < membership.last_seen {
+                        tracing::trace!(?peer, ?membership, "Updating membership");
                         o.insert(membership.clone());
+                    } else {
+                        tracing::trace!(?peer, ?membership, "Skip updating stale membership.");
                     }
                 }
                 Entry::Vacant(v) => {
@@ -201,6 +205,13 @@ impl MetaManager {
         }
     }
 
+    pub async fn replace(&self, members: MemberList) {
+        tracing::trace!(?members, "Replacing members");
+        let mut mutable = self.inner.mutable.write().await;
+        mutable.members = members;
+        mutable.update_locator();
+    }
+
     pub async fn health_check(&self) {
         let mut providers = self
             .members()
@@ -230,13 +241,15 @@ impl MetaManager {
         res.into_iter().flatten().for_each(|(peer, membership)| {
             mutable.members.providers.insert(peer, membership);
         });
-        mutable.members.providers.insert(
-            self.inner.peer.clone(),
-            Membership {
-                last_seen: SystemTime::now(),
-                weight: self.inner.weight,
-            },
-        );
+        if self.inner.role == Role::Cache {
+            mutable.members.providers.insert(
+                self.inner.peer.clone(),
+                Membership {
+                    last_seen: SystemTime::now(),
+                    weight: self.inner.weight,
+                },
+            );
+        }
     }
 
     pub async fn sync(&self) {
@@ -280,6 +293,28 @@ impl MetaManager {
         }
     }
 
+    pub async fn observe(&self) {
+        let providers = self.members().await.providers.into_iter().collect_vec();
+        if providers.is_empty() {
+            tracing::warn!("No providers available.");
+            return;
+        }
+        let peer = {
+            let (peer, _) = providers.choose(&mut rng()).unwrap();
+            peer.clone()
+        };
+        if let Some(members) = ApiClient::new(peer.clone())
+            .with_timeout(self.inner.sync_timeout)
+            .members()
+            .await
+        {
+            tracing::trace!(?peer, ?members, "Observed members from peer");
+            self.replace(members).await;
+        } else {
+            tracing::warn!("Failed to fetch members from peer: {}", peer);
+        }
+    }
+
     pub fn health_check_timeout(&self) -> Duration {
         self.inner.health_check_timeout
     }
@@ -319,6 +354,36 @@ impl Gossip {
             loop {
                 tokio::time::sleep(meta.inner.sync_interval).await;
                 meta.sync().await;
+            }
+        });
+    }
+}
+
+#[derive(Debug)]
+pub struct Observer {
+    runtime: Runtime,
+    meta_manager: MetaManager,
+}
+
+impl Observer {
+    pub fn new(runtime: Runtime, meta_manager: MetaManager) -> Self {
+        Self { runtime, meta_manager }
+    }
+
+    pub async fn run(self) {
+        // let meta = self.meta_manager.clone();
+        // self.runtime.spawn(async move {
+        //     loop {
+        //         tokio::time::sleep(meta.inner.health_check_interval).await;
+        //         meta.health_check().await;
+        //     }
+        // });
+
+        let meta = self.meta_manager.clone();
+        self.runtime.spawn(async move {
+            loop {
+                tokio::time::sleep(meta.inner.health_check_interval).await;
+                meta.observe().await;
             }
         });
     }

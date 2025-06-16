@@ -47,12 +47,12 @@ services:
       mc mb minio/dev;
       "
  
-  moat-1:
+  moat-cache-1:
     build:
       context: .
       dockerfile: Dockerfile
     image: moat:latest
-    container_name: moat-1
+    container_name: moat-cache-1
     networks:
       - dev
     ports:
@@ -67,9 +67,9 @@ services:
       - --listen
       - 0.0.0.0:23456
       - --peer
-      - moat-1:23456
+      - moat-cache-1:23456
       - --bootstrap-peers
-      - moat-1:23456,moat-2:23457,moat-3:23458
+      - moat-cache-1:23456,moat-cache-2:23457,moat-cache-3:23458
       - --s3-endpoint
       - http://minio:9000
       - --s3-access-key-id
@@ -87,15 +87,15 @@ services:
       - --disk
       - 1GiB
       - --dir
-      - .moat/cache/moat-1
+      - .moat/cache/moat-cache-1
 
 
-  moat-2:
+  moat-cache-2:
     build:
       context: .
       dockerfile: Dockerfile
     image: moat:latest
-    container_name: moat-2
+    container_name: moat-cache-2
     networks:
       - dev
     ports:
@@ -110,9 +110,9 @@ services:
       - --listen
       - 0.0.0.0:23457
       - --peer
-      - moat-2:23457
+      - moat-cache-2:23457
       - --bootstrap-peers
-      - moat-1:23456,moat-2:23457,moat-3:23458
+      - moat-cache-1:23456,moat-cache-2:23457,moat-cache-3:23458
       - --s3-endpoint
       - http://minio:9000
       - --s3-access-key-id
@@ -130,14 +130,14 @@ services:
       - --disk
       - 1GiB
       - --dir
-      - .moat/cache/moat-2
+      - .moat/cache/moat-cache-2
 
-  moat-3:
+  moat-cache-3:
     build:
       context: .
       dockerfile: Dockerfile
     image: moat:latest
-    container_name: moat-3
+    container_name: moat-cache-3
     networks:
       - dev
     ports:
@@ -152,9 +152,9 @@ services:
       - --listen
       - 0.0.0.0:23458
       - --peer
-      - moat-3:23458
+      - moat-cache-3:23458
       - --bootstrap-peers
-      - moat-1:23456,moat-2:23457,moat-3:23458
+      - moat-cache-1:23456,moat-cache-2:23457,moat-cache-3:23458
       - --s3-endpoint
       - http://minio:9000
       - --s3-access-key-id
@@ -172,14 +172,14 @@ services:
       - --disk
       - 1GiB
       - --dir
-      - .moat/cache/moat-3
+      - .moat/cache/moat-cache-3
 
-  moat-4:
+  moat-cache-4:
     build:
       context: .
       dockerfile: Dockerfile
     image: moat:latest
-    container_name: moat-4
+    container_name: moat-cache-4
     networks:
       - dev
     ports:
@@ -194,9 +194,9 @@ services:
       - --listen
       - 0.0.0.0:23459
       - --peer
-      - moat-4:23459
+      - moat-cache-4:23459
       - --bootstrap-peers
-      - moat-1:23456
+      - moat-cache-1:23456
       - --s3-endpoint
       - http://minio:9000
       - --s3-access-key-id
@@ -214,6 +214,77 @@ services:
       - --disk
       - 1GiB
       - --dir
-      - .moat/cache/moat-4
+      - .moat/cache/moat-cache-4
     profiles:
       - scale
+
+  moat-agent-1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: moat:latest
+    container_name: moat-agent-1
+    networks:
+      - dev
+    ports:
+      - "23551:23551"
+    environment:
+      RUST_LOG: debug
+      RUST_BACKTRACE: 1
+    user: "${UID}:${GID}"
+    volumes:
+      - .moat:/moat/.moat
+    command:
+      - --listen
+      - 0.0.0.0:23551
+      - --peer
+      - moat-agent-1:23551
+      - --bootstrap-peers
+      - moat-cache-1:23456
+      - --s3-endpoint
+      - http://minio:9000
+      - --s3-access-key-id
+      - minioadmin
+      - --s3-secret-access-key
+      - minioadmin
+      - --s3-region
+      - us-east-1
+      - --s3-bucket
+      - dev
+      - --role
+      - agent
+  moat-agent-2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: moat:latest
+    container_name: moat-agent-2
+    networks:
+      - dev
+    ports:
+      - "23552:23552"
+    environment:
+      RUST_LOG: debug
+      RUST_BACKTRACE: 1
+    user: "${UID}:${GID}"
+    volumes:
+      - .moat:/moat/.moat
+    command:
+      - --listen
+      - 0.0.0.0:23552
+      - --peer
+      - moat-agent-2:23552
+      - --bootstrap-peers
+      - moat-cache-3:23458
+      - --s3-endpoint
+      - http://minio:9000
+      - --s3-access-key-id
+      - minioadmin
+      - --s3-secret-access-key
+      - minioadmin
+      - --s3-region
+      - us-east-1
+      - --s3-bucket
+      - dev
+      - --role
+      - agent

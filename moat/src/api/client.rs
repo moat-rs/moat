@@ -85,4 +85,32 @@ impl ApiClient {
             }
         }
     }
+
+    pub async fn members(&self) -> Option<MemberList> {
+        let response = match self
+            .client()
+            .get(format!("http://{peer}/members", peer = self.peer))
+            .header(ApiService::MOAT_API_HEADER, "true")
+            .send()
+            .await
+        {
+            Ok(r) if r.status().is_success() => r,
+            Ok(r) => {
+                tracing::error!(peer = ?self.peer, status = ?r.status(), "Failed to get members from peer");
+                return None;
+            }
+            Err(e) => {
+                tracing::error!(peer = ?self.peer, ?e, "Failed to get members from peer");
+                return None;
+            }
+        };
+
+        match response.json::<MemberList>().await {
+            Ok(ms) => Some(ms),
+            Err(e) => {
+                tracing::error!(peer = ?self.peer, ?e, "Failed to parse memberlist");
+                None
+            }
+        }
+    }
 }
