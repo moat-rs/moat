@@ -28,14 +28,14 @@ use crate::{
     api::client::ApiClient,
     meta::{
         hash::ConsistentHash,
-        model::{Identity, MemberList, Membership, Peer},
+        model::{MemberList, Membership, Peer, Role},
     },
     runtime::Runtime,
 };
 
 #[derive(Debug)]
 pub struct MetaManagerConfig {
-    pub identity: Identity,
+    pub role: Role,
     pub peer: Peer,
     pub bootstrap_peers: Vec<Peer>,
     pub provider_eviction_timeout: Duration,
@@ -68,7 +68,7 @@ impl Mutable {
 #[derive(Debug)]
 struct Inner {
     mutable: RwLock<Mutable>,
-    identity: Identity,
+    role: Role,
     peer: Peer,
     provider_eviction_timeout: Duration,
     health_check_timeout: Duration,
@@ -100,7 +100,7 @@ impl MetaManager {
                 )
             })
             .collect();
-        if config.identity == Identity::Provider {
+        if config.role == Role::Cache {
             providers.insert(
                 config.peer.clone(),
                 Membership {
@@ -116,7 +116,7 @@ impl MetaManager {
         let mutable = RwLock::new(mutable);
         let inner = Arc::new(Inner {
             mutable,
-            identity: config.identity,
+            role: config.role,
             peer: config.peer,
             provider_eviction_timeout: config.provider_eviction_timeout,
             health_check_timeout: config.health_check_timeout,
@@ -159,7 +159,7 @@ impl MetaManager {
                 }
             }
         }
-        if self.inner.identity == Identity::Provider {
+        if self.inner.role == Role::Cache {
             merged.insert(
                 self.inner.peer.clone(),
                 Membership {
