@@ -123,7 +123,7 @@ pub struct MoatConfig {
     #[clap(long, num_args = 1.., value_delimiter = ',')]
     pub bootstrap_peers: Vec<Peer>,
     #[clap(long, value_parser = humantime::parse_duration, default_value = "10s")]
-    pub provider_eviction_timeout: Duration,
+    pub peer_eviction_timeout: Duration,
     #[clap(long, value_parser = humantime::parse_duration, default_value = "3s")]
     pub health_check_timeout: Duration,
     #[clap(long, value_parser = humantime::parse_duration, default_value = "1s")]
@@ -206,7 +206,7 @@ impl Moat {
             role: config.role,
             peer: config.peer.clone(),
             bootstrap_peers: config.bootstrap_peers.clone(),
-            provider_eviction_timeout: config.provider_eviction_timeout,
+            peer_eviction_timeout: config.peer_eviction_timeout,
             health_check_timeout: config.health_check_timeout,
             health_check_interval: config.health_check_interval,
             health_check_peers: config.health_check_peers,
