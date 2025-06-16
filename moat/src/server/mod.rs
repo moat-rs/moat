@@ -37,7 +37,7 @@ use crate::{
     },
     logger::LoggingConfig,
     meta::{
-        manager::{Gossip, MetaManager, MetaManagerConfig},
+        manager::{Gossip, MetaManager, MetaManagerConfig, Observer},
         model::{Peer, Role},
     },
     runtime::Runtime,
@@ -215,8 +215,16 @@ impl Moat {
             sync_peers: config.sync_peers,
             weight: config.weight,
         });
-        let gossip = Gossip::new(runtime.clone(), meta_manager.clone());
-        runtime.spawn(async move { gossip.run().await });
+        match config.role {
+            Role::Agent => {
+                let observer = Observer::new(runtime.clone(), meta_manager.clone());
+                runtime.spawn(async move { observer.run().await });
+            }
+            Role::Cache => {
+                let gossip = Gossip::new(runtime.clone(), meta_manager.clone());
+                runtime.spawn(async move { gossip.run().await });
+            }
+        }
 
         let api = ApiService::new(meta_manager.clone());
         let resigner = AwsSigV4Resigner::new(AwsSigV4ResignerConfig {
@@ -252,6 +260,7 @@ impl Moat {
             s3_port,
             s3_tls,
             s3_bucket,
+            role: config.role,
             cache,
             operator,
             meta_manager,
@@ -288,6 +297,7 @@ struct Proxy {
     s3_tls: bool,
     s3_bucket: String,
 
+    role: Role,
     cache: HybridCache<String, Bytes>,
     operator: Operator,
     meta_manager: MetaManager,
@@ -308,6 +318,8 @@ impl Proxy {
     ) -> Result<bool> {
         tracing::debug!(bucket, path, "Handling S3 GetObject request");
 
+        // TODO(MrCroxx): Agent check cache first, and use fetch for cache refilling.
+
         // Find the suitable peer for the request.
         let peer = match self.meta_manager.locate(path).await {
             Some(p) => p,
@@ -325,31 +337,40 @@ impl Proxy {
             return Ok(false);
         }
 
-        let bytes = match self
-            .cache
-            .fetch(path.to_string(), || {
-                let op = self.operator.clone();
-                let path = path.to_string();
-                async move {
-                    let res = op.read(&path).await;
-                    res.map(|buf| buf.to_bytes()).map_err(anyhow::Error::from)
-                }
-            })
-            .await
-            .map_err(|e| Error::because(ErrorType::InternalError, "cache get object error", e))
-        {
-            Ok(entry) => {
-                tracing::debug!(path, "Fetched object from cache");
-                entry.value().clone()
-            }
-            Err(e) => {
+        let bytes = match self.role {
+            Role::Agent => {
                 tracing::warn!(
-                    ?e,
                     path,
-                    "Failed to fetch object from cache, attempting to fetch from S3 directly"
+                    "Agent cannot find available cache peer to serve the request, attempting to fetch from S3 directly"
                 );
                 self.s3_get_object_directly(path).await?
             }
+            Role::Cache => match self
+                .cache
+                .fetch(path.to_string(), || {
+                    let op = self.operator.clone();
+                    let path = path.to_string();
+                    async move {
+                        let res = op.read(&path).await;
+                        res.map(|buf| buf.to_bytes()).map_err(anyhow::Error::from)
+                    }
+                })
+                .await
+                .map_err(|e| Error::because(ErrorType::InternalError, "cache get object error", e))
+            {
+                Ok(entry) => {
+                    tracing::debug!(path, "Fetched object from cache");
+                    entry.value().clone()
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        ?e,
+                        path,
+                        "Failed to fetch object from cache, attempting to fetch from S3 directly"
+                    );
+                    self.s3_get_object_directly(path).await?
+                }
+            },
         };
 
         self.write_get_object_response(session, bytes).await?;
@@ -458,9 +479,24 @@ impl ProxyHttp for Proxy {
     where
         Self::CTX: Send + Sync,
     {
-        if let UpstreamPeer::Peer(peer) = &ctx.upstream_peer {
-            tracing::trace!(?peer, "Inserting peer header into response header");
-            upstream_response.insert_header(Self::MOAT_PEER_HEADER, peer.to_string())?;
+        match self.role {
+            Role::Agent => {
+                if let Some(value) = upstream_response.headers.get(Self::MOAT_PEER_HEADER) {
+                    tracing::warn!(
+                        ?value,
+                        "Receive peer redirect hint from cache peer, update memberlist at once."
+                    );
+                    // TODO(MrCroxx): Observe in another task.
+                    self.meta_manager.observe().await;
+                    upstream_response.remove_header(Self::MOAT_PEER_HEADER);
+                }
+            }
+            Role::Cache => {
+                if let UpstreamPeer::Peer(peer) = &ctx.upstream_peer {
+                    tracing::trace!(?peer, "Inserting peer header into response header");
+                    upstream_response.insert_header(Self::MOAT_PEER_HEADER, peer.to_string())?;
+                }
+            }
         }
 
         Ok(())

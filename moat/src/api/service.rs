@@ -65,15 +65,17 @@ async fn health(Query(params): Query<HealthParams>, Data(meta_manager): Data<&Me
 
 #[handler]
 async fn members(Data(meta_manager): Data<&MetaManager>) -> Response {
-    tracing::debug!("get members");
+    tracing::debug!("get members req");
     let members = meta_manager.members().await;
+    tracing::debug!(?members, "get members resp");
     Json(members).into_response()
 }
 
 #[handler]
 async fn sync(Json(ms): Json<MemberList>, Data(meta_manager): Data<&MetaManager>) -> Response {
-    tracing::debug!(members = ?ms, "sync members");
+    tracing::debug!(members = ?ms, "sync members req");
     let merged = meta_manager.merge(ms).await;
+    tracing::debug!(?merged, "sync members resp");
     Json(merged).into_response()
 }
 

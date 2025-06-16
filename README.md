@@ -32,6 +32,13 @@ E.g.
 `cargo x dev up [<service>]`: Start moat cluster development environment.
 `cargo x dev clean`: Stop moat cluster development environment if it is running, and clean the volumes, logs and caches. (Build caches will NOT be cleaned.)
 
+> It will be more smoother with the following settings:
+>
+> ```sh
+> alias x="cargo x"
+> alias xd="cargo x dev"
+> ```
+
 ### Develop moat cluster with a proxy to the internet
 
 In some countries and regions, accessing the complete internet requires the use of a proxy. To ensure that the build and run of moat can access the internet normally without affecting communication between them, the following configuration can be implemented:
