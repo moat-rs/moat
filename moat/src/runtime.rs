@@ -66,7 +66,6 @@ impl Runtime {
         Self(Arc::new(RuntimeInner(ManuallyDrop::new(inner))))
     }
 
-    #[expect(unused)]
     pub fn handle(&self) -> Handle {
         Handle {
             inner: self.0.handle().clone(),

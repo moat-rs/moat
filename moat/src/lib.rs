@@ -12,20 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use clap::Parser;
-
-use moat::{
-    logger::init_logger,
-    server::{Moat, MoatConfig},
-};
-
-fn main() {
-    let config = MoatConfig::parse();
-
-    init_logger(&config);
-    tracing::info!(?config, "Start Moat");
-
-    if let Err(e) = Moat::run(config) {
-        tracing::error!(?e, "Failed to run Moat");
-    }
-}
+pub mod api;
+pub mod aws;
+pub mod logger;
+pub mod meta;
+pub mod runtime;
+pub mod server;

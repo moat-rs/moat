@@ -55,3 +55,11 @@ url = { workspace = true, features = ["serde"] }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+
+[lib]
+name = "moat"
+path = "src/lib.rs"
+
+[[bin]]
+name = "moat"
+path = "src/main.rs"
