@@ -14,7 +14,7 @@
 
 [workspace]
 resolver = "3"
-members = ["examples", "moat", "xtask"]
+members = ["examples", "moat", "moaterm", "xtask"]
 
 [workspace.package]
 version = "0.0.0"

@@ -99,7 +99,6 @@ where
     /// If the node already exists, it will sub the specified number of virtual nodes (vnodes) from the existing node.
     ///
     /// Return the new virtual node count for the node.
-    #[cfg_attr(not(test), expect(unused))]
     pub fn sub(&mut self, node: &T, vnodes: usize) -> usize {
         let lp = self.lpos(node);
         let rp = self.rpos(node);
@@ -119,7 +118,6 @@ where
     /// Insert a node into the consistent hash ring with the specified number of virtual nodes (vnodes).
     ///
     /// If the node already exists, it will replace the existing node with the new one.
-    #[cfg_attr(not(test), expect(unused))]
     pub fn insert(&mut self, node: T, vnodes: usize) {
         let lp = self.lpos(&node);
         let rp = self.rpos(&node);
@@ -136,7 +134,6 @@ where
     }
 
     /// Update a node in the consistent hash ring with the specified number of virtual nodes (vnodes).
-    #[cfg_attr(not(test), expect(unused))]
     pub fn update(&mut self, node: T, vnodes: usize) {
         let lp = self.lpos(&node);
         let rp = self.rpos(&node);
@@ -153,7 +150,6 @@ where
     }
 
     /// Remove a node from the consistent hash ring.
-    #[cfg_attr(not(test), expect(unused))]
     pub fn remove(&mut self, node: &T) {
         let lp = self.lpos(node);
         let rp = self.rpos(node);
@@ -168,7 +164,6 @@ where
     }
 
     /// Get the total nodes.
-    #[cfg_attr(not(test), expect(unused))]
     pub fn nodes(&self) -> usize {
         self.mapping
             .iter()
@@ -183,13 +178,11 @@ where
     }
 
     /// Get the total vnodes.
-    #[cfg_attr(not(test), expect(unused))]
     pub fn vnodes(&self) -> usize {
         self.mapping.len()
     }
 
     /// Get the number of vnodes for the given node.
-    #[cfg_attr(not(test), expect(unused))]
     pub fn vnodes_by(&self, node: &T) -> usize {
         let lp = self.lpos(node);
         let rp = self.rpos(node);

@@ -59,7 +59,7 @@ services:
       - "23456:23456"
     environment:
       RUST_LOG: debug
-      RUST_BACKTRACE: 1
+      RUST_BACKTRACE: full
     user: "${UID}:${GID}"
     volumes:
        - .moat:/moat/.moat
@@ -102,7 +102,7 @@ services:
       - "23457:23457"
     environment:
       RUST_LOG: debug
-      RUST_BACKTRACE: 1
+      RUST_BACKTRACE: full
     user: "${UID}:${GID}"
     volumes:
        - .moat:/moat/.moat
@@ -144,7 +144,7 @@ services:
       - "23458:23458"
     environment:
       RUST_LOG: debug
-      RUST_BACKTRACE: 1
+      RUST_BACKTRACE: full
     user: "${UID}:${GID}"
     volumes:
        - .moat:/moat/.moat
@@ -186,7 +186,7 @@ services:
       - "23459:23459"
     environment:
       RUST_LOG: debug
-      RUST_BACKTRACE: 1
+      RUST_BACKTRACE: full
     user: "${UID}:${GID}"
     volumes:
        - .moat:/moat/.moat
@@ -230,7 +230,7 @@ services:
       - "23551:23551"
     environment:
       RUST_LOG: debug
-      RUST_BACKTRACE: 1
+      RUST_BACKTRACE: full
     user: "${UID}:${GID}"
     volumes:
       - .moat:/moat/.moat
@@ -265,7 +265,7 @@ services:
       - "23552:23552"
     environment:
       RUST_LOG: debug
-      RUST_BACKTRACE: 1
+      RUST_BACKTRACE: full
     user: "${UID}:${GID}"
     volumes:
       - .moat:/moat/.moat
@@ -288,3 +288,18 @@ services:
       - dev
       - --role
       - agent
+
+  moaterm:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: moat:latest
+    container_name: moaterm
+    networks:
+      - dev
+    environment:
+      RUST_LOG: debug
+      RUST_BACKTRACE: full
+    profiles:
+      - tui
+    entrypoint: ["./moaterm"]

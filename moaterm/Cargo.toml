@@ -1,0 +1,17 @@
+[package]
+name = "moaterm"
+version = "0.1.0"
+description = "Terminal UI for moat - moat for your object store"
+authors = ["MrCroxx <mrcroxx@outlook.com>"]
+license = "MIT"
+edition = "2024"
+
+[dependencies]
+color-eyre = "0.6.3"
+crossterm = { version = "0.28.1", features = ["event-stream"] }
+futures = { workspace = true }
+ratatui = "0.29.0"
+tokio = { workspace = true, features = ["full"] }
+clap = { workspace = true, features = ["derive"] }
+moat = { path = "../moat" }
+itertools = { workspace = true }
