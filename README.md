@@ -56,12 +56,12 @@ services:
   moat-cache-1: &moat
     build:
       args:
-        - HTTP_PROXY={MOAT_PROXY}
-        - HTTPS_PROXY={MOAT_PROXY}
+        - HTTP_PROXY=${MOAT_PROXY}
+        - HTTPS_PROXY=${MOAT_PROXY}
         - NO_PROXY=${MOAT_NO_PROXY}
     environment:
-      - http_proxy={MOAT_PROXY}
-      - https_proxy={MOAT_PROXY}
+      - http_proxy=${MOAT_PROXY}
+      - https_proxy=${MOAT_PROXY}
       - no_proxy=${MOAT_NO_PROXY}
   moat-cache-2: *moat
   moat-cache-3: *moat
