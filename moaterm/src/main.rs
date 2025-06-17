@@ -7,6 +7,7 @@ pub mod app;
 pub mod event;
 pub mod peer;
 pub mod ui;
+pub mod worker;
 
 #[derive(Debug, Parser)]
 pub struct Args {

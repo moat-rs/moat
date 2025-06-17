@@ -300,6 +300,5 @@ services:
     environment:
       RUST_LOG: debug
       RUST_BACKTRACE: full
-    profiles:
-      - tui
-    entrypoint: ["./moaterm"]
+    user: "${UID}:${GID}"
+    entrypoint: ["tail", "-f", "/dev/null"]

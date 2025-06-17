@@ -3,12 +3,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use moat::meta::model::Peer;
 
 #[derive(Debug)]
-pub struct PeerSelector {
+pub struct PeerTable {
     pub peers: BTreeSet<Peer>,
     pub selected: Option<Peer>,
 }
 
-impl PeerSelector {
+impl PeerTable {
     pub fn new() -> Self {
         Self {
             peers: BTreeSet::new(),
@@ -32,7 +32,7 @@ impl PeerSelector {
         self.selected = None;
     }
 
-    pub fn min_width(&self) -> usize {
-        2 + self.peers.iter().map(|peer| peer.to_string().len()).max().unwrap_or(0)
+    pub fn max_peer_len(&self) -> usize {
+        self.peers.iter().map(|peer| peer.to_string().len()).max().unwrap_or(0)
     }
 }

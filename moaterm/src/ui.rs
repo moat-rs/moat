@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{Block, BorderType, List, Paragraph, Widget},
 };
 
-use crate::{app::App, peer::selector::PeerSelector};
+use crate::{app::App, peer::table::PeerTable};
 
 impl Widget for &App {
     /// Renders the user interface widgets.
@@ -24,32 +24,12 @@ impl Widget for &App {
         let rects = Layout::default()
             .direction(Direction::Horizontal)
             .constraints(&[
-                Constraint::Min(self.peer_selector.min_width() as _),
+                Constraint::Min(self.peer_selector.max_peer_len() as _),
                 Constraint::Percentage(100),
             ])
             .split(block.inner(area));
 
         block.render(area, buf);
         self.peer_selector.render(rects[0], buf);
-    }
-}
-
-impl Widget for &PeerSelector {
-    fn render(self, area: Rect, buf: &mut Buffer)
-    where
-        Self: Sized,
-    {
-        let block = Block::bordered()
-            .title(" Peers ")
-            .title_alignment(Alignment::Center)
-            .border_type(BorderType::Plain);
-
-        let peers = self.peers.iter().map(|peer| peer.to_string()).collect_vec();
-        let list = List::new(peers);
-
-        let inner = block.inner(area);
-
-        block.render(area, buf);
-        list.render(inner, buf);
     }
 }

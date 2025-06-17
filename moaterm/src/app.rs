@@ -1,6 +1,6 @@
 use crate::{
     event::{AppEvent, Event, EventHandler},
-    peer::selector::PeerSelector,
+    peer::table::PeerTable,
 };
 use moat::meta::model::Peer;
 use ratatui::{
@@ -18,12 +18,12 @@ pub struct App {
     /// Event handler.
     pub events: EventHandler,
 
-    pub peer_selector: PeerSelector,
+    pub peer_selector: PeerTable,
 }
 
 impl Default for App {
     fn default() -> Self {
-        let peer_selector = PeerSelector::new();
+        let peer_selector = PeerTable::new();
 
         Self {
             running: true,
