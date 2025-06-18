@@ -234,9 +234,9 @@ dependencies = [
 
 [[package]]
 name = "autocfg"
-version = "1.4.0"
+version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ace50bade8e6234aa140d9a2f552bbee1db4d353f69b8217bc503490fc1a9f26"
+checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "backon"
@@ -900,7 +900,7 @@ dependencies = [
 [[package]]
 name = "foyer"
 version = "0.17.3"
-source = "git+https://github.com/foyer-rs/foyer?rev=29585648a5ff95f08f940cb54d55e42fa2726593#29585648a5ff95f08f940cb54d55e42fa2726593"
+source = "git+https://github.com/foyer-rs/foyer?rev=6c1d13e2ca8e6e6eb72a3913512b37f48d56dfbb#6c1d13e2ca8e6e6eb72a3913512b37f48d56dfbb"
 dependencies = [
  "anyhow",
  "equivalent",
@@ -918,7 +918,7 @@ dependencies = [
 [[package]]
 name = "foyer-common"
 version = "0.17.3"
-source = "git+https://github.com/foyer-rs/foyer?rev=29585648a5ff95f08f940cb54d55e42fa2726593#29585648a5ff95f08f940cb54d55e42fa2726593"
+source = "git+https://github.com/foyer-rs/foyer?rev=6c1d13e2ca8e6e6eb72a3913512b37f48d56dfbb#6c1d13e2ca8e6e6eb72a3913512b37f48d56dfbb"
 dependencies = [
  "ahash",
  "bincode",
@@ -946,7 +946,7 @@ dependencies = [
 [[package]]
 name = "foyer-memory"
 version = "0.17.3"
-source = "git+https://github.com/foyer-rs/foyer?rev=29585648a5ff95f08f940cb54d55e42fa2726593#29585648a5ff95f08f940cb54d55e42fa2726593"
+source = "git+https://github.com/foyer-rs/foyer?rev=6c1d13e2ca8e6e6eb72a3913512b37f48d56dfbb#6c1d13e2ca8e6e6eb72a3913512b37f48d56dfbb"
 dependencies = [
  "ahash",
  "arc-swap",
@@ -970,7 +970,7 @@ dependencies = [
 [[package]]
 name = "foyer-storage"
 version = "0.17.3"
-source = "git+https://github.com/foyer-rs/foyer?rev=29585648a5ff95f08f940cb54d55e42fa2726593#29585648a5ff95f08f940cb54d55e42fa2726593"
+source = "git+https://github.com/foyer-rs/foyer?rev=6c1d13e2ca8e6e6eb72a3913512b37f48d56dfbb#6c1d13e2ca8e6e6eb72a3913512b37f48d56dfbb"
 dependencies = [
  "allocator-api2",
  "anyhow",
@@ -1654,9 +1654,9 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
 name = "libc"
-version = "0.2.173"
+version = "0.2.174"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d8cfeafaffdbc32176b64fb251369d52ea9f0a8fbc6f8759edffef7b525d64bb"
+checksum = "1171693293099992e19cddea4e8b849964e9846f4acee11b3948bcc337be8776"
 
 [[package]]
 name = "libz-ng-sys"
@@ -1880,10 +1880,10 @@ dependencies = [
 [[package]]
 name = "mixtrics"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "749ed12bab176c8a42c13a679dd2de12876d5ad4abe7525548e31ae001a9ebbf"
+source = "git+https://github.com/foyer-rs/mixtrics?rev=02208d006003fe8eed001228ca1ffe1a56597ba0#02208d006003fe8eed001228ca1ffe1a56597ba0"
 dependencies = [
  "itertools",
+ "opentelemetry",
  "parking_lot",
 ]
 
@@ -1904,6 +1904,7 @@ dependencies = [
  "http",
  "humantime",
  "itertools",
+ "mixtrics",
  "opendal",
  "opentelemetry",
  "opentelemetry-otlp",
@@ -4503,18 +4504,18 @@ dependencies = [
 
 [[package]]
 name = "zerocopy"
-version = "0.8.25"
+version = "0.8.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1702d9583232ddb9174e01bb7c15a2ab8fb1bc6f227aa1233858c351a3ba0cb"
+checksum = "1039dd0d3c310cf05de012d8a39ff557cb0d23087fd44cad61df08fc31907a2f"
 dependencies = [
  "zerocopy-derive",
 ]
 
 [[package]]
 name = "zerocopy-derive"
-version = "0.8.25"
+version = "0.8.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "28a6e20d751156648aa063f3800b706ee209a32c0b4d9f24be3d980b01be55ef"
+checksum = "9ecf5b4cc5364572d7f4c329661bcc82724222973f2cab6f050a4e5c22f75181"
 dependencies = [
  "proc-macro2",
  "quote",

@@ -181,7 +181,7 @@ services:
       - --s3-bucket
       - dev
       - --weight
-      - "2"
+      - "1"
       - --mem
       - 64MiB
       - --disk
@@ -225,7 +225,7 @@ services:
       - --s3-bucket
       - dev
       - --weight
-      - "3"
+      - "1"
       - --mem
       - 64MiB
       - --disk
@@ -269,7 +269,7 @@ services:
       - --s3-bucket
       - dev
       - --weight
-      - "4"
+      - "1"
       - --mem
       - 64MiB
       - --disk

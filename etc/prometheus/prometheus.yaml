@@ -14,11 +14,11 @@
 
 global:
   scrape_interval: 1s
-  evaluation_interval: "5s"
+  evaluation_interval: "1s"
 
 storage:
   tsdb:
-    out_of_order_time_window: 30m
+    out_of_order_time_window: 5m
 
 scrape_configs:
   - job_name: "prometheus"
@@ -28,6 +28,9 @@ scrape_configs:
   - job_name: "node"
     static_configs:
       - targets: ["node-exporter:9100"]
+
+otlp:
+  translation_strategy: UnderscoreEscapingWithSuffixes
 
 # https://prometheus.io/docs/guides/opentelemetry/#promoting-resource-attributes
 # otlp:

@@ -148,7 +148,7 @@ pub struct TelemetryConfig {
         default_value = "http://localhost:9090/api/v1/otlp/v1/metrics"
     )]
     pub meter_endpoint: String,
-    #[clap(long = "telemetry-meter-report-interval", value_parser = humantime::parse_duration, default_value = "10s")]
+    #[clap(long = "telemetry-meter-report-interval", value_parser = humantime::parse_duration, default_value = "1s")]
     pub meter_report_interval: Duration,
 
     #[clap(long = "telemetry-logging-endpoint", default_value = "http://localhost:9096")]

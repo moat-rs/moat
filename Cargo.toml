@@ -40,7 +40,7 @@ clap = "4"
 colored = "3"
 # TODO(MrCroxx): switch to a released version
 # foyer = "0.18"
-foyer = { git = "https://github.com/foyer-rs/foyer", rev = "29585648a5ff95f08f940cb54d55e42fa2726593" }
+foyer = { git = "https://github.com/foyer-rs/foyer", rev = "6c1d13e2ca8e6e6eb72a3913512b37f48d56dfbb" }
 futures = "0.3"
 hex = "0.4"
 hmac = "0.12"
@@ -48,6 +48,8 @@ http = "1"
 humantime = "2"
 itertools = "0.14"
 libc = "0.2"
+# TODO(MrCroxx): switch to a released version
+mixtrics = { git = "https://github.com/foyer-rs/mixtrics", rev = "02208d006003fe8eed001228ca1ffe1a56597ba0" }
 opendal = "0.53"
 opentelemetry = "0.30"
 opentelemetry-otlp = "0.30"

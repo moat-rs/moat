@@ -17,6 +17,7 @@ use bytes::Bytes;
 
 use foyer::{DirectFsDeviceOptions, Engine, HybridCache, LargeEngineOptions, RuntimeOptions, TokioRuntimeOptions};
 use http::{StatusCode, Version, header::CONTENT_TYPE};
+use mixtrics::registry::opentelemetry_0_30::OpenTelemetryMetricsRegistry;
 use opendal::{Operator, layers::LoggingLayer, services::S3};
 use pingora::{
     http::ResponseHeader, prelude::*, proxy::http_proxy_service_with_name, server::configuration::ServerConf,
@@ -71,29 +72,30 @@ pub struct Moat;
 impl Moat {
     pub fn run(config: MoatConfig, runtime: Runtime) -> anyhow::Result<()> {
         let cache = {
-            let config = config.cache;
+            let config = &config;
             runtime.block_on(async move {
+                let registry = Box::new(OpenTelemetryMetricsRegistry::new(opentelemetry::global::meter("foyer")));
                 let mut builder = HybridCache::builder()
-                    // TODO(MrCroxx): introduce metrics system.
-                    // .with_metrics_registry(registry)
-                    .memory(config.mem.as_u64() as _)
+                    .with_name(config.peer.to_string())
+                    .with_metrics_registry(registry)
+                    .memory(config.cache.mem.as_u64() as _)
                     // TODO(MrCroxx): Count serialized size?
                     .with_weighter(|path: &String, data: &Bytes| path.len() + data.len())
                     .storage(Engine::Large(
                         LargeEngineOptions::new()
-                            .with_flushers(config.flushers)
-                            .with_reclaimers(config.reclaimers)
-                            .with_buffer_pool_size(config.buffer_pool_size.as_u64() as _)
-                            .with_recover_concurrency(config.recover_concurrency),
+                            .with_flushers(config.cache.flushers)
+                            .with_reclaimers(config.cache.reclaimers)
+                            .with_buffer_pool_size(config.cache.buffer_pool_size.as_u64() as _)
+                            .with_recover_concurrency(config.cache.recover_concurrency),
                     ))
-                    .with_recover_mode(config.recover_mode)
+                    .with_recover_mode(config.cache.recover_mode)
                     .with_runtime_options(RuntimeOptions::Unified(TokioRuntimeOptions::default()));
-                if let Some(dir) = config.dir {
+                if let Some(dir) = &config.cache.dir {
                     builder = builder.with_device_options(
                         DirectFsDeviceOptions::new(dir)
-                            .with_capacity(config.disk.as_u64() as _)
-                            .with_file_size(config.file_size.as_u64() as _)
-                            .with_throttle(config.throttle),
+                            .with_capacity(config.cache.disk.as_u64() as _)
+                            .with_file_size(config.cache.file_size.as_u64() as _)
+                            .with_throttle(config.cache.throttle.clone()),
                     );
                 }
                 builder.build().await
