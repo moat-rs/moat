@@ -12,4 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub mod resigner;
+mod logging;
+mod meter;
+
+use crate::{config::MoatConfig, error::Result};
+
+pub fn init(config: &MoatConfig) -> Result<Box<dyn Send + Sync + 'static>> {
+    let mut guards = vec![];
+
+    let guard = logging::init(config)?;
+    guards.push(guard);
+
+    let guard = meter::init(&config.telemetry)?;
+    guards.push(guard);
+
+    Ok(Box::new(guards))
+}

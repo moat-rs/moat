@@ -27,6 +27,8 @@ RUN mkdir -p /moat
 
 WORKDIR /moat
 
+RUN apt-get update && apt-get install -y iputils-ping curl && apt-get clean && rm -rf /var/lib/apt/lists/*
+
 COPY --from=builder /bin/moat .
 
 ENTRYPOINT ["./moat"]

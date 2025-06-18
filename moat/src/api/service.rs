@@ -30,6 +30,7 @@ use crate::{
         manager::MetaManager,
         model::{MemberList, Peer},
     },
+    metrics::{ApiMetrics, Metrics},
 };
 
 #[handler]
@@ -68,6 +69,11 @@ async fn members(Data(meta_manager): Data<&MetaManager>) -> Response {
     tracing::debug!("get members req");
     let members = meta_manager.members().await;
     tracing::debug!(?members, "get members resp");
+
+    let metrics = Metrics::global();
+    let labels = ApiMetrics::labels("members", "get", "ok");
+    metrics.api.count.add(1, &labels);
+
     Json(members).into_response()
 }
 

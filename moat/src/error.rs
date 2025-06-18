@@ -12,4 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub mod resigner;
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("other error: {0}")]
+    Other(#[from] Box<dyn std::error::Error + Send + Sync + 'static>),
+}
+
+impl Error {
+    pub fn other<E>(err: E) -> Self
+    where
+        E: std::error::Error + Send + Sync + 'static,
+    {
+        Self::Other(Box::new(err))
+    }
+}
+
+pub type Result<T> = std::result::Result<T, Error>;
