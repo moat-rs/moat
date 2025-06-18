@@ -154,7 +154,7 @@ pub struct TelemetryConfig {
     #[clap(long = "telemetry-logging-endpoint", default_value = "http://localhost:9096")]
     pub logging_endpoint: String,
 
-    #[clap(long = "telemetry-loglong-dir", default_value = ".moat/log/")]
+    #[clap(long = "telemetry-logging-dir", default_value = ".moat/log/")]
     pub logging_dir: String,
     #[clap(long = "telemetry-logging-rotation", default_value = "never")]
     pub logging_rotation: Rotation,
