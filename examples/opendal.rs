@@ -47,6 +47,9 @@ async fn main() -> std::io::Result<()> {
 
     let op = Operator::new(builder)?.layer(LoggingLayer::default()).finish();
 
+    let res = op.list("/").await?;
+    tracing::info!(?res, "list");
+
     op.write("obj-1", "Hello, OpenDAL!").await?;
 
     let mut payload = vec![];
@@ -67,6 +70,29 @@ async fn main() -> std::io::Result<()> {
 
     op.delete("obj-1").await?;
     op.delete("obj-2").await?;
+
+    let res = op.list("/").await?;
+    tracing::info!(?res, "list");
+
+    for _ in 0..3 {
+        for i in 10..100 {
+            let key = format!("obj-{i}");
+            let mut payload = vec![];
+            for i in 0u64..(1 * 1024 * 1024 / 16) {
+                payload.append(&mut format!("{i:016x}").into_bytes());
+            }
+            tracing::info!("put {key}");
+            op.write(&key, payload).await?;
+            tracing::info!("get {key}");
+            op.read(&key).await?.read_to_string(&mut s)?;
+        }
+    }
+
+    for i in 10..100 {
+        let key = format!("obj-{i}");
+        tracing::info!("del {key}");
+        op.delete(&key).await?;
+    }
 
     let res = op.list("/").await?;
     tracing::info!(?res, "list");

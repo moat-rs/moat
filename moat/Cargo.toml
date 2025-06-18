@@ -39,6 +39,7 @@ hmac = { workspace = true }
 http = { workspace = true }
 humantime = { workspace = true }
 itertools = { workspace = true }
+mixtrics = { workspace = true, features = ["opentelemetry_0_30"] }
 opendal = { workspace = true, features = ["services-s3"] }
 opentelemetry = { workspace = true }
 opentelemetry-otlp = { workspace = true, features = ["grpc-tonic"] }
