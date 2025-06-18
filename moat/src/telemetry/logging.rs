@@ -66,7 +66,7 @@ pub fn init(config: &MoatConfig) -> Result<Box<dyn Send + Sync + 'static>> {
         provider
             .shutdown()
             .inspect_err(|e| {
-                tracing::error!(?e, "Failed to shutdown OpenTelemetry Meter Provider");
+                tracing::error!(?e, "Failed to shutdown OpenTelemetry Tracer Provider");
             })
             .ok();
     })))
