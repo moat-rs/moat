@@ -12,30 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{net::SocketAddr, time::Duration};
-
 use async_trait::async_trait;
 use bytes::Bytes;
-use bytesize::ByteSize;
-use clap::{Args, Parser};
-use foyer::{
-    DirectFsDeviceOptions, Engine, HybridCache, LargeEngineOptions, RecoverMode, RuntimeOptions, Throttle,
-    TokioRuntimeOptions,
-};
+
+use foyer::{DirectFsDeviceOptions, Engine, HybridCache, LargeEngineOptions, RuntimeOptions, TokioRuntimeOptions};
 use http::{StatusCode, Version, header::CONTENT_TYPE};
 use opendal::{Operator, layers::LoggingLayer, services::S3};
 use pingora::{
     http::ResponseHeader, prelude::*, proxy::http_proxy_service_with_name, server::configuration::ServerConf,
 };
-use serde::{Deserialize, Serialize};
 
 use crate::{
     api::service::ApiService,
-    aws::{
-        resigner::{AwsSigV4Resigner, AwsSigV4ResignerConfig},
-        s3::S3Config,
-    },
-    logger::LoggingConfig,
+    aws::resigner::{AwsSigV4Resigner, AwsSigV4ResignerConfig},
+    config::MoatConfig,
     meta::{
         manager::{Gossip, MetaManager, MetaManagerConfig, Observer},
         model::{Peer, Role},
@@ -76,89 +66,10 @@ impl MoatRequest {
     }
 }
 
-#[derive(Debug, Args, Serialize, Deserialize)]
-pub struct CacheConfig {
-    #[clap(long, default_value = "64MiB")]
-    mem: ByteSize,
-
-    #[clap(long)]
-    dir: Option<String>,
-
-    #[clap(long, default_value = "1GiB", requires = "dir")]
-    disk: ByteSize,
-
-    #[clap(long, default_value = "64MiB")]
-    file_size: ByteSize,
-
-    #[clap(flatten)]
-    throttle: Throttle,
-
-    #[clap(long, default_value_t = 4)]
-    flushers: usize,
-
-    #[clap(long, default_value_t = 2)]
-    reclaimers: usize,
-
-    #[clap(long, default_value = "16MiB")]
-    buffer_pool_size: ByteSize,
-
-    #[clap(long, default_value = "quiet")]
-    recover_mode: RecoverMode,
-
-    #[clap(long, default_value_t = 4)]
-    recover_concurrency: usize,
-}
-
-#[derive(Debug, Parser, Serialize, Deserialize)]
-pub struct MoatConfig {
-    #[clap(long, default_value = "127.0.0.1:23456")]
-    pub listen: SocketAddr,
-    #[clap(long, default_value = "cache")]
-    pub role: Role,
-    #[clap(long)]
-    pub peer: Peer,
-    // TODO(MrCroxx): Handle tls configuration.
-    #[clap(long, default_value = "false")]
-    pub tls: bool,
-    #[clap(long, num_args = 1.., value_delimiter = ',')]
-    pub bootstrap_peers: Vec<Peer>,
-    #[clap(long, value_parser = humantime::parse_duration, default_value = "10s")]
-    pub peer_eviction_timeout: Duration,
-    #[clap(long, value_parser = humantime::parse_duration, default_value = "3s")]
-    pub health_check_timeout: Duration,
-    #[clap(long, value_parser = humantime::parse_duration, default_value = "1s")]
-    pub health_check_interval: Duration,
-    #[clap(long, default_value_t = 3)]
-    pub health_check_peers: usize,
-    #[clap(long, value_parser = humantime::parse_duration, default_value = "3s")]
-    pub sync_timeout: Duration,
-    #[clap(long, value_parser = humantime::parse_duration, default_value = "1s")]
-    pub sync_interval: Duration,
-    #[clap(long, default_value_t = 3)]
-    pub sync_peers: usize,
-    #[clap(long, default_value_t = 1)]
-    pub weight: usize,
-
-    #[clap(flatten)]
-    pub s3_config: S3Config,
-
-    #[clap(flatten)]
-    pub cache: CacheConfig,
-
-    #[clap(flatten)]
-    pub logging: LoggingConfig,
-}
-
 pub struct Moat;
 
 impl Moat {
-    pub fn run(config: MoatConfig) -> anyhow::Result<()> {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .expect("Failed to create Tokio runtime");
-        let runtime = Runtime::new(runtime);
-
+    pub fn run(config: MoatConfig, runtime: Runtime) -> anyhow::Result<()> {
         let cache = {
             let config = config.cache;
             runtime.block_on(async move {

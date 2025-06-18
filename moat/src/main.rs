@@ -14,22 +14,36 @@
 
 mod api;
 mod aws;
-mod logger;
+mod config;
+mod error;
 mod meta;
+mod metrics;
 mod runtime;
 mod server;
+mod telemetry;
 
 use clap::Parser;
 
-use crate::server::{Moat, MoatConfig};
+use crate::{config::MoatConfig, runtime::Runtime, server::Moat};
 
 fn main() {
     let config = MoatConfig::parse();
 
-    logger::init_logger(&config);
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("Failed to create Tokio runtime");
+    let runtime = Runtime::new(runtime);
+
+    let guards = runtime
+        .block_on(async { telemetry::init(&config) })
+        .expect("Failed to initialize telemetry");
+
     tracing::info!(?config, "Start Moat");
 
-    if let Err(e) = Moat::run(config) {
+    if let Err(e) = Moat::run(config, runtime) {
         tracing::error!(?e, "Failed to run Moat");
     }
+
+    drop(guards);
 }
