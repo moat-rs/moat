@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::sync::Arc;
+use std::{fmt::Debug, sync::Arc};
 
 use pingora::{Error, ErrorType, Result, http::ResponseHeader, proxy::Session};
 use poem::{
@@ -26,6 +26,7 @@ use serde::Deserialize;
 
 use crate::{
     api::client::ApiClient,
+    config::ApiConfig,
     meta::{
         manager::MetaManager,
         model::{MemberList, Peer},
@@ -44,11 +45,15 @@ struct HealthParams {
 }
 
 #[handler]
-async fn health(Query(params): Query<HealthParams>, Data(meta_manager): Data<&MetaManager>) -> Response {
+async fn health(
+    Query(params): Query<HealthParams>,
+    Data(prefix): Data<&String>,
+    Data(meta_manager): Data<&MetaManager>,
+) -> Response {
     tracing::debug!(?params, "check health for peer");
 
     if let Some(peer) = params.peer {
-        if ApiClient::new(peer.clone())
+        if ApiClient::new(prefix.clone(), peer.clone())
             .with_timeout(meta_manager.health_check_timeout())
             .health()
             .await
@@ -103,24 +108,37 @@ async fn locate(body: Body, Data(meta_manager): Data<&MetaManager>) -> Response 
     }
 }
 
-pub struct ApiService {
+struct Inner {
     endpoint: Arc<dyn DynEndpoint<Output = Response>>,
+    prefix: String,
+}
+
+#[derive(Clone)]
+pub struct ApiService {
+    inner: Arc<Inner>,
+}
+
+impl Debug for ApiService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ApiService").finish()
+    }
 }
 
 impl ApiService {
-    pub const MOAT_API_HEADER: &str = "X-Moat-Api";
-
-    pub fn new(meta_manager: MetaManager) -> Self {
+    pub fn new(config: &ApiConfig, meta_manager: MetaManager) -> Self {
+        let prefix = config.prefix.clone();
         let endpoint = Route::new()
-            .at("/hello", get(hello))
-            .at("/health", get(health))
-            .at("/members", get(members))
-            .at("/sync", post(sync))
-            .at("/locate", post(locate))
-            .data(meta_manager.clone());
+            .at(format!("{prefix}/hello"), get(hello))
+            .at(format!("{prefix}/health"), get(health))
+            .at(format!("{prefix}/members"), get(members))
+            .at(format!("{prefix}/sync"), post(sync))
+            .at(format!("{prefix}/locate"), post(locate))
+            .data(meta_manager.clone())
+            .data(prefix.clone());
         let endpoint = Arc::new(ToDynEndpoint(endpoint.into_endpoint().map_to_response()));
 
-        ApiService { endpoint }
+        let inner = Arc::new(Inner { prefix, endpoint });
+        Self { inner }
     }
 
     pub async fn handle(&self, session: &mut Session) -> Result<()> {
@@ -143,7 +161,7 @@ impl ApiService {
         };
 
         let poem_request = builder.body(body);
-        let poem_response = self.endpoint.get_response(poem_request).await;
+        let poem_response = self.inner.endpoint.get_response(poem_request).await;
 
         let mut header = ResponseHeader::build_no_case(poem_response.status(), None)?;
         for (key, value) in poem_response.headers().iter() {
@@ -163,5 +181,9 @@ impl ApiService {
         session.write_response_body(Some(body), true).await?;
 
         Ok(())
+    }
+
+    pub fn prefix(&self) -> &str {
+        &self.inner.prefix
     }
 }

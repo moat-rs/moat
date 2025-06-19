@@ -19,7 +19,6 @@ use clap::{Parser, ValueEnum};
 use foyer::{RecoverMode, Throttle};
 use serde::{Deserialize, Serialize};
 
-use clap::Args;
 use tracing_appender::rolling::Rotation as TracingAppenderRotation;
 use url::Url;
 
@@ -63,9 +62,12 @@ pub struct MoatConfig {
 
     #[clap(flatten)]
     pub telemetry: TelemetryConfig,
+
+    #[clap(flatten)]
+    pub api: ApiConfig,
 }
 
-#[derive(Debug, Args, Serialize, Deserialize)]
+#[derive(Debug, Parser, Serialize, Deserialize)]
 pub struct S3Config {
     /// Endpoint must be full uri, e.g.
     ///
@@ -86,7 +88,7 @@ pub struct S3Config {
     pub bucket: String,
 }
 
-#[derive(Debug, Args, Serialize, Deserialize)]
+#[derive(Debug, Parser, Serialize, Deserialize)]
 pub struct CacheConfig {
     #[clap(long, default_value = "64MiB")]
     pub mem: ByteSize,
@@ -162,4 +164,11 @@ pub struct TelemetryConfig {
     pub logging_rotation: Rotation,
     #[clap(long = "telemetry-logging-color", default_value_t = false)]
     pub logging_color: bool,
+}
+
+#[derive(Debug, Clone, Parser, Serialize, Deserialize)]
+pub struct ApiConfig {
+    /// Prefix for all API endpoints.
+    #[clap(long, default_value = "/api")]
+    pub prefix: String,
 }

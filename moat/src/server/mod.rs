@@ -47,13 +47,13 @@ enum MoatRequest {
 }
 
 impl MoatRequest {
-    fn parse(request: &RequestHeader) -> Self {
-        if request.headers.get(ApiService::MOAT_API_HEADER).is_some() {
-            return MoatRequest::MoatApi;
-        }
-
+    fn parse(api_prefix: &str, request: &RequestHeader) -> Self {
         let path = request.uri.path();
         let method = request.method.as_str();
+
+        if path.starts_with(api_prefix) {
+            return MoatRequest::MoatApi;
+        }
 
         // S3 GetObject schema: GET /{bucket}/{path}
         if method == "GET" && path.len() > 1 {
@@ -130,6 +130,7 @@ impl Moat {
             sync_interval: config.sync_interval,
             sync_peers: config.sync_peers,
             weight: config.weight,
+            api_prefix: config.api.prefix.clone(),
         });
         match config.role {
             Role::Agent => {
@@ -142,7 +143,7 @@ impl Moat {
             }
         }
 
-        let api = ApiService::new(meta_manager.clone());
+        let api = ApiService::new(&config.api, meta_manager.clone());
         let resigner = AwsSigV4Resigner::new(AwsSigV4ResignerConfig {
             endpoint: config.s3_config.endpoint.clone(),
             region: config.s3_config.region.clone(),
@@ -354,7 +355,7 @@ impl ProxyHttp for Proxy {
         Self::CTX: Send + Sync,
     {
         let header = session.req_header();
-        let request = MoatRequest::parse(header);
+        let request = MoatRequest::parse(self.api.prefix(), header);
 
         tracing::trace!(?header, ?request, "Receive request");
 
