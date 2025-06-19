@@ -47,6 +47,8 @@ pub struct MetaManagerConfig {
     pub sync_interval: Duration,
     pub sync_peers: usize,
     pub weight: usize,
+
+    pub api_prefix: String,
 }
 
 #[derive(Debug)]
@@ -79,6 +81,8 @@ struct Inner {
     sync_interval: Duration,
     sync_peers: usize,
     weight: usize,
+
+    api_prefix: String,
 }
 
 #[derive(Debug, Clone)]
@@ -127,6 +131,7 @@ impl MetaManager {
             sync_interval: config.sync_interval,
             sync_peers: config.sync_peers,
             weight: config.weight,
+            api_prefix: config.api_prefix,
         });
         Self { inner }
     }
@@ -234,7 +239,7 @@ impl MetaManager {
                 .collect_vec()
         };
         let futures = peers.into_iter().map(|(peer, mut membership)| async move {
-            ApiClient::new(peer.clone())
+            ApiClient::new(self.inner.api_prefix.clone(), peer.clone())
                 .with_timeout(self.inner.health_check_timeout)
                 .health()
                 .await
@@ -283,7 +288,7 @@ impl MetaManager {
         let futures = peers.into_iter().map(|peer| {
             let members = old.clone();
             async move {
-                ApiClient::new(peer.clone())
+                ApiClient::new(self.inner.api_prefix.clone(), peer.clone())
                     .with_timeout(self.inner.sync_timeout)
                     .sync(members)
                     .await
@@ -331,7 +336,7 @@ impl MetaManager {
             let (peer, _) = caches.choose(&mut rng()).unwrap();
             peer.clone()
         };
-        if let Some(members) = ApiClient::new(peer.clone())
+        if let Some(members) = ApiClient::new(self.inner.api_prefix.clone(), peer.clone())
             .with_timeout(self.inner.sync_timeout)
             .members()
             .await

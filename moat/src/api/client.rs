@@ -16,20 +16,22 @@ use std::time::Duration;
 
 use reqwest::Client;
 
-use crate::{
-    api::service::ApiService,
-    meta::model::{MemberList, Peer},
-};
+use crate::meta::model::{MemberList, Peer};
 
 #[derive(Debug, Clone)]
 pub struct ApiClient {
+    prefix: String,
     peer: Peer,
     timeout: Option<Duration>,
 }
 
 impl ApiClient {
-    pub fn new(peer: Peer) -> Self {
-        ApiClient { peer, timeout: None }
+    pub fn new(prefix: String, peer: Peer) -> Self {
+        ApiClient {
+            prefix,
+            peer,
+            timeout: None,
+        }
     }
 
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
@@ -49,8 +51,7 @@ impl ApiClient {
         matches! {
             self
             .client()
-            .get(format!("http://{peer}/health", peer = self.peer))
-            .header(ApiService::MOAT_API_HEADER, "true")
+            .get(format!("http://{peer}{prefix}/health", peer = self.peer, prefix = self.prefix))
             .send()
             .await,
             Ok(r) if r.status().is_success()
@@ -60,8 +61,11 @@ impl ApiClient {
     pub async fn sync(&self, members: MemberList) -> Option<MemberList> {
         let response = match self
             .client()
-            .post(format!("http://{peer}/sync", peer = self.peer))
-            .header(ApiService::MOAT_API_HEADER, "true")
+            .post(format!(
+                "http://{peer}{prefix}/sync",
+                peer = self.peer,
+                prefix = self.prefix
+            ))
             .json(&members)
             .send()
             .await
@@ -89,8 +93,11 @@ impl ApiClient {
     pub async fn members(&self) -> Option<MemberList> {
         let response = match self
             .client()
-            .get(format!("http://{peer}/members", peer = self.peer))
-            .header(ApiService::MOAT_API_HEADER, "true")
+            .get(format!(
+                "http://{peer}{prefix}/members",
+                peer = self.peer,
+                prefix = self.prefix
+            ))
             .send()
             .await
         {
