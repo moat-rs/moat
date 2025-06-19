@@ -14,27 +14,30 @@
 
 use opentelemetry::KeyValue;
 use opentelemetry_otlp::{Protocol, WithExportConfig};
+use opentelemetry_sdk::{
+    Resource,
+    metrics::{PeriodicReader, SdkMeterProvider},
+};
 
 use crate::{
     config::TelemetryConfig,
     error::{Error, Result},
+    meta::model::Peer,
 };
 
-pub fn init(config: &TelemetryConfig) -> Result<Box<dyn Send + Sync + 'static>> {
+pub fn init(config: &TelemetryConfig, _: &Peer, attributes: &[KeyValue]) -> Result<Box<dyn Send + Sync + 'static>> {
     let exporter = opentelemetry_otlp::MetricExporter::builder()
-        .with_http()
-        .with_protocol(Protocol::HttpBinary)
+        .with_tonic()
+        .with_protocol(Protocol::Grpc)
         .with_endpoint(&config.meter_endpoint)
         .build()
         .map_err(Error::other)?;
 
-    let reader = opentelemetry_sdk::metrics::PeriodicReader::builder(exporter)
+    let reader = PeriodicReader::builder(exporter)
         .with_interval(config.meter_report_interval)
         .build();
-    let resource = opentelemetry_sdk::Resource::builder()
-        .with_attributes([KeyValue::new("service.name", config.service_name.to_string())])
-        .build();
-    let provider = opentelemetry_sdk::metrics::SdkMeterProvider::builder()
+    let resource = Resource::builder().with_attributes(attributes.to_vec()).build();
+    let provider = SdkMeterProvider::builder()
         .with_reader(reader)
         .with_resource(resource)
         .build();

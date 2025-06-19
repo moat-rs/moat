@@ -29,7 +29,7 @@ use crate::{
     config::MoatConfig,
     meta::{
         manager::{Gossip, MetaManager, MetaManagerConfig, Observer},
-        model::{Peer, Role},
+        model::{MemberList, Peer, Role},
     },
     runtime::Runtime,
 };
@@ -179,6 +179,7 @@ impl Moat {
             meta_manager,
             peer: config.peer.clone(),
             tls: config.tls,
+            runtime,
         };
         let mut service = http_proxy_service_with_name(&server.configuration, proxy, "moat");
         service.add_tcp(&config.listen.to_string());
@@ -217,6 +218,8 @@ struct Proxy {
 
     peer: Peer,
     tls: bool,
+
+    runtime: Runtime,
 }
 
 impl Proxy {
@@ -413,5 +416,14 @@ impl ProxyHttp for Proxy {
         }
 
         Ok(())
+    }
+}
+
+impl Drop for Proxy {
+    fn drop(&mut self) {
+        self.runtime.block_on(async {
+            let old = self.meta_manager.members().await;
+            self.meta_manager.update_cluster_metrics(&old, &MemberList::default());
+        })
     }
 }

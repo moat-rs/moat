@@ -12,48 +12,52 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{borrow::Cow, fs::create_dir_all};
-
-use opentelemetry::{KeyValue, trace::TracerProvider};
-use opentelemetry_otlp::{Protocol, WithExportConfig};
-use tracing_appender::rolling::RollingFileAppender;
-use tracing_opentelemetry::OpenTelemetryLayer;
-use tracing_subscriber::{EnvFilter, prelude::*};
+use std::fs::create_dir_all;
 
 use crate::{
-    config::MoatConfig,
+    config::TelemetryConfig,
     error::{Error, Result},
+    meta::model::Peer,
 };
+use opentelemetry::KeyValue;
+use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
+use opentelemetry_otlp::{LogExporter, Protocol, WithExportConfig};
+use opentelemetry_sdk::{
+    Resource,
+    logs::{BatchConfigBuilder, BatchLogProcessor, SdkLoggerProvider},
+};
+use tracing_appender::rolling::RollingFileAppender;
+use tracing_subscriber::{EnvFilter, prelude::*};
 
-pub fn init(config: &MoatConfig) -> Result<Box<dyn Send + Sync + 'static>> {
-    let exporter = opentelemetry_otlp::SpanExporter::builder()
+pub fn init(config: &TelemetryConfig, peer: &Peer, attributes: &[KeyValue]) -> Result<Box<dyn Send + Sync + 'static>> {
+    let exporter = LogExporter::builder()
         .with_tonic()
         .with_protocol(Protocol::Grpc)
-        .with_endpoint(&config.telemetry.logging_endpoint)
+        .with_endpoint(&config.logging_endpoint)
         .build()
-        .map_err(Error::other);
-    let resource = opentelemetry_sdk::Resource::builder()
-        .with_attributes([KeyValue::new("service.name", config.telemetry.service_name.to_string())])
+        .map_err(Error::other)?;
+    let processor = BatchLogProcessor::builder(exporter)
+        .with_batch_config(BatchConfigBuilder::default().build())
         .build();
-    let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
-        .with_batch_exporter(exporter.unwrap())
+    let resource = Resource::builder().with_attributes(attributes.to_vec()).build();
+    let provider = SdkLoggerProvider::builder()
+        .with_log_processor(processor)
         .with_resource(resource)
         .build();
-    let tracer = provider.tracer(Cow::Owned(config.telemetry.service_name.clone()));
-    let otel_layer = OpenTelemetryLayer::new(tracer);
+    let otel_layer = OpenTelemetryTracingBridge::new(&provider);
 
     let stdout_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stdout);
 
-    create_dir_all(&config.telemetry.logging_dir).expect("Failed to create log directory");
+    create_dir_all(&config.logging_dir).expect("Failed to create log directory");
     let file_appender = RollingFileAppender::builder()
-        .rotation(config.telemetry.logging_rotation.into())
-        .filename_prefix(config.peer.to_string())
+        .rotation(config.logging_rotation.into())
+        .filename_prefix(peer.to_string())
         .filename_suffix("log")
-        .build(&config.telemetry.logging_dir)
+        .build(&config.logging_dir)
         .unwrap();
     let file_layer = tracing_subscriber::fmt::layer()
         .with_writer(file_appender)
-        .with_ansi(config.telemetry.logging_color);
+        .with_ansi(config.logging_color);
 
     tracing_subscriber::registry()
         .with(EnvFilter::from_default_env())

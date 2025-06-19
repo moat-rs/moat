@@ -12,23 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-global:
-  scrape_interval: 1s
-  evaluation_interval: "1s"
-
-storage:
-  tsdb:
-    out_of_order_time_window: 5m
-
-scrape_configs:
-  - job_name: "prometheus"
-    static_configs:
-      - targets: ["localhost:9090"]
-
-  - job_name: "node"
-    static_configs:
-      - targets: ["node-exporter:9100"]
-  
-  - job_name: "otel-collector"
-    static_configs:
-      - targets: ["otel-collector:9090"]
+apiVersion: 1
+deleteDatasources:
+  - name: foyer,loki
+datasources:
+  - name: foyer
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    withCredentials: false
+    tlsAuth: false
+    tlsAuthWithCACert: false
+    version: 1
+    editable: true
+    isDefault: true
+  - name: loki
+    type: loki
+    access: proxy
+    url: http://loki:3100

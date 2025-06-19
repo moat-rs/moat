@@ -15,15 +15,22 @@
 mod logging;
 mod meter;
 
+use opentelemetry::KeyValue;
+
 use crate::{config::MoatConfig, error::Result};
 
 pub fn init(config: &MoatConfig) -> Result<Box<dyn Send + Sync + 'static>> {
     let mut guards = vec![];
 
-    let guard = logging::init(config)?;
+    let attributes = [
+        KeyValue::new("service.name", config.telemetry.service_name.to_string()),
+        KeyValue::new("peer", config.peer.to_string()),
+    ];
+
+    let guard = logging::init(&config.telemetry, &config.peer, &attributes)?;
     guards.push(guard);
 
-    let guard = meter::init(&config.telemetry)?;
+    let guard = meter::init(&config.telemetry, &config.peer, &attributes)?;
     guards.push(guard);
 
     Ok(Box::new(guards))
