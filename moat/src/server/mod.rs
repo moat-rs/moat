@@ -51,7 +51,7 @@ impl MoatRequest {
         let path = request.uri.path();
         let method = request.method.as_str();
 
-        if path.starts_with(api_prefix) {
+        if path == api_prefix || path.starts_with(&format!("{}/", api_prefix)) {
             return MoatRequest::MoatApi;
         }
 
