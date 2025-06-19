@@ -15,12 +15,14 @@
 mod logging;
 mod meter;
 
+use std::collections::VecDeque;
+
 use opentelemetry::KeyValue;
 
 use crate::{config::MoatConfig, error::Result};
 
 pub fn init(config: &MoatConfig) -> Result<Box<dyn Send + Sync + 'static>> {
-    let mut guards = vec![];
+    let mut guards = VecDeque::new();
 
     let attributes = [
         KeyValue::new("service.name", config.telemetry.service_name.to_string()),
@@ -28,10 +30,10 @@ pub fn init(config: &MoatConfig) -> Result<Box<dyn Send + Sync + 'static>> {
     ];
 
     let guard = logging::init(&config.telemetry, &config.peer, &attributes)?;
-    guards.push(guard);
+    guards.push_back(guard);
 
     let guard = meter::init(&config.telemetry, &config.peer, &attributes)?;
-    guards.push(guard);
+    guards.push_front(guard);
 
     Ok(Box::new(guards))
 }

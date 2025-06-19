@@ -44,12 +44,15 @@ pub fn init(config: &TelemetryConfig, _: &Peer, attributes: &[KeyValue]) -> Resu
 
     opentelemetry::global::set_meter_provider(provider.clone());
 
+    let handle = tokio::runtime::Handle::current();
     Ok(Box::new(scopeguard::guard((), move |_| {
-        provider
-            .shutdown()
-            .inspect_err(|e| {
-                tracing::error!(?e, "Failed to shutdown OpenTelemetry Meter Provider");
-            })
-            .ok();
+        handle.block_on(async {
+            provider
+                .shutdown()
+                .inspect_err(|e| {
+                    tracing::error!(?e, "Failed to shutdown OpenTelemetry Meter Provider");
+                })
+                .ok();
+        })
     })))
 }
