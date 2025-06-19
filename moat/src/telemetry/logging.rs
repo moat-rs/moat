@@ -66,12 +66,15 @@ pub fn init(config: &TelemetryConfig, peer: &Peer, attributes: &[KeyValue]) -> R
         .with(otel_layer)
         .init();
 
+    let handle = tokio::runtime::Handle::current();
     Ok(Box::new(scopeguard::guard((), move |_| {
-        provider
-            .shutdown()
-            .inspect_err(|e| {
-                tracing::error!(?e, "Failed to shutdown OpenTelemetry Tracer Provider");
-            })
-            .ok();
+        handle.block_on(async {
+            provider
+                .shutdown()
+                .inspect_err(|e| {
+                    tracing::error!(?e, "Failed to shutdown OpenTelemetry Tracer Provider");
+                })
+                .ok();
+        })
     })))
 }

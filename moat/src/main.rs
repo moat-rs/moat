@@ -41,9 +41,10 @@ fn main() {
 
     tracing::info!(?config, "Start Moat");
 
-    if let Err(e) = Moat::run(config, runtime) {
+    if let Err(e) = Moat::run(config, &runtime) {
         tracing::error!(?e, "Failed to run Moat");
     }
 
     drop(guards);
+    drop(runtime);
 }

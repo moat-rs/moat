@@ -20,7 +20,10 @@ use http::{StatusCode, Version, header::CONTENT_TYPE};
 use mixtrics::registry::opentelemetry_0_30::OpenTelemetryMetricsRegistry;
 use opendal::{Operator, layers::LoggingLayer, services::S3};
 use pingora::{
-    http::ResponseHeader, prelude::*, proxy::http_proxy_service_with_name, server::configuration::ServerConf,
+    http::ResponseHeader,
+    prelude::*,
+    proxy::http_proxy_service_with_name,
+    server::{RunArgs, configuration::ServerConf},
 };
 
 use crate::{
@@ -70,7 +73,7 @@ impl MoatRequest {
 pub struct Moat;
 
 impl Moat {
-    pub fn run(config: MoatConfig, runtime: Runtime) -> anyhow::Result<()> {
+    pub fn run(config: MoatConfig, runtime: &Runtime) -> anyhow::Result<()> {
         let cache = {
             let config = &config;
             runtime.block_on(async move {
@@ -176,15 +179,21 @@ impl Moat {
             role: config.role,
             cache,
             operator,
-            meta_manager,
+            meta_manager: meta_manager.clone(),
             peer: config.peer.clone(),
             tls: config.tls,
-            runtime,
         };
         let mut service = http_proxy_service_with_name(&server.configuration, proxy, "moat");
         service.add_tcp(&config.listen.to_string());
         server.add_service(service);
-        server.run_forever();
+        server.run(RunArgs::default());
+
+        runtime.block_on(async {
+            let old = meta_manager.members().await;
+            meta_manager.update_cluster_metrics(&old, &MemberList::default());
+        });
+
+        Ok(())
     }
 }
 
@@ -218,8 +227,6 @@ struct Proxy {
 
     peer: Peer,
     tls: bool,
-
-    runtime: Runtime,
 }
 
 impl Proxy {
@@ -416,14 +423,5 @@ impl ProxyHttp for Proxy {
         }
 
         Ok(())
-    }
-}
-
-impl Drop for Proxy {
-    fn drop(&mut self) {
-        self.runtime.block_on(async {
-            let old = self.meta_manager.members().await;
-            self.meta_manager.update_cluster_metrics(&old, &MemberList::default());
-        })
     }
 }
