@@ -24,6 +24,15 @@ pub enum Role {
     Cache,
 }
 
+impl Display for Role {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Agent => f.write_str("agent"),
+            Self::Cache => f.write_str("cache"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Peer {
     pub host: String,
@@ -93,7 +102,7 @@ pub struct Membership {
     pub weight: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct MemberList {
     pub caches: BTreeMap<Peer, Membership>,
 }

@@ -45,6 +45,7 @@ pub fn up(args: Up) {
     create_dir_all(".moat/cache").unwrap();
     create_dir_all(".moat/minio").unwrap();
     create_dir_all(".moat/prometheus").unwrap();
+    create_dir_all(".moat/loki").unwrap();
 
     let cmd = format!(
         r#"docker compose up --build -d {services}"#,

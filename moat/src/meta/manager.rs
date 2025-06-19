@@ -30,6 +30,7 @@ use crate::{
         hash::ConsistentHash,
         model::{MemberList, Membership, Peer, Role},
     },
+    metrics::{ClusterMetrics, Metrics},
     runtime::Runtime,
 };
 
@@ -135,7 +136,7 @@ impl MetaManager {
         mutable.members.clone()
     }
 
-    pub async fn merge(&self, members: MemberList) -> MemberList {
+    async fn merge_inner(&self, members: MemberList) -> MemberList {
         let mut mutable = self.inner.mutable.write().await;
         let current = &mutable.members.caches;
         let other = &members.caches;
@@ -171,37 +172,44 @@ impl MetaManager {
                 },
             );
         }
-        // Give evicted caches another chance to respond.
-        let futures = mutable
-            .members
-            .caches
-            .iter()
-            .filter(|(peer, _)| !merged.contains_key(peer))
-            .map(|(peer, membership)| async {
-                ApiClient::new(peer.clone())
-                    .with_timeout(self.inner.health_check_timeout)
-                    .health()
-                    .await
-                    .then_some((
-                        peer.clone(),
-                        Membership {
-                            last_seen: SystemTime::now(),
-                            weight: membership.weight,
-                        },
-                    ))
-            });
-        join_all(futures)
-            .await
-            .into_iter()
-            .flatten()
-            .for_each(|(peer, membership)| {
-                merged.insert(peer, membership);
-            });
+        // // Give evicted caches another chance to respond.
+        // let futures = mutable
+        //     .members
+        //     .caches
+        //     .iter()
+        //     .filter(|(peer, _)| !merged.contains_key(peer))
+        //     .map(|(peer, membership)| async {
+        //         ApiClient::new(peer.clone())
+        //             .with_timeout(self.inner.health_check_timeout)
+        //             .health()
+        //             .await
+        //             .then_some((
+        //                 peer.clone(),
+        //                 Membership {
+        //                     last_seen: SystemTime::now(),
+        //                     weight: membership.weight,
+        //                 },
+        //             ))
+        //     });
+        // join_all(futures)
+        //     .await
+        //     .into_iter()
+        //     .flatten()
+        //     .for_each(|(peer, membership)| {
+        //         merged.insert(peer, membership);
+        //     });
         mutable.members.caches = merged;
         mutable.update_locator();
         MemberList {
             caches: mutable.members.caches.clone(),
         }
+    }
+
+    pub async fn merge(&self, members: MemberList) -> MemberList {
+        let old = self.members().await;
+        let new = self.merge_inner(members).await;
+        self.update_cluster_metrics(&old, &new);
+        new
     }
 
     pub async fn replace(&self, members: MemberList) {
@@ -212,27 +220,29 @@ impl MetaManager {
     }
 
     pub async fn health_check(&self) {
-        let mut caches = self
+        let caches = self
             .members()
             .await
             .caches
             .into_iter()
             .filter(|(peer, _)| *peer != self.inner.peer)
             .collect_vec();
-        caches.sort_by(|(p1, m1), (p2, m2)| m1.last_seen.cmp(&m2.last_seen).then_with(|| p1.cmp(p2)));
-        let futures = caches
-            .into_iter()
-            .take(self.inner.health_check_peers)
-            .map(|(peer, mut membership)| async move {
-                ApiClient::new(peer.clone())
-                    .with_timeout(self.inner.health_check_timeout)
-                    .health()
-                    .await
-                    .then_some((peer, {
-                        membership.last_seen = SystemTime::now();
-                        membership
-                    }))
-            });
+        let peers = {
+            caches
+                .choose_multiple(&mut rng(), self.inner.health_check_peers)
+                .cloned()
+                .collect_vec()
+        };
+        let futures = peers.into_iter().map(|(peer, mut membership)| async move {
+            ApiClient::new(peer.clone())
+                .with_timeout(self.inner.health_check_timeout)
+                .health()
+                .await
+                .then_some((peer, {
+                    membership.last_seen = SystemTime::now();
+                    membership
+                }))
+        });
         let res = join_all(futures).await;
         let mut mutable = self.inner.mutable.write().await;
         // TODO(MrCroxx): handle unhealthy peers with SWIM algorithm
@@ -251,11 +261,10 @@ impl MetaManager {
     }
 
     pub async fn sync(&self) {
-        let caches = self
-            .members()
-            .await
+        let old = self.members().await;
+        let caches = old
             .caches
-            .into_iter()
+            .iter()
             .filter_map(|(peer, membership)| {
                 if SystemTime::now()
                     .duration_since(membership.last_seen)
@@ -267,13 +276,12 @@ impl MetaManager {
                     None
                 }
             })
-            .filter(|peer| *peer != self.inner.peer)
+            .filter(|&peer| *peer != self.inner.peer)
+            .cloned()
             .collect_vec();
-
         let peers = { caches.choose_multiple(&mut rng(), self.inner.sync_peers).collect_vec() };
-        let members = self.members().await;
         let futures = peers.into_iter().map(|peer| {
-            let members = members.clone();
+            let members = old.clone();
             async move {
                 ApiClient::new(peer.clone())
                     .with_timeout(self.inner.sync_timeout)
@@ -282,8 +290,34 @@ impl MetaManager {
             }
         });
         let res = join_all(futures).await;
-        for members in res.into_iter().flatten() {
-            self.merge(members).await;
+
+        let mut new = old.clone();
+        for ms in res.into_iter().flatten() {
+            new = self.merge_inner(ms).await;
+        }
+        self.update_cluster_metrics(&old, &new);
+    }
+
+    pub fn update_cluster_metrics(&self, old: &MemberList, new: &MemberList) {
+        let metrics = Metrics::global();
+
+        tracing::debug!(?old, ?new, "Update cluster metrics");
+
+        for peer in old.caches.keys() {
+            if !new.caches.contains_key(peer) {
+                metrics
+                    .cluster
+                    .peer
+                    .record(-1, &ClusterMetrics::peer_labels(peer, Role::Cache));
+                tracing::info!(?peer, "Cache peer evicted");
+            }
+        }
+        for (peer, member) in new.caches.iter() {
+            metrics
+                .cluster
+                .peer
+                .record(member.weight as _, &ClusterMetrics::peer_labels(peer, Role::Cache));
+            tracing::info!(?peer, "Cache peer updated");
         }
     }
 

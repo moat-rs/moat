@@ -16,12 +16,15 @@ use std::sync::LazyLock;
 
 use opentelemetry::{
     KeyValue,
-    metrics::{Counter, Histogram, Meter},
+    metrics::{Counter, Gauge, Histogram, Meter},
 };
+
+use crate::meta::model::{Peer, Role};
 
 #[derive(Debug)]
 pub struct Metrics {
     pub api: ApiMetrics,
+    pub cluster: ClusterMetrics,
 }
 
 impl Metrics {
@@ -33,9 +36,10 @@ impl Metrics {
     fn new() -> Self {
         let meter = opentelemetry::global::meter("moat");
 
-        let api = ApiMetrics::new(meter);
+        let api = ApiMetrics::new(&meter);
+        let cluster = ClusterMetrics::new(&meter);
 
-        Self { api }
+        Self { api, cluster }
     }
 }
 
@@ -47,7 +51,7 @@ pub struct ApiMetrics {
 }
 
 impl ApiMetrics {
-    pub fn new(meter: Meter) -> Self {
+    pub fn new(meter: &Meter) -> Self {
         Self {
             count: meter
                 .u64_counter("moat.api.count")
@@ -69,6 +73,29 @@ impl ApiMetrics {
             KeyValue::new("api", api.to_string()),
             KeyValue::new("operation", operation.to_string()),
             KeyValue::new("status", status.to_string()),
+        ]
+    }
+}
+
+#[derive(Debug)]
+pub struct ClusterMetrics {
+    pub peer: Gauge<i64>,
+}
+
+impl ClusterMetrics {
+    pub fn new(meter: &Meter) -> Self {
+        Self {
+            peer: meter
+                .i64_gauge("moat.peer.up")
+                .with_description("Moat peer state")
+                .build(),
+        }
+    }
+
+    pub fn peer_labels(target: &Peer, role: Role) -> [KeyValue; 2] {
+        [
+            KeyValue::new("target", target.to_string()),
+            KeyValue::new("role", role.to_string()),
         ]
     }
 }
