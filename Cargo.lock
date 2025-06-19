@@ -824,6 +824,7 @@ dependencies = [
 name = "examples"
 version = "0.0.0"
 dependencies = [
+ "bytesize",
  "clap 4.5.40",
  "opendal",
  "tokio",
@@ -900,7 +901,7 @@ dependencies = [
 [[package]]
 name = "foyer"
 version = "0.17.3"
-source = "git+https://github.com/foyer-rs/foyer?rev=6c1d13e2ca8e6e6eb72a3913512b37f48d56dfbb#6c1d13e2ca8e6e6eb72a3913512b37f48d56dfbb"
+source = "git+https://github.com/foyer-rs/foyer?rev=82afd20d4cfa066d243654581f1a6dca8ed3e2d1#82afd20d4cfa066d243654581f1a6dca8ed3e2d1"
 dependencies = [
  "anyhow",
  "equivalent",
@@ -918,7 +919,7 @@ dependencies = [
 [[package]]
 name = "foyer-common"
 version = "0.17.3"
-source = "git+https://github.com/foyer-rs/foyer?rev=6c1d13e2ca8e6e6eb72a3913512b37f48d56dfbb#6c1d13e2ca8e6e6eb72a3913512b37f48d56dfbb"
+source = "git+https://github.com/foyer-rs/foyer?rev=82afd20d4cfa066d243654581f1a6dca8ed3e2d1#82afd20d4cfa066d243654581f1a6dca8ed3e2d1"
 dependencies = [
  "ahash",
  "bincode",
@@ -946,7 +947,7 @@ dependencies = [
 [[package]]
 name = "foyer-memory"
 version = "0.17.3"
-source = "git+https://github.com/foyer-rs/foyer?rev=6c1d13e2ca8e6e6eb72a3913512b37f48d56dfbb#6c1d13e2ca8e6e6eb72a3913512b37f48d56dfbb"
+source = "git+https://github.com/foyer-rs/foyer?rev=82afd20d4cfa066d243654581f1a6dca8ed3e2d1#82afd20d4cfa066d243654581f1a6dca8ed3e2d1"
 dependencies = [
  "ahash",
  "arc-swap",
@@ -970,7 +971,7 @@ dependencies = [
 [[package]]
 name = "foyer-storage"
 version = "0.17.3"
-source = "git+https://github.com/foyer-rs/foyer?rev=6c1d13e2ca8e6e6eb72a3913512b37f48d56dfbb#6c1d13e2ca8e6e6eb72a3913512b37f48d56dfbb"
+source = "git+https://github.com/foyer-rs/foyer?rev=82afd20d4cfa066d243654581f1a6dca8ed3e2d1#82afd20d4cfa066d243654581f1a6dca8ed3e2d1"
 dependencies = [
  "allocator-api2",
  "anyhow",
@@ -1879,8 +1880,9 @@ dependencies = [
 
 [[package]]
 name = "mixtrics"
-version = "0.1.0"
-source = "git+https://github.com/foyer-rs/mixtrics?rev=02208d006003fe8eed001228ca1ffe1a56597ba0#02208d006003fe8eed001228ca1ffe1a56597ba0"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "adbcddf5a90b959eea97ae505e0391f5c6dd411fbf546d43b9c59ad1c3bd4391"
 dependencies = [
  "itertools",
  "opentelemetry",

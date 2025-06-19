@@ -14,6 +14,7 @@
 
 use std::io::Read;
 
+use bytesize::ByteSize;
 use clap::Parser;
 use opendal::{Operator, layers::LoggingLayer, services::S3};
 use tracing_subscriber::EnvFilter;
@@ -27,6 +28,12 @@ struct Args {
     region: String,
     #[clap(long)]
     bucket: String,
+    #[clap(long, default_value_t = 100)]
+    num: usize,
+    #[clap(long, default_value = "1mib")]
+    size: ByteSize,
+    #[clap(long, default_value_t = 3)]
+    r#loop: usize,
 }
 
 #[tokio::main]
@@ -53,7 +60,7 @@ async fn main() -> std::io::Result<()> {
     op.write("obj-1", "Hello, OpenDAL!").await?;
 
     let mut payload = vec![];
-    for i in 0u64..(16 * 1024 * 1024 / 16) {
+    for i in 0u64..(args.size.as_u64() / 16) {
         payload.append(&mut format!("{i:016x}").into_bytes());
     }
     op.write("obj-2", payload).await?;
@@ -74,11 +81,11 @@ async fn main() -> std::io::Result<()> {
     let res = op.list("/").await?;
     tracing::info!(?res, "list");
 
-    for _ in 0..3 {
-        for i in 10..100 {
-            let key = format!("obj-{i}");
+    for _ in 0..args.r#loop {
+        for i in 0..args.num {
+            let key = format!("lobj-{i}");
             let mut payload = vec![];
-            for i in 0u64..(1 * 1024 * 1024 / 16) {
+            for i in 0u64..(args.size.as_u64() / 16) {
                 payload.append(&mut format!("{i:016x}").into_bytes());
             }
             tracing::info!("put {key}");
@@ -88,8 +95,8 @@ async fn main() -> std::io::Result<()> {
         }
     }
 
-    for i in 10..100 {
-        let key = format!("obj-{i}");
+    for i in 0..args.num {
+        let key = format!("lobj-{i}");
         tracing::info!("del {key}");
         op.delete(&key).await?;
     }

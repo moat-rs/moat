@@ -27,6 +27,7 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+bytesize = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 opendal = { workspace = true, features = ["services-s3"] }
 tokio = { workspace = true, features = ["full"] }
