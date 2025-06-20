@@ -50,7 +50,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "P92AEBB27A9B79E22"
+        "uid": "${metrics}"
       },
       "fieldConfig": {
         "defaults": {
@@ -66,7 +66,7 @@
             "barAlignment": 0,
             "barWidthFactor": 0.6,
             "drawStyle": "line",
-            "fillOpacity": 0,
+            "fillOpacity": 10,
             "gradientMode": "none",
             "hideFrom": {
               "legend": false,
@@ -117,15 +117,17 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 6,
+        "w": 8,
         "x": 0,
         "y": 2
       },
       "id": 10,
       "options": {
         "legend": {
-          "calcs": [],
-          "displayMode": "list",
+          "calcs": [
+            "mean"
+          ],
+          "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
         },
@@ -140,11 +142,11 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "P92AEBB27A9B79E22"
+            "uid": "${metrics}"
           },
           "editorMode": "code",
           "exemplar": false,
-          "expr": "sum(rate(moat_s3_count_total[$__rate_interval])) by (peer, operation, extra, status)",
+          "expr": "sum(rate(moat_s3_count_total{peer=~\"${peer}\"}[$__rate_interval])) by (peer, operation, extra, status)",
           "format": "time_series",
           "instant": false,
           "interval": "",
@@ -159,7 +161,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "P92AEBB27A9B79E22"
+        "uid": "${metrics}"
       },
       "fieldConfig": {
         "defaults": {
@@ -175,7 +177,7 @@
             "barAlignment": 0,
             "barWidthFactor": 0.6,
             "drawStyle": "line",
-            "fillOpacity": 0,
+            "fillOpacity": 10,
             "gradientMode": "none",
             "hideFrom": {
               "legend": false,
@@ -226,15 +228,17 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 6,
-        "x": 6,
+        "w": 8,
+        "x": 8,
         "y": 2
       },
       "id": 17,
       "options": {
         "legend": {
-          "calcs": [],
-          "displayMode": "list",
+          "calcs": [
+            "mean"
+          ],
+          "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
         },
@@ -249,11 +253,11 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "P92AEBB27A9B79E22"
+            "uid": "${metrics}"
           },
           "editorMode": "code",
           "exemplar": false,
-          "expr": "sum(rate(moat_s3_bytes_total[$__rate_interval])) by (peer, operation, extra, status)",
+          "expr": "sum(rate(moat_s3_bytes_total{peer=~\"${peer}\"}[$__rate_interval])) by (peer, operation, extra, status)",
           "format": "time_series",
           "instant": false,
           "interval": "",
@@ -263,6 +267,156 @@
         }
       ],
       "title": "Throughput",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${metrics}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green"
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Time"
+            },
+            "properties": []
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 2
+      },
+      "id": 18,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.0.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${metrics}"
+          },
+          "editorMode": "code",
+          "exemplar": false,
+          "expr": "histogram_quantile(0.5, sum(rate(moat_s3_duration_second_bucket{peer=~\"${peer}\"}[$__rate_interval])) by (le, peer, operation, extra, status)) ",
+          "format": "time_series",
+          "instant": false,
+          "interval": "",
+          "legendFormat": "{{peer}} - {{operation}} - {{extra}} - {{status}} - p50",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${metrics}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.9, sum(rate(moat_s3_duration_second_bucket{peer=~\"${peer}\"}[$__rate_interval])) by (le, peer, operation, extra, status)) ",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "{{peer}} - {{operation}} - {{extra}} - {{status}} - p90",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${metrics}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum(rate(moat_s3_duration_second_bucket{peer=~\"${peer}\"}[$__rate_interval])) by (le, peer, operation, extra, status)) ",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "{{peer}} - {{operation}} - {{extra}} - {{status}} - p99",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${metrics}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(1.0, sum(rate(moat_s3_duration_second_bucket{peer=~\"${peer}\"}[$__rate_interval])) by (le, peer, operation, extra, status)) ",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "{{peer}} - {{operation}} - {{extra}} - {{status}} - pmax",
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "title": "Duration",
       "type": "timeseries"
     },
     {
@@ -281,7 +435,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "P92AEBB27A9B79E22"
+        "uid": "${metrics}"
       },
       "fieldConfig": {
         "defaults": {
@@ -350,7 +504,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "P92AEBB27A9B79E22"
+            "uid": "${metrics}"
           },
           "editorMode": "code",
           "exemplar": false,
@@ -389,7 +543,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "P92AEBB27A9B79E22"
+        "uid": "${metrics}"
       },
       "fieldConfig": {
         "defaults": {
@@ -458,7 +612,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "P92AEBB27A9B79E22"
+            "uid": "${metrics}"
           },
           "editorMode": "code",
           "exemplar": false,
@@ -497,7 +651,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "P92AEBB27A9B79E22"
+        "uid": "${metrics}"
       },
       "fieldConfig": {
         "defaults": {
@@ -566,7 +720,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "P92AEBB27A9B79E22"
+            "uid": "${metrics}"
           },
           "editorMode": "code",
           "exemplar": false,
@@ -605,7 +759,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "P92AEBB27A9B79E22"
+        "uid": "${metrics}"
       },
       "fieldConfig": {
         "defaults": {
@@ -674,7 +828,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "P92AEBB27A9B79E22"
+            "uid": "${metrics}"
           },
           "editorMode": "code",
           "exemplar": false,
@@ -726,7 +880,7 @@
     {
       "datasource": {
         "type": "loki",
-        "uid": "P982945308D3682D1"
+        "uid": "${logs}"
       },
       "fieldConfig": {
         "defaults": {},
@@ -755,8 +909,9 @@
         {
           "datasource": {
             "type": "loki",
-            "uid": "P982945308D3682D1"
+            "uid": "${logs}"
           },
+          "direction": "backward",
           "editorMode": "builder",
           "expr": "{service_name=\"moat\"} | label_format level=detected_level | peer = `moat-cache-1:23456`",
           "queryType": "range",
@@ -769,7 +924,7 @@
     {
       "datasource": {
         "type": "loki",
-        "uid": "P982945308D3682D1"
+        "uid": "${logs}"
       },
       "fieldConfig": {
         "defaults": {},
@@ -798,8 +953,9 @@
         {
           "datasource": {
             "type": "loki",
-            "uid": "P982945308D3682D1"
+            "uid": "${logs}"
           },
+          "direction": "backward",
           "editorMode": "builder",
           "expr": "{service_name=\"moat\"} | label_format level=detected_level | peer = `moat-cache-2:23457`",
           "queryType": "range",
@@ -812,7 +968,7 @@
     {
       "datasource": {
         "type": "loki",
-        "uid": "P982945308D3682D1"
+        "uid": "${logs}"
       },
       "fieldConfig": {
         "defaults": {},
@@ -841,8 +997,9 @@
         {
           "datasource": {
             "type": "loki",
-            "uid": "P982945308D3682D1"
+            "uid": "${logs}"
           },
+          "direction": "backward",
           "editorMode": "builder",
           "expr": "{service_name=\"moat\"} | label_format level=detected_level | peer = `moat-cache-3:23458`",
           "queryType": "range",
@@ -855,7 +1012,7 @@
     {
       "datasource": {
         "type": "loki",
-        "uid": "P982945308D3682D1"
+        "uid": "${logs}"
       },
       "fieldConfig": {
         "defaults": {},
@@ -884,8 +1041,9 @@
         {
           "datasource": {
             "type": "loki",
-            "uid": "P982945308D3682D1"
+            "uid": "${logs}"
           },
+          "direction": "backward",
           "editorMode": "builder",
           "expr": "{service_name=\"moat\"} | label_format level=detected_level | peer = `moat-cache-4:23459`",
           "queryType": "range",
@@ -901,7 +1059,61 @@
   "schemaVersion": 41,
   "tags": [],
   "templating": {
-    "list": []
+    "list": [
+      {
+        "current": {
+          "text": "prometheus",
+          "value": "P1809F7CD0C75ACF3"
+        },
+        "description": "",
+        "includeAll": false,
+        "name": "metrics",
+        "options": [],
+        "query": "prometheus",
+        "refresh": 1,
+        "regex": "",
+        "type": "datasource"
+      },
+      {
+        "current": {
+          "text": "loki",
+          "value": "P982945308D3682D1"
+        },
+        "name": "logs",
+        "options": [],
+        "query": "loki",
+        "refresh": 1,
+        "regex": "",
+        "type": "datasource"
+      },
+      {
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${metrics}"
+        },
+        "definition": "label_values(up,peer)",
+        "includeAll": true,
+        "multi": true,
+        "name": "peer",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(up,peer)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 1,
+        "regex": "",
+        "type": "query"
+      }
+    ]
   },
   "time": {
     "from": "now-5m",
