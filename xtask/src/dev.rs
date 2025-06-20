@@ -51,7 +51,7 @@ pub fn up(args: Up) {
 
     let cmd = format!(
         r#"docker compose up --build -d {services}"#,
-        services = args.services.join(" ")
+        services = args.services.join(" "),
     );
     let mut env = env();
     let mut build_args = String::new();
@@ -72,10 +72,14 @@ pub fn down(args: Down) {
         r#"docker compose --profile "*" down {services}"#,
         services = args.services.join(" ")
     );
-    run_with_env(&cmd, env());
+    let mut env = env();
+    env.push(("BUILD_ARGS", String::new()));
+    run_with_env(&cmd, env);
 }
 
 pub fn clean() {
-    run_with_env(r#"docker compose --profile "*" down --volumes --remove-orphans"#, env());
+    let mut env = env();
+    env.push(("BUILD_ARGS", String::new()));
+    run_with_env(r#"docker compose --profile "*" down --volumes --remove-orphans"#, env);
     run("rm -rf .moat");
 }

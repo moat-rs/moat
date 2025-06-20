@@ -47,6 +47,21 @@ In some countries and regions, accessing the complete internet requires the use 
 
 ```yaml
 services:
+  node-exporter:
+    environment:
+      - no_proxy=${MOAT_NO_PROXY}
+  prometheus:
+    environment:
+      - no_proxy=${MOAT_NO_PROXY}
+  loki:
+    environment:
+      - no_proxy=${MOAT_NO_PROXY}
+  otel-collector:
+    environment:
+      - no_proxy=${MOAT_NO_PROXY}
+  grafana:
+    environment:
+      - no_proxy=${MOAT_NO_PROXY}
   minio:
     environment:
       - no_proxy=${MOAT_NO_PROXY}
@@ -68,13 +83,12 @@ services:
   moat-cache-4: *moat
   moat-agent-1: *moat
   moat-agent-2: *moat
-
 ```
 
 - `.env`
 
 ```properties
-MOAT_NO_PROXY=localhost,127.0.0.1,minio,moat,moat-cache-1,moat-cache-2,moat-cache-3,moat-cache-4,moat-agent-1,moat-agent-2
+MOAT_NO_PROXY=localhost,127.0.0.1,minio,moat,moat-cache-1,moat-cache-2,moat-cache-3,moat-cache-4,moat-agent-1,moat-agent-2,prometheus,grafana,node-exporter,otel-collector,loki
 MOAT_PROXY=<YOUR PROXY ENDPOINT>
 ```
 

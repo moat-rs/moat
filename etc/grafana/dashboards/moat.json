@@ -144,11 +144,11 @@
           },
           "editorMode": "code",
           "exemplar": false,
-          "expr": "sum(rate(moat_s3_count_total[$__rate_interval])) by (peer, operation, ctx, status)",
+          "expr": "sum(rate(moat_s3_count_total[$__rate_interval])) by (peer, operation, extra, status)",
           "format": "time_series",
           "instant": false,
           "interval": "",
-          "legendFormat": "{{peer}} - {{operation}} - {{ctx}} - {{status}}",
+          "legendFormat": "{{peer}} - {{operation}} - {{extra}} - {{status}}",
           "range": true,
           "refId": "A"
         }
@@ -253,11 +253,11 @@
           },
           "editorMode": "code",
           "exemplar": false,
-          "expr": "sum(rate(moat_s3_bytes_total[$__rate_interval])) by (peer, operation, ctx, status)",
+          "expr": "sum(rate(moat_s3_bytes_total[$__rate_interval])) by (peer, operation, extra, status)",
           "format": "time_series",
           "instant": false,
           "interval": "",
-          "legendFormat": "{{peer}} - {{operation}} - {{ctx}} - {{status}}",
+          "legendFormat": "{{peer}} - {{operation}} - {{extra}} - {{status}}",
           "range": true,
           "refId": "A"
         }
