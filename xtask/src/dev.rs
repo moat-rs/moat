@@ -37,6 +37,8 @@ fn env() -> Vec<(&'static str, String)> {
 #[derive(Debug, Args)]
 pub struct Up {
     services: Vec<String>,
+    #[arg(long, default_value_t = false)]
+    release: bool,
 }
 
 pub fn up(args: Up) {
@@ -51,7 +53,13 @@ pub fn up(args: Up) {
         r#"docker compose up --build -d {services}"#,
         services = args.services.join(" ")
     );
-    run_with_env(&cmd, env());
+    let mut env = env();
+    let mut build_args = String::new();
+    if args.release {
+        build_args.push_str("--release ");
+    }
+    env.push(("BUILD_ARGS", build_args));
+    run_with_env(&cmd, env);
 }
 
 #[derive(Debug, Args)]

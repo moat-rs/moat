@@ -111,7 +111,7 @@ pub struct CacheConfig {
     #[clap(long, default_value_t = 2)]
     pub reclaimers: usize,
 
-    #[clap(long, default_value = "16MiB")]
+    #[clap(long, default_value = "64MiB")]
     pub buffer_pool_size: ByteSize,
 
     #[clap(long, default_value = "quiet")]

@@ -12,6 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+
 use async_trait::async_trait;
 use bytes::Bytes;
 
@@ -34,6 +39,7 @@ use crate::{
         manager::{Gossip, MetaManager, MetaManagerConfig, Observer},
         model::{MemberList, Peer, Role},
     },
+    metrics::{S3Metrics, S3MetricsGuard},
     runtime::Runtime,
 };
 
@@ -242,6 +248,15 @@ impl Proxy {
     ) -> Result<bool> {
         tracing::debug!(bucket, path, "Handling S3 GetObject request");
 
+        // TODO(Mrcroxx): Move the guard into the context, count duration and bytes on response finish to have a accurate metric.
+        let mut mg = S3MetricsGuard::new(
+            S3Metrics::OPERATION_GET_OBJECT,
+            S3Metrics::STATUS_OK,
+            S3Metrics::CTX_NONE,
+            1,
+            0,
+        );
+
         // TODO(MrCroxx): Agent check cache first, and use fetch for cache refilling.
 
         // Find the suitable peer for the request.
@@ -250,6 +265,7 @@ impl Proxy {
             None => {
                 tracing::warn!(path, "No available peer found, attempting to fetch from S3 directly");
                 let bytes = self.s3_get_object_directly(path).await?;
+                mg.ctx(S3Metrics::CTX_S3).add_bytes(bytes.len() as _);
                 self.write_get_object_response(session, bytes).await?;
                 return Ok(true);
             }
@@ -258,6 +274,7 @@ impl Proxy {
         if peer != self.peer {
             tracing::debug!(bucket, path, ?peer, "Found another peer for S3 GetObject request");
             ctx.upstream_peer = UpstreamPeer::Peer(peer);
+            mg.ctx(S3Metrics::CTX_PROXIED);
             return Ok(false);
         }
 
@@ -267,36 +284,48 @@ impl Proxy {
                     path,
                     "Agent cannot find available cache peer to serve the request, attempting to fetch from S3 directly"
                 );
+                mg.ctx(S3Metrics::CTX_S3);
                 self.s3_get_object_directly(path).await?
             }
-            Role::Cache => match self
-                .cache
-                .fetch(path.to_string(), || {
-                    let op = self.operator.clone();
-                    let path = path.to_string();
-                    async move {
-                        let res = op.read(&path).await;
-                        res.map(|buf| buf.to_bytes()).map_err(anyhow::Error::from)
+            Role::Cache => {
+                let fetched = Arc::new(AtomicBool::new(false));
+                match self
+                    .cache
+                    .fetch(path.to_string(), || {
+                        let op = self.operator.clone();
+                        let path = path.to_string();
+                        let fetched = fetched.clone();
+                        async move {
+                            fetched.store(true, Ordering::Relaxed);
+                            let res = op.read(&path).await;
+                            res.map(|buf| buf.to_bytes()).map_err(anyhow::Error::from)
+                        }
+                    })
+                    .await
+                    .map_err(|e| Error::because(ErrorType::InternalError, "cache get object error", e))
+                {
+                    Ok(entry) => {
+                        tracing::debug!(path, "Fetched object from cache");
+                        if fetched.load(Ordering::Relaxed) {
+                            mg.ctx(S3Metrics::CTX_FETCHED);
+                        } else {
+                            mg.ctx(S3Metrics::CTX_CACHED);
+                        }
+                        entry.value().clone()
                     }
-                })
-                .await
-                .map_err(|e| Error::because(ErrorType::InternalError, "cache get object error", e))
-            {
-                Ok(entry) => {
-                    tracing::debug!(path, "Fetched object from cache");
-                    entry.value().clone()
+                    Err(e) => {
+                        tracing::warn!(
+                            ?e,
+                            path,
+                            "Failed to fetch object from cache, attempting to fetch from S3 directly"
+                        );
+                        mg.ctx(S3Metrics::CTX_S3);
+                        self.s3_get_object_directly(path).await?
+                    }
                 }
-                Err(e) => {
-                    tracing::warn!(
-                        ?e,
-                        path,
-                        "Failed to fetch object from cache, attempting to fetch from S3 directly"
-                    );
-                    self.s3_get_object_directly(path).await?
-                }
-            },
+            }
         };
-
+        mg.add_bytes(bytes.len() as _);
         self.write_get_object_response(session, bytes).await?;
         Ok(true)
     }

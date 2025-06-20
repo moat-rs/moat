@@ -1,8 +1,9 @@
-ARG HTTP_PROXY
-ARG HTTPS_PROXY
-ARG NO_PROXY
-
 FROM rust:latest AS builder
+
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG NO_PROXY=""
+ARG BUILD_ARGS=""
 
 ENV http_proxy=${HTTP_PROXY}
 ENV https_proxy=${HTTPS_PROXY}
@@ -17,8 +18,9 @@ RUN mkdir -p /bin
 RUN --mount=type=cache,target=/target/ \
     --mount=type=cache,target=/usr/local/cargo/git/db \
     --mount=type=cache,target=/usr/local/cargo/registry/ \
-    cargo build && \
-    cp /target/debug/moat /bin/
+    cargo build ${BUILD_ARGS} && \
+    cp /target/debug/moat /bin/ || true && \
+    cp /target/release/moat /bin/ || true
 
 
 FROM ubuntu:24.04 AS runner
