@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::sync::LazyLock;
+use std::{borrow::Cow, sync::LazyLock};
 
 use opentelemetry::{
     KeyValue,
@@ -25,6 +25,7 @@ use crate::meta::model::{Peer, Role};
 pub struct Metrics {
     pub api: ApiMetrics,
     pub cluster: ClusterMetrics,
+    pub s3: S3Metrics,
 }
 
 impl Metrics {
@@ -38,8 +39,9 @@ impl Metrics {
 
         let api = ApiMetrics::new(&meter);
         let cluster = ClusterMetrics::new(&meter);
+        let s3 = S3Metrics::new(&meter);
 
-        Self { api, cluster }
+        Self { api, cluster, s3 }
     }
 }
 
@@ -68,10 +70,10 @@ impl ApiMetrics {
         }
     }
 
-    pub fn labels(api: &str, operation: &str, status: &str) -> [KeyValue; 3] {
+    pub fn labels(api: &str, method: &str, status: &str) -> [KeyValue; 3] {
         [
             KeyValue::new("api", api.to_string()),
-            KeyValue::new("operation", operation.to_string()),
+            KeyValue::new("method", method.to_string()),
             KeyValue::new("status", status.to_string()),
         ]
     }
@@ -98,4 +100,57 @@ impl ClusterMetrics {
             KeyValue::new("role", role.to_string()),
         ]
     }
+}
+
+#[derive(Debug)]
+pub struct S3Metrics {
+    pub count: Counter<u64>,
+    pub bytes: Counter<u64>,
+    pub duration: Histogram<f64>,
+}
+
+impl S3Metrics {
+    pub fn new(meter: &Meter) -> Self {
+        Self {
+            count: meter
+                .u64_counter("moat.s3.count")
+                .with_description("Moat S3 API call count")
+                .build(),
+            bytes: meter
+                .u64_counter("moat.s3.bytes")
+                .with_description("Moat S3 API call bytes transferred")
+                .build(),
+            duration: meter
+                .f64_histogram("moat.s3.duration")
+                .with_description("Moat S3 API call duration in seconds")
+                .with_unit("second")
+                .with_boundaries(vec![
+                    0.0001, 0.0005, 0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 5.0, 10.0,
+                ])
+                .build(),
+        }
+    }
+
+    pub fn labels(
+        operation: impl Into<Cow<'static, str>>,
+        status: impl Into<Cow<'static, str>>,
+        extra: impl Into<Cow<'static, str>>,
+    ) -> [KeyValue; 3] {
+        [
+            KeyValue::new("operation", operation.into()),
+            KeyValue::new("status", status.into()),
+            KeyValue::new("extra", extra.into()),
+        ]
+    }
+
+    pub const OPERATION_GET_OBJECT: &'static str = "GetObject";
+
+    pub const STATUS_OK: &'static str = "ok";
+    pub const STATUS_ERR: &'static str = "err";
+
+    pub const EXTRA_NONE: &'static str = "none";
+    pub const EXTRA_CACHED: &'static str = "cached";
+    pub const EXTRA_FETCHED: &'static str = "fetched";
+    pub const EXTRA_PROXIED: &'static str = "proxied";
+    pub const EXTRA_S3: &'static str = "s3";
 }

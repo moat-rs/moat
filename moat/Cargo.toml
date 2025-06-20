@@ -50,7 +50,7 @@ poem = { workspace = true }
 rand = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
 scopeguard = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive", "rc"] }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync"] }

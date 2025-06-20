@@ -85,7 +85,6 @@ services:
       - 3000:3000
     environment:
       - GF_AUTH_ANONYMOUS_ENABLED=true
-      - NO_PROXY=prometheus
   
   otel-collector:
     image: otel/opentelemetry-collector:latest
@@ -135,6 +134,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        - BUILD_ARGS=${BUILD_ARGS}
     image: moat:latest
     container_name: moat-cache-1
     networks:
@@ -181,6 +182,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        - BUILD_ARGS=${BUILD_ARGS}
     image: moat:latest
     container_name: moat-cache-2
     networks:
@@ -227,6 +230,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        - BUILD_ARGS=${BUILD_ARGS}
     image: moat:latest
     container_name: moat-cache-3
     networks:
@@ -273,6 +278,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        - BUILD_ARGS=${BUILD_ARGS}
     image: moat:latest
     container_name: moat-cache-4
     networks:
@@ -321,6 +328,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        - BUILD_ARGS=${BUILD_ARGS}
     image: moat:latest
     container_name: moat-agent-1
     networks:
@@ -356,6 +365,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        - BUILD_ARGS=${BUILD_ARGS}
     image: moat:latest
     container_name: moat-agent-2
     networks:

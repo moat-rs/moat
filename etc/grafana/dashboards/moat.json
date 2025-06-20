@@ -18,8 +18,266 @@
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
+  "id": 3,
   "links": [],
   "panels": [
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 15,
+      "panels": [],
+      "title": "API Service",
+      "type": "row"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 1
+      },
+      "id": 14,
+      "panels": [],
+      "title": "S3 Service",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "P92AEBB27A9B79E22"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green"
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "reqps"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Time"
+            },
+            "properties": []
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 0,
+        "y": 2
+      },
+      "id": 10,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.0.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P92AEBB27A9B79E22"
+          },
+          "editorMode": "code",
+          "exemplar": false,
+          "expr": "sum(rate(moat_s3_count_total[$__rate_interval])) by (peer, operation, extra, status)",
+          "format": "time_series",
+          "instant": false,
+          "interval": "",
+          "legendFormat": "{{peer}} - {{operation}} - {{extra}} - {{status}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "QPS",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "P92AEBB27A9B79E22"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green"
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "Bps"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Time"
+            },
+            "properties": []
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 6,
+        "y": 2
+      },
+      "id": 17,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.0.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "P92AEBB27A9B79E22"
+          },
+          "editorMode": "code",
+          "exemplar": false,
+          "expr": "sum(rate(moat_s3_bytes_total[$__rate_interval])) by (peer, operation, extra, status)",
+          "format": "time_series",
+          "instant": false,
+          "interval": "",
+          "legendFormat": "{{peer}} - {{operation}} - {{extra}} - {{status}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Throughput",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 10
+      },
+      "id": 13,
+      "panels": [],
+      "title": "Member View",
+      "type": "row"
+    },
     {
       "datasource": {
         "type": "prometheus",
@@ -43,8 +301,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
-                "value": null
+                "color": "green"
               },
               {
                 "color": "red",
@@ -72,9 +329,9 @@
         "h": 8,
         "w": 6,
         "x": 0,
-        "y": 0
+        "y": 11
       },
-      "id": 10,
+      "id": 16,
       "options": {
         "cellHeight": "sm",
         "footer": {
@@ -88,7 +345,7 @@
         "showHeader": true,
         "sortBy": []
       },
-      "pluginVersion": "11.1.4",
+      "pluginVersion": "12.0.2",
       "targets": [
         {
           "datasource": {
@@ -152,8 +409,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
-                "value": null
+                "color": "green"
               },
               {
                 "color": "red",
@@ -181,7 +437,7 @@
         "h": 8,
         "w": 6,
         "x": 6,
-        "y": 0
+        "y": 11
       },
       "id": 9,
       "options": {
@@ -197,7 +453,7 @@
         "showHeader": true,
         "sortBy": []
       },
-      "pluginVersion": "11.1.4",
+      "pluginVersion": "12.0.2",
       "targets": [
         {
           "datasource": {
@@ -261,8 +517,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
-                "value": null
+                "color": "green"
               },
               {
                 "color": "red",
@@ -290,7 +545,7 @@
         "h": 8,
         "w": 6,
         "x": 12,
-        "y": 0
+        "y": 11
       },
       "id": 11,
       "options": {
@@ -306,7 +561,7 @@
         "showHeader": true,
         "sortBy": []
       },
-      "pluginVersion": "11.1.4",
+      "pluginVersion": "12.0.2",
       "targets": [
         {
           "datasource": {
@@ -370,8 +625,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
-                "value": null
+                "color": "green"
               },
               {
                 "color": "red",
@@ -399,7 +653,7 @@
         "h": 8,
         "w": 6,
         "x": 18,
-        "y": 0
+        "y": 11
       },
       "id": 12,
       "options": {
@@ -415,7 +669,7 @@
         "showHeader": true,
         "sortBy": []
       },
-      "pluginVersion": "11.1.4",
+      "pluginVersion": "12.0.2",
       "targets": [
         {
           "datasource": {
@@ -462,11 +716,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 8
+        "y": 19
       },
       "id": 5,
       "panels": [],
-      "title": "Logs",
+      "title": "Log View",
       "type": "row"
     },
     {
@@ -474,15 +728,20 @@
         "type": "loki",
         "uid": "P982945308D3682D1"
       },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
       "gridPos": {
         "h": 8,
         "w": 6,
         "x": 0,
-        "y": 9
+        "y": 20
       },
       "id": 1,
       "options": {
         "dedupStrategy": "none",
+        "enableInfiniteScrolling": false,
         "enableLogDetails": true,
         "prettifyLogMessage": false,
         "showCommonLabels": false,
@@ -491,6 +750,7 @@
         "sortOrder": "Descending",
         "wrapLogMessage": false
       },
+      "pluginVersion": "12.0.2",
       "targets": [
         {
           "datasource": {
@@ -511,15 +771,20 @@
         "type": "loki",
         "uid": "P982945308D3682D1"
       },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
       "gridPos": {
         "h": 8,
         "w": 6,
         "x": 6,
-        "y": 9
+        "y": 20
       },
       "id": 2,
       "options": {
         "dedupStrategy": "none",
+        "enableInfiniteScrolling": false,
         "enableLogDetails": true,
         "prettifyLogMessage": false,
         "showCommonLabels": false,
@@ -528,6 +793,7 @@
         "sortOrder": "Descending",
         "wrapLogMessage": false
       },
+      "pluginVersion": "12.0.2",
       "targets": [
         {
           "datasource": {
@@ -548,15 +814,20 @@
         "type": "loki",
         "uid": "P982945308D3682D1"
       },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
       "gridPos": {
         "h": 8,
         "w": 6,
         "x": 12,
-        "y": 9
+        "y": 20
       },
       "id": 3,
       "options": {
         "dedupStrategy": "none",
+        "enableInfiniteScrolling": false,
         "enableLogDetails": true,
         "prettifyLogMessage": false,
         "showCommonLabels": false,
@@ -565,6 +836,7 @@
         "sortOrder": "Descending",
         "wrapLogMessage": false
       },
+      "pluginVersion": "12.0.2",
       "targets": [
         {
           "datasource": {
@@ -585,15 +857,20 @@
         "type": "loki",
         "uid": "P982945308D3682D1"
       },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
       "gridPos": {
         "h": 8,
         "w": 6,
         "x": 18,
-        "y": 9
+        "y": 20
       },
       "id": 4,
       "options": {
         "dedupStrategy": "none",
+        "enableInfiniteScrolling": false,
         "enableLogDetails": true,
         "prettifyLogMessage": false,
         "showCommonLabels": false,
@@ -602,6 +879,7 @@
         "sortOrder": "Descending",
         "wrapLogMessage": false
       },
+      "pluginVersion": "12.0.2",
       "targets": [
         {
           "datasource": {
@@ -618,8 +896,9 @@
       "type": "logs"
     }
   ],
+  "preload": false,
   "refresh": "5s",
-  "schemaVersion": 39,
+  "schemaVersion": 41,
   "tags": [],
   "templating": {
     "list": []
@@ -632,6 +911,5 @@
   "timezone": "browser",
   "title": "moat",
   "uid": "eepek3nt27ls0f",
-  "version": 1,
-  "weekStart": ""
+  "version": 1
 }

@@ -12,15 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use async_trait::async_trait;
+mod proxy;
+
+use std::sync::Arc;
+
 use bytes::Bytes;
 
 use foyer::{DirectFsDeviceOptions, Engine, HybridCache, LargeEngineOptions, RuntimeOptions, TokioRuntimeOptions};
-use http::{StatusCode, Version, header::CONTENT_TYPE};
 use mixtrics::registry::opentelemetry_0_30::OpenTelemetryMetricsRegistry;
 use opendal::{Operator, layers::LoggingLayer, services::S3};
 use pingora::{
-    http::ResponseHeader,
     prelude::*,
     proxy::http_proxy_service_with_name,
     server::{RunArgs, configuration::ServerConf},
@@ -32,43 +33,11 @@ use crate::{
     config::MoatConfig,
     meta::{
         manager::{Gossip, MetaManager, MetaManagerConfig, Observer},
-        model::{MemberList, Peer, Role},
+        model::{MemberList, Role},
     },
     runtime::Runtime,
+    server::proxy::{Proxy, ProxyConfig},
 };
-
-#[derive(Debug)]
-enum MoatRequest {
-    MoatApi,
-    S3GetObject { bucket: String, path: String },
-    // TODO(MrCroxx): cache insertion
-    // S3PutObject {}
-    S3Other,
-}
-
-impl MoatRequest {
-    fn parse(api_prefix: &str, request: &RequestHeader) -> Self {
-        let path = request.uri.path();
-        let method = request.method.as_str();
-
-        if path == api_prefix || path.starts_with(&format!("{}/", api_prefix)) {
-            return MoatRequest::MoatApi;
-        }
-
-        // S3 GetObject schema: GET /{bucket}/{path}
-        if method == "GET" && path.len() > 1 {
-            let parts: Vec<&str> = path[1..].splitn(2, '/').collect();
-            if parts.len() == 2 {
-                return MoatRequest::S3GetObject {
-                    bucket: parts[0].to_string(),
-                    path: parts[1].to_string(),
-                };
-            }
-        }
-
-        MoatRequest::S3Other
-    }
-}
 
 pub struct Moat;
 
@@ -83,7 +52,7 @@ impl Moat {
                     .with_metrics_registry(registry)
                     .memory(config.cache.mem.as_u64() as _)
                     // TODO(MrCroxx): Count serialized size?
-                    .with_weighter(|path: &String, data: &Bytes| path.len() + data.len())
+                    .with_weighter(|path: &Arc<String>, data: &Bytes| path.len() + data.len())
                     .storage(Engine::Large(
                         LargeEngineOptions::new()
                             .with_flushers(config.cache.flushers)
@@ -170,7 +139,7 @@ impl Moat {
         let s3_tls = config.s3_config.endpoint.scheme() == "https";
         let s3_bucket = config.s3_config.bucket.clone();
 
-        let proxy = Proxy {
+        let proxy = Proxy::new(ProxyConfig {
             api,
             resigner,
             s3_host,
@@ -183,7 +152,7 @@ impl Moat {
             meta_manager: meta_manager.clone(),
             peer: config.peer.clone(),
             tls: config.tls,
-        };
+        });
         let mut service = http_proxy_service_with_name(&server.configuration, proxy, "moat");
         service.add_tcp(&config.listen.to_string());
         server.add_service(service);
@@ -193,235 +162,6 @@ impl Moat {
             let old = meta_manager.members().await;
             meta_manager.update_cluster_metrics(&old, &MemberList::default());
         });
-
-        Ok(())
-    }
-}
-
-#[derive(Debug, Default)]
-pub enum UpstreamPeer {
-    #[default]
-    None,
-    S3,
-    Peer(Peer),
-}
-
-#[derive(Debug, Default)]
-pub struct ProxyCtx {
-    upstream_peer: UpstreamPeer,
-}
-
-struct Proxy {
-    api: ApiService,
-
-    resigner: AwsSigV4Resigner,
-
-    s3_host: String,
-    s3_port: u16,
-    s3_tls: bool,
-    s3_bucket: String,
-
-    role: Role,
-    cache: HybridCache<String, Bytes>,
-    operator: Operator,
-    meta_manager: MetaManager,
-
-    peer: Peer,
-    tls: bool,
-}
-
-impl Proxy {
-    const MOAT_PEER_HEADER: &str = "X-Moat-Peer";
-
-    async fn handle_get_object(
-        &self,
-        bucket: &str,
-        path: &str,
-        session: &mut Session,
-        ctx: &mut ProxyCtx,
-    ) -> Result<bool> {
-        tracing::debug!(bucket, path, "Handling S3 GetObject request");
-
-        // TODO(MrCroxx): Agent check cache first, and use fetch for cache refilling.
-
-        // Find the suitable peer for the request.
-        let peer = match self.meta_manager.locate(path).await {
-            Some(p) => p,
-            None => {
-                tracing::warn!(path, "No available peer found, attempting to fetch from S3 directly");
-                let bytes = self.s3_get_object_directly(path).await?;
-                self.write_get_object_response(session, bytes).await?;
-                return Ok(true);
-            }
-        };
-
-        if peer != self.peer {
-            tracing::debug!(bucket, path, ?peer, "Found another peer for S3 GetObject request");
-            ctx.upstream_peer = UpstreamPeer::Peer(peer);
-            return Ok(false);
-        }
-
-        let bytes = match self.role {
-            Role::Agent => {
-                tracing::warn!(
-                    path,
-                    "Agent cannot find available cache peer to serve the request, attempting to fetch from S3 directly"
-                );
-                self.s3_get_object_directly(path).await?
-            }
-            Role::Cache => match self
-                .cache
-                .fetch(path.to_string(), || {
-                    let op = self.operator.clone();
-                    let path = path.to_string();
-                    async move {
-                        let res = op.read(&path).await;
-                        res.map(|buf| buf.to_bytes()).map_err(anyhow::Error::from)
-                    }
-                })
-                .await
-                .map_err(|e| Error::because(ErrorType::InternalError, "cache get object error", e))
-            {
-                Ok(entry) => {
-                    tracing::debug!(path, "Fetched object from cache");
-                    entry.value().clone()
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        ?e,
-                        path,
-                        "Failed to fetch object from cache, attempting to fetch from S3 directly"
-                    );
-                    self.s3_get_object_directly(path).await?
-                }
-            },
-        };
-
-        self.write_get_object_response(session, bytes).await?;
-        Ok(true)
-    }
-
-    async fn write_get_object_response(&self, session: &mut Session, bytes: Bytes) -> Result<()> {
-        let mut header = ResponseHeader::build_no_case(StatusCode::OK, None)?;
-
-        header.append_header(CONTENT_TYPE, "application/octet-stream")?;
-        header.set_version(Version::HTTP_11);
-        header.set_content_length(bytes.len())?;
-
-        session.write_response_header(Box::new(header), true).await?;
-        session.write_response_body(Some(bytes), true).await?;
-
-        Ok(())
-    }
-
-    async fn s3_get_object_directly(&self, path: &str) -> Result<Bytes> {
-        self.operator
-            .read(path)
-            .await
-            .map(|buf| buf.to_bytes())
-            .map_err(|e| Error::because(ErrorType::InternalError, "s3 get object error", e))
-    }
-}
-
-#[async_trait]
-impl ProxyHttp for Proxy {
-    type CTX = ProxyCtx;
-
-    fn new_ctx(&self) -> Self::CTX {
-        ProxyCtx::default()
-    }
-
-    async fn upstream_peer(&self, _: &mut Session, ctx: &mut Self::CTX) -> Result<Box<HttpPeer>> {
-        tracing::debug!(?ctx, "looking up upstream peer");
-        let upstream_peer = match &ctx.upstream_peer {
-            UpstreamPeer::None => {
-                return Err(Error::explain(
-                    ErrorType::ConnectProxyFailure,
-                    "no upstream peer to route",
-                ));
-            }
-            UpstreamPeer::S3 => Box::new(HttpPeer::new(
-                format!("{}:{}", self.s3_host, self.s3_port),
-                self.s3_tls,
-                self.s3_host.clone(),
-            )),
-            UpstreamPeer::Peer(peer) => Box::new(HttpPeer::new(peer.to_string(), self.tls, peer.host.clone())),
-        };
-        Ok(upstream_peer)
-    }
-
-    async fn request_filter(&self, session: &mut Session, ctx: &mut Self::CTX) -> Result<bool>
-    where
-        Self::CTX: Send + Sync,
-    {
-        let header = session.req_header();
-        let request = MoatRequest::parse(self.api.prefix(), header);
-
-        tracing::trace!(?header, ?request, "Receive request");
-
-        match request {
-            MoatRequest::MoatApi => {
-                tracing::debug!("Handling Moat API request");
-                self.api.handle(session).await?;
-                return Ok(true);
-            }
-            MoatRequest::S3GetObject { bucket, path } if bucket == self.s3_bucket => {
-                return self.handle_get_object(&bucket, &path, session, ctx).await;
-            }
-            MoatRequest::S3GetObject { .. } | MoatRequest::S3Other => {
-                ctx.upstream_peer = UpstreamPeer::S3;
-            }
-        }
-
-        Ok(false)
-    }
-
-    async fn upstream_request_filter(
-        &self,
-        _session: &mut Session,
-        upstream_request: &mut RequestHeader,
-        _ctx: &mut Self::CTX,
-    ) -> Result<()>
-    where
-        Self::CTX: Send + Sync,
-    {
-        tracing::trace!(?upstream_request, "Upstream request before filtering");
-
-        self.resigner.resign(upstream_request);
-
-        tracing::trace!(?upstream_request, "Upstream request after filtering");
-
-        Ok(())
-    }
-
-    async fn response_filter(
-        &self,
-        _session: &mut Session,
-        upstream_response: &mut ResponseHeader,
-        ctx: &mut Self::CTX,
-    ) -> Result<()>
-    where
-        Self::CTX: Send + Sync,
-    {
-        match self.role {
-            Role::Agent => {
-                if let Some(value) = upstream_response.headers.get(Self::MOAT_PEER_HEADER) {
-                    tracing::warn!(
-                        ?value,
-                        "Receive peer redirect hint from cache peer, update memberlist at once."
-                    );
-                    // TODO(MrCroxx): Observe in another task.
-                    self.meta_manager.observe().await;
-                    upstream_response.remove_header(Self::MOAT_PEER_HEADER);
-                }
-            }
-            Role::Cache => {
-                if let UpstreamPeer::Peer(peer) = &ctx.upstream_peer {
-                    tracing::trace!(?peer, "Inserting peer header into response header");
-                    upstream_response.insert_header(Self::MOAT_PEER_HEADER, peer.to_string())?;
-                }
-            }
-        }
 
         Ok(())
     }
