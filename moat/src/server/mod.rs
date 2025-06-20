@@ -35,6 +35,7 @@ use crate::{
         manager::{Gossip, MetaManager, MetaManagerConfig, Observer},
         model::{MemberList, Role},
     },
+    metrics::Metrics,
     runtime::Runtime,
     server::proxy::{Proxy, ProxyConfig},
 };
@@ -156,12 +157,15 @@ impl Moat {
         let mut service = http_proxy_service_with_name(&server.configuration, proxy, "moat");
         service.add_tcp(&config.listen.to_string());
         server.add_service(service);
-        server.run(RunArgs::default());
 
+        let metrics = Metrics::global();
+        metrics.cluster.up.record(1, &[]);
+        server.run(RunArgs::default());
         runtime.block_on(async {
             let old = meta_manager.members().await;
             meta_manager.update_cluster_metrics(&old, &MemberList::default());
         });
+        metrics.cluster.up.record(0, &[]);
 
         Ok(())
     }

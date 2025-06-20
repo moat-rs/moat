@@ -14,9 +14,9 @@
 
 apiVersion: 1
 deleteDatasources:
-  - name: foyer,loki
+  - name: prometheus
 datasources:
-  - name: foyer
+  - name: prometheus
     type: prometheus
     access: proxy
     url: http://prometheus:9090

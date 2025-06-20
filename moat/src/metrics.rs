@@ -81,12 +81,14 @@ impl ApiMetrics {
 
 #[derive(Debug)]
 pub struct ClusterMetrics {
+    pub up: Gauge<u64>,
     pub peer: Gauge<i64>,
 }
 
 impl ClusterMetrics {
     pub fn new(meter: &Meter) -> Self {
         Self {
+            up: meter.u64_gauge("up").with_description("Moat up state").build(),
             peer: meter
                 .i64_gauge("moat.peer.up")
                 .with_description("Moat peer state")
