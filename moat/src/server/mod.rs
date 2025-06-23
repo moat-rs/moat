@@ -14,7 +14,7 @@
 
 mod proxy;
 
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
 use bytes::Bytes;
 
@@ -65,7 +65,7 @@ impl Moat {
                     .with_runtime_options(RuntimeOptions::Unified(TokioRuntimeOptions::default()));
                 if let Some(dir) = &config.cache.dir {
                     builder = builder.with_device_options(
-                        DirectFsDeviceOptions::new(dir)
+                        DirectFsDeviceOptions::new(PathBuf::from(dir).join("data"))
                             .with_capacity(config.cache.disk.as_u64() as _)
                             .with_file_size(config.cache.file_size.as_u64() as _)
                             .with_throttle(config.cache.throttle.clone()),

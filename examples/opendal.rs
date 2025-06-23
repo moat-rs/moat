@@ -75,8 +75,14 @@ async fn main() -> std::io::Result<()> {
     let len = op.stat("obj-2").await?.content_length();
     tracing::info!(len, "stat obj-2");
 
+    s.clear();
+    op.write("obj-3", "0123Love Moat.ef").await?;
+    op.read_with("obj-3").range(4..14).await?.read_to_string(&mut s)?;
+    tracing::info!(data = s, "read obj-3 with range");
+
     op.delete("obj-1").await?;
     op.delete("obj-2").await?;
+    op.delete("obj-3").await?;
 
     let res = op.list("/").await?;
     tracing::info!(?res, "list");
@@ -91,6 +97,7 @@ async fn main() -> std::io::Result<()> {
             tracing::info!("put {key}");
             op.write(&key, payload).await?;
             tracing::info!("get {key}");
+            s.clear();
             op.read(&key).await?.read_to_string(&mut s)?;
         }
     }

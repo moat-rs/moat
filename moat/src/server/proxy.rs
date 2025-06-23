@@ -14,6 +14,7 @@
 
 use std::{
     borrow::Cow,
+    ops::Bound,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -21,13 +22,20 @@ use std::{
     time::Instant,
 };
 
+use headers::{Header, Range as HeaderRange};
+
 use async_trait::async_trait;
 use bytes::Bytes;
+use itertools::Itertools;
 
+use crate::error::{Error, Result};
 use foyer::HybridCache;
 use http::{StatusCode, Version, header::CONTENT_TYPE};
 use opendal::Operator;
-use pingora::{http::ResponseHeader, prelude::*};
+use pingora::{
+    http::{RequestHeader, ResponseHeader},
+    prelude::{Error as PingoraError, HttpPeer, ProxyHttp, Result as PingoraResult, Session},
+};
 
 use crate::{
     api::service::ApiService,
@@ -43,6 +51,7 @@ use crate::{
 struct S3GetObjectArgs {
     bucket: String,
     path: Arc<String>,
+    range: Option<HeaderRange>,
 }
 
 #[derive(Debug)]
@@ -56,26 +65,42 @@ enum Category {
 }
 
 impl Category {
-    fn parse(api_prefix: &str, request: &RequestHeader) -> Self {
+    fn parse(api_prefix: &str, request: &RequestHeader) -> Result<Self> {
         let path = request.uri.path();
         let method = request.method.as_str();
 
         if path == api_prefix || path.starts_with(&format!("{}/", api_prefix)) {
-            return Category::MoatApi;
+            return Ok(Category::MoatApi);
         }
 
         // S3 GetObject schema: GET /{bucket}/{path}
         if method == "GET" && path.len() > 1 {
+            if let Some(query) = request.uri.query() {
+                let pairs = url::form_urlencoded::parse(query.as_bytes()).collect_vec();
+                if pairs.iter().any(|(k, _)| k == "partNumber") {
+                    tracing::debug!(
+                        uri = ?request.uri,
+                        "Cannot handle GetObject with partNumber parameter, skip."
+                    );
+                    return Ok(Category::S3Other);
+                }
+            }
+
+            let range = match request.headers.get("range") {
+                Some(v) => Some(HeaderRange::decode(&mut std::iter::once(v))?),
+                None => None,
+            };
             let parts: Vec<&str> = path[1..].splitn(2, '/').collect();
             if parts.len() == 2 {
-                return Category::S3GetObject(S3GetObjectArgs {
+                return Ok(Category::S3GetObject(S3GetObjectArgs {
                     bucket: parts[0].to_string(),
                     path: Arc::new(parts[1].to_string()),
-                });
+                    range,
+                }));
             }
         }
 
-        Category::S3Other
+        Ok(Category::S3Other)
     }
 }
 
@@ -169,7 +194,7 @@ impl Proxy {
         }
     }
 
-    async fn handle_get_object(&self, session: &mut Session, ctx: &mut ProxyCtx) -> Result<bool> {
+    async fn handle_get_object(&self, session: &mut Session, ctx: &mut ProxyCtx) -> PingoraResult<bool> {
         let args = match &ctx.category {
             Category::S3GetObject(args) => args,
             _ => unreachable!(),
@@ -198,7 +223,7 @@ impl Proxy {
             return Ok(false);
         }
 
-        let bytes = match self.role {
+        let mut bytes = match self.role {
             Role::Agent => {
                 tracing::warn!(
                     ?args,
@@ -223,7 +248,6 @@ impl Proxy {
                         }
                     })
                     .await
-                    .map_err(|e| Error::because(ErrorType::InternalError, "cache get object error", e))
                 {
                     Ok(entry) => {
                         tracing::debug!(?path, "Fetched object from cache");
@@ -246,11 +270,32 @@ impl Proxy {
                 }
             }
         };
+
+        if let Some(r) = &args.range {
+            let r = r.satisfiable_ranges(bytes.len() as _).next();
+            bytes = match r {
+                Some((start, end)) => {
+                    let s = match start {
+                        Bound::Included(v) => v as usize,
+                        Bound::Excluded(v) => v as usize + 1,
+                        Bound::Unbounded => 0,
+                    };
+                    let t = match end {
+                        Bound::Included(v) => v as usize + 1,
+                        Bound::Excluded(v) => v as usize,
+                        Bound::Unbounded => bytes.len(),
+                    };
+                    bytes.slice(s..t)
+                }
+                None => Bytes::new(),
+            }
+        }
+
         self.write_get_object_response(session, bytes).await?;
         Ok(true)
     }
 
-    async fn write_get_object_response(&self, session: &mut Session, bytes: Bytes) -> Result<()> {
+    async fn write_get_object_response(&self, session: &mut Session, bytes: Bytes) -> PingoraResult<()> {
         let mut header = ResponseHeader::build_no_case(StatusCode::OK, None)?;
 
         header.append_header(CONTENT_TYPE, "application/octet-stream")?;
@@ -268,7 +313,7 @@ impl Proxy {
             .read(path)
             .await
             .map(|buf| buf.to_bytes())
-            .map_err(|e| Error::because(ErrorType::InternalError, "s3 get object error", e))
+            .map_err(|e| e.into())
     }
 }
 
@@ -285,14 +330,11 @@ impl ProxyHttp for Proxy {
         }
     }
 
-    async fn upstream_peer(&self, _: &mut Session, ctx: &mut Self::CTX) -> Result<Box<HttpPeer>> {
+    async fn upstream_peer(&self, _: &mut Session, ctx: &mut Self::CTX) -> PingoraResult<Box<HttpPeer>> {
         tracing::debug!(?ctx, "looking up upstream peer");
         let upstream_peer = match &ctx.upstream_peer {
             UpstreamPeer::None => {
-                return Err(Error::explain(
-                    ErrorType::ConnectProxyFailure,
-                    "no upstream peer to route",
-                ));
+                return Err(Error::explain("no upstream peer to route").into());
             }
             UpstreamPeer::S3 => Box::new(HttpPeer::new(
                 format!("{}:{}", self.s3_host, self.s3_port),
@@ -304,19 +346,19 @@ impl ProxyHttp for Proxy {
         Ok(upstream_peer)
     }
 
-    async fn early_request_filter(&self, _session: &mut Session, _ctx: &mut Self::CTX) -> Result<()>
+    async fn early_request_filter(&self, _session: &mut Session, _ctx: &mut Self::CTX) -> PingoraResult<()>
     where
         Self::CTX: Send + Sync,
     {
         Ok(())
     }
 
-    async fn request_filter(&self, session: &mut Session, ctx: &mut Self::CTX) -> Result<bool>
+    async fn request_filter(&self, session: &mut Session, ctx: &mut Self::CTX) -> PingoraResult<bool>
     where
         Self::CTX: Send + Sync,
     {
         let header = session.req_header();
-        ctx.category = Category::parse(self.api.prefix(), header);
+        ctx.category = Category::parse(self.api.prefix(), header)?;
 
         tracing::trace!(?header, category = ?ctx.category, "Receive request");
 
@@ -343,7 +385,7 @@ impl ProxyHttp for Proxy {
         _session: &mut Session,
         upstream_request: &mut RequestHeader,
         _ctx: &mut Self::CTX,
-    ) -> Result<()>
+    ) -> PingoraResult<()>
     where
         Self::CTX: Send + Sync,
     {
@@ -361,7 +403,7 @@ impl ProxyHttp for Proxy {
         _session: &mut Session,
         upstream_response: &mut ResponseHeader,
         ctx: &mut Self::CTX,
-    ) -> Result<()>
+    ) -> PingoraResult<()>
     where
         Self::CTX: Send + Sync,
     {
@@ -388,7 +430,7 @@ impl ProxyHttp for Proxy {
         Ok(())
     }
 
-    async fn logging(&self, session: &mut Session, e: Option<&Error>, ctx: &mut Self::CTX)
+    async fn logging(&self, session: &mut Session, e: Option<&PingoraError>, ctx: &mut Self::CTX)
     where
         Self::CTX: Send + Sync,
     {

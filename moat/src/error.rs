@@ -16,6 +16,12 @@
 pub enum Error {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("opendal error: {0}")]
+    OpenDal(#[from] opendal::Error),
+    #[error("pingora error: {0}")]
+    Pingora(#[from] pingora::Error),
+    #[error("http header error: {0}")]
+    HttpHeader(#[from] headers::Error),
     #[error("other error: {0}")]
     Other(#[from] Box<dyn std::error::Error + Send + Sync + 'static>),
 }
@@ -26,6 +32,16 @@ impl Error {
         E: std::error::Error + Send + Sync + 'static,
     {
         Self::Other(Box::new(err))
+    }
+
+    pub fn explain(msg: &str) -> Self {
+        Self::Other(msg.into())
+    }
+}
+
+impl From<Error> for Box<pingora::Error> {
+    fn from(e: Error) -> Self {
+        pingora::Error::because(pingora::ErrorType::InternalError, "internal error", e)
     }
 }
 

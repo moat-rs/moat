@@ -13,8 +13,8 @@ WORKDIR /
 
 RUN apt-get update && apt-get install -y cmake && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-COPY . .
 RUN mkdir -p /bin
+COPY . .
 RUN --mount=type=cache,target=/target/ \
     --mount=type=cache,target=/usr/local/cargo/git/db \
     --mount=type=cache,target=/usr/local/cargo/registry/ \
