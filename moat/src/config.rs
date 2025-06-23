@@ -53,6 +53,8 @@ pub struct MoatConfig {
     pub sync_peers: usize,
     #[clap(long, default_value_t = 1)]
     pub weight: usize,
+    #[clap(long, default_value = "8MiB")]
+    pub chunk: ByteSize,
 
     #[clap(flatten)]
     pub s3_config: S3Config,

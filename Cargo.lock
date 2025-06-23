@@ -1901,6 +1901,7 @@ dependencies = [
  "clap 4.5.40",
  "foyer",
  "futures",
+ "headers",
  "hex",
  "hmac",
  "http",
