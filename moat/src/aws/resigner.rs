@@ -15,7 +15,7 @@
 use std::collections::BTreeMap;
 
 use hmac::{Hmac, Mac};
-use pingora::http::RequestHeader;
+use http::{HeaderName, HeaderValue, Method, Uri};
 use sha2::{Digest, Sha256};
 use url::Url;
 
@@ -49,13 +49,32 @@ impl AwsSigV4Resigner {
         url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
     }
 
-    pub fn resign(&self, request: &mut RequestHeader) {
+    pub fn resign<'a>(
+        &self,
+        method: &Method,
+        uri: &Uri,
+        headers: impl Iterator<Item = (&'a HeaderName, &'a HeaderValue)>,
+    ) -> Vec<(HeaderName, HeaderValue)> {
+        let mut res = vec![];
+
         let datetime = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
 
-        self.rewrite_request_headers(request, datetime.clone());
+        res.extend([
+            (
+                HeaderName::from_static("host"),
+                HeaderValue::from_str(self.endpoint.host_str().unwrap()).unwrap(),
+            ),
+            (
+                HeaderName::from_static("x-amz-content-sha256"),
+                HeaderValue::from_static(Self::UNSIGNED_PAYLOAD),
+            ),
+            (
+                HeaderName::from_static("x-amz-date"),
+                HeaderValue::from_str(&datetime).unwrap(),
+            ),
+        ]);
 
-        let queries_to_sign: BTreeMap<String, String> = request
-            .uri
+        let queries_to_sign: BTreeMap<String, String> = uri
             .query()
             .map(|s| {
                 url::form_urlencoded::parse(s.as_bytes())
@@ -63,16 +82,19 @@ impl AwsSigV4Resigner {
                     .collect()
             })
             .unwrap_or_default();
-
-        let headers_to_sign: BTreeMap<String, String> = request
-            .headers
-            .iter()
+        let headers_to_sign: BTreeMap<String, String> = headers
             .map(|(key, value)| {
                 (
                     key.as_str().to_lowercase(),
                     value.to_str().map(|s| s.trim()).unwrap_or("").to_string(),
                 )
             })
+            .chain(res.iter().map(|(key, value)| {
+                (
+                    key.as_str().to_lowercase(),
+                    value.to_str().map(|s| s.trim()).unwrap_or("").to_string(),
+                )
+            }))
             .filter(|(key, _)| match key.as_str() {
                 "host" | "content-type" => true,
                 s if s.starts_with("x-amz-") => true,
@@ -80,9 +102,8 @@ impl AwsSigV4Resigner {
             })
             .collect();
 
-        let http_method = request.method.as_str();
-        let canonical_uri = request
-            .uri
+        let http_method = method.as_str();
+        let canonical_uri = uri
             .path()
             .split('/')
             .map(Self::urlencode)
@@ -148,25 +169,11 @@ impl AwsSigV4Resigner {
             signature = signature
         );
 
-        self.rewrite_authorization(request, authorization);
-    }
+        res.push((
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&authorization).unwrap(),
+        ));
 
-    /// Rewrites the request headers if necessary.
-    fn rewrite_request_headers(&self, request: &mut RequestHeader, datetime: String) {
-        request
-            .insert_header("Host", self.endpoint.host_str().expect("Endpoint must have a host"))
-            .expect("Failed to insert Host header");
-        request
-            .insert_header("X-Amz-Content-Sha256", "UNSIGNED-PAYLOAD".to_string())
-            .expect("Failed to insert X-Amz-Content-Sha256 header");
-        request
-            .insert_header("X-Amz-Date", datetime)
-            .expect("Failed to insert X-Amz-Date header");
-    }
-
-    fn rewrite_authorization(&self, request: &mut RequestHeader, authorization: String) {
-        request
-            .insert_header("Authorization", authorization.to_string())
-            .expect("Failed to insert Authorization header");
+        res
     }
 }
