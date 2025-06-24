@@ -147,17 +147,18 @@ pub struct TelemetryConfig {
     #[clap(long = "telemetry-service-name", default_value = "moat")]
     pub service_name: String,
 
-    #[clap(
-        long = "telemetry-meter-endpoint",
-        // default_value = "http://localhost:9090/api/v1/otlp/v1/metrics"
-        default_value = "http://localhost:4317"
-    )]
+    /// Endpoint for OpenTelemetry meter collector.
+    ///
+    /// Example: `http://localhost:4317`.
+    #[clap(long = "telemetry-meter-endpoint", default_value = "")]
     pub meter_endpoint: String,
     #[clap(long = "telemetry-meter-report-interval", value_parser = humantime::parse_duration, default_value = "1s")]
     pub meter_report_interval: Duration,
 
-    // #[clap(long = "telemetry-logging-endpoint", default_value = "http://localhost:3100/otlp")]
-    #[clap(long = "telemetry-logging-endpoint", default_value = "http://localhost:4317")]
+    /// Endpoint for OpenTelemetry logging collector.
+    ///
+    /// Example: `http://localhost:4317`.
+    #[clap(long = "telemetry-logging-endpoint", default_value = "")]
     pub logging_endpoint: String,
 
     #[clap(long = "telemetry-logging-dir", default_value = ".moat/log/")]
