@@ -26,6 +26,10 @@ use crate::{
 };
 
 pub fn init(config: &TelemetryConfig, _: &Peer, attributes: &[KeyValue]) -> Result<Box<dyn Send + Sync + 'static>> {
+    if config.meter_endpoint.is_empty() {
+        return Ok(Box::new(()));
+    }
+
     let exporter = opentelemetry_otlp::MetricExporter::builder()
         .with_tonic()
         .with_protocol(Protocol::Grpc)

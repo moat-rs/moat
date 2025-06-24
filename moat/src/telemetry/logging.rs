@@ -26,55 +26,63 @@ use opentelemetry_sdk::{
     Resource,
     logs::{BatchConfigBuilder, BatchLogProcessor, SdkLoggerProvider},
 };
+
 use tracing_appender::rolling::RollingFileAppender;
 use tracing_subscriber::{EnvFilter, prelude::*};
 
 pub fn init(config: &TelemetryConfig, peer: &Peer, attributes: &[KeyValue]) -> Result<Box<dyn Send + Sync + 'static>> {
-    let exporter = LogExporter::builder()
-        .with_tonic()
-        .with_protocol(Protocol::Grpc)
-        .with_endpoint(&config.logging_endpoint)
-        .build()
-        .map_err(Error::other)?;
-    let processor = BatchLogProcessor::builder(exporter)
-        .with_batch_config(BatchConfigBuilder::default().build())
-        .build();
-    let resource = Resource::builder().with_attributes(attributes.to_vec()).build();
-    let provider = SdkLoggerProvider::builder()
-        .with_log_processor(processor)
-        .with_resource(resource)
-        .build();
-    let otel_layer = OpenTelemetryTracingBridge::new(&provider);
+    let mut layers = tracing_subscriber::fmt::layer().with_writer(std::io::stdout).boxed();
 
-    let stdout_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stdout);
+    let guard: Box<dyn Send + Sync + 'static> = if !config.logging_endpoint.is_empty() {
+        let exporter = LogExporter::builder()
+            .with_tonic()
+            .with_protocol(Protocol::Grpc)
+            .with_endpoint(&config.logging_endpoint)
+            .build()
+            .map_err(Error::other)?;
+        let processor = BatchLogProcessor::builder(exporter)
+            .with_batch_config(BatchConfigBuilder::default().build())
+            .build();
+        let resource = Resource::builder().with_attributes(attributes.to_vec()).build();
+        let provider = SdkLoggerProvider::builder()
+            .with_log_processor(processor)
+            .with_resource(resource)
+            .build();
+        let otel_layer = OpenTelemetryTracingBridge::new(&provider);
+        layers = layers.and_then(otel_layer).boxed();
+        let handle = tokio::runtime::Handle::current();
+        Box::new(scopeguard::guard((), move |_| {
+            handle.block_on(async {
+                provider
+                    .shutdown()
+                    .inspect_err(|e| {
+                        tracing::error!(?e, "Failed to shutdown OpenTelemetry Tracer Provider");
+                    })
+                    .ok();
+            })
+        }))
+    } else {
+        Box::new(())
+    };
 
-    create_dir_all(&config.logging_dir).expect("Failed to create log directory");
-    let file_appender = RollingFileAppender::builder()
-        .rotation(config.logging_rotation.into())
-        .filename_prefix(peer.to_string())
-        .filename_suffix("log")
-        .build(&config.logging_dir)
-        .unwrap();
-    let file_layer = tracing_subscriber::fmt::layer()
-        .with_writer(file_appender)
-        .with_ansi(config.logging_color);
+    if !config.logging_dir.is_empty() {
+        create_dir_all(&config.logging_dir).expect("Failed to create log directory");
+        let file_appender = RollingFileAppender::builder()
+            .rotation(config.logging_rotation.into())
+            .filename_prefix(peer.to_string())
+            .filename_suffix("log")
+            .build(&config.logging_dir)
+            .unwrap();
+        let file_layer = tracing_subscriber::fmt::layer()
+            .with_writer(file_appender)
+            .with_ansi(config.logging_color);
+        layers = layers.and_then(file_layer).boxed();
+    }
 
     tracing_subscriber::registry()
         .with(EnvFilter::from_default_env())
-        .with(stdout_layer)
-        .with(file_layer)
-        .with(otel_layer)
+        .with(layers)
         .init();
 
-    let handle = tokio::runtime::Handle::current();
-    Ok(Box::new(scopeguard::guard((), move |_| {
-        handle.block_on(async {
-            provider
-                .shutdown()
-                .inspect_err(|e| {
-                    tracing::error!(?e, "Failed to shutdown OpenTelemetry Tracer Provider");
-                })
-                .ok();
-        })
-    })))
+    Ok(guard)
 }
