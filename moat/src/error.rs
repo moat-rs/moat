@@ -20,6 +20,8 @@ pub enum Error {
     OpenDal(#[from] opendal::Error),
     #[error("pingora error: {0}")]
     Pingora(#[from] pingora::Error),
+    #[error("poem error: {0}")]
+    Poem(#[from] poem::Error),
     #[error("http header error: {0}")]
     HttpHeader(#[from] headers::Error),
     #[error("other error: {0}")]

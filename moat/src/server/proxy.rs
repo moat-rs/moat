@@ -27,6 +27,7 @@ use headers::{Header, Range as HeaderRange};
 use async_trait::async_trait;
 use bytes::Bytes;
 use itertools::Itertools;
+use poem::Request;
 
 use crate::error::{Error, Result};
 use foyer::HybridCache;
@@ -295,6 +296,38 @@ impl Proxy {
         Ok(true)
     }
 
+    async fn handle_moat_api(&self, session: &mut Session, _: &mut ProxyCtx) -> PingoraResult<bool> {
+        tracing::debug!("Handling Moat API request");
+
+        let body = session.read_request_body().await?.unwrap_or_default();
+        let req = session.req_header();
+
+        let mut builder = Request::builder()
+            .method(req.method.clone())
+            .uri(req.uri.clone())
+            .version(req.version);
+        for (key, value) in req.headers.iter() {
+            builder = builder.header(key, value);
+        }
+        let request = builder.body(body);
+        let response = self.api.invoke(request).await;
+
+        let mut header = ResponseHeader::build_no_case(response.status(), None)?;
+        for (key, value) in response.headers().iter() {
+            header.append_header(key, value)?;
+        }
+        header.set_version(response.version());
+
+        let body = response.into_body().into_bytes().await.map_err(Error::other)?;
+
+        header.set_content_length(body.len())?;
+        session.write_response_header(Box::new(header), true).await?;
+
+        session.write_response_body(Some(body), true).await?;
+
+        Ok(true)
+    }
+
     async fn write_get_object_response(&self, session: &mut Session, bytes: Bytes) -> PingoraResult<()> {
         let mut header = ResponseHeader::build_no_case(StatusCode::OK, None)?;
 
@@ -364,9 +397,7 @@ impl ProxyHttp for Proxy {
 
         match &ctx.category {
             Category::MoatApi => {
-                tracing::debug!("Handling Moat API request");
-                self.api.handle(session).await?;
-                return Ok(true);
+                return self.handle_moat_api(session, ctx).await;
             }
             Category::S3GetObject(S3GetObjectArgs { bucket, .. }) if bucket == &self.s3_bucket => {
                 return self.handle_get_object(session, ctx).await;
@@ -391,7 +422,14 @@ impl ProxyHttp for Proxy {
     {
         tracing::trace!(?upstream_request, "Upstream request before filtering");
 
-        self.resigner.resign(upstream_request);
+        let headers = self.resigner.resign(
+            &upstream_request.method,
+            &upstream_request.uri,
+            upstream_request.headers.iter(),
+        );
+        for (k, v) in headers {
+            upstream_request.insert_header(k, v).unwrap();
+        }
 
         tracing::trace!(?upstream_request, "Upstream request after filtering");
 
