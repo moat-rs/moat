@@ -18,7 +18,7 @@ use std::{path::PathBuf, sync::Arc};
 
 use bytes::Bytes;
 
-use foyer::{DirectFsDeviceOptions, Engine, HybridCache, LargeEngineOptions, RuntimeOptions, TokioRuntimeOptions};
+use foyer::{BlockEngineBuilder, DeviceBuilder, FsDeviceBuilder, HybridCache};
 use mixtrics::registry::opentelemetry_0_30::OpenTelemetryMetricsRegistry;
 use opendal::{Operator, layers::LoggingLayer, services::S3};
 use pingora::{
@@ -54,24 +54,23 @@ impl Moat {
                     .memory(config.cache.mem.as_u64() as _)
                     // TODO(MrCroxx): Count serialized size?
                     .with_weighter(|path: &Arc<String>, data: &Bytes| path.len() + data.len())
-                    .storage(Engine::Large(
-                        LargeEngineOptions::new()
+                    .storage();
+                if let Some(dir) = &config.cache.dir {
+                    let device = FsDeviceBuilder::new(PathBuf::from(dir).join("data"))
+                        .with_capacity(config.cache.disk.as_u64() as _)
+                        .with_throttle(config.cache.throttle.clone())
+                        .build()
+                        .map_err(anyhow::Error::from)?;
+                    builder = builder.with_engine_config(
+                        BlockEngineBuilder::new(device)
+                            .with_block_size(config.cache.file_size.as_u64() as _)
                             .with_flushers(config.cache.flushers)
                             .with_reclaimers(config.cache.reclaimers)
                             .with_buffer_pool_size(config.cache.buffer_pool_size.as_u64() as _)
                             .with_recover_concurrency(config.cache.recover_concurrency),
-                    ))
-                    .with_recover_mode(config.cache.recover_mode)
-                    .with_runtime_options(RuntimeOptions::Unified(TokioRuntimeOptions::default()));
-                if let Some(dir) = &config.cache.dir {
-                    builder = builder.with_device_options(
-                        DirectFsDeviceOptions::new(PathBuf::from(dir).join("data"))
-                            .with_capacity(config.cache.disk.as_u64() as _)
-                            .with_file_size(config.cache.file_size.as_u64() as _)
-                            .with_throttle(config.cache.throttle.clone()),
                     );
                 }
-                builder.build().await
+                builder.build().await.map_err(anyhow::Error::from)
             })
         }?;
 
