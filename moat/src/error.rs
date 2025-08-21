@@ -25,19 +25,19 @@ pub enum Error {
     #[error("http header error: {0}")]
     HttpHeader(#[from] headers::Error),
     #[error("other error: {0}")]
-    Other(#[from] Box<dyn std::error::Error + Send + Sync + 'static>),
+    Other(#[from] anyhow::Error),
 }
 
 impl Error {
-    pub fn other<E>(err: E) -> Self
+    pub fn other<E>(e: E) -> Self
     where
-        E: std::error::Error + Send + Sync + 'static,
+        E: Into<anyhow::Error>,
     {
-        Self::Other(Box::new(err))
+        Error::Other(e.into())
     }
 
-    pub fn explain(msg: &str) -> Self {
-        Self::Other(msg.into())
+    pub fn explain(msg: &'static str) -> Self {
+        Error::Other(anyhow::anyhow!(msg))
     }
 }
 

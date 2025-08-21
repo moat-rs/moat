@@ -34,6 +34,7 @@ chrono = { workspace = true }
 clap = { workspace = true, features = ["derive", "color"] }
 foyer = { workspace = true, features = ["serde", "clap"] }
 futures = { workspace = true }
+governor = { workspace = true }
 headers = "0.4"
 hex = { workspace = true }
 hmac = { workspace = true }
@@ -46,6 +47,7 @@ opentelemetry = { workspace = true }
 opentelemetry-appender-tracing = { workspace = true }
 opentelemetry-otlp = { workspace = true, features = ["grpc-tonic"] }
 opentelemetry_sdk = { workspace = true }
+pin-project = { workspace = true }
 pingora = { workspace = true, features = ["proxy", "openssl"] }
 poem = { workspace = true }
 rand = { workspace = true }

@@ -29,10 +29,8 @@ rust-version = "1.87"
 
 [workspace.dependencies]
 anyhow = "1"
-# Moat components
-
-# Other dependencies
 async-trait = "0.1"
+backon = "1"
 bytes = "1"
 bytesize = "2"
 chrono = "0.4"
@@ -42,6 +40,7 @@ colored = "3"
 # foyer = "0.18"
 foyer = { git = "https://github.com/foyer-rs/foyer", rev = "82afd20d4cfa066d243654581f1a6dca8ed3e2d1" }
 futures = "0.3"
+governor = "0.10"
 hex = "0.4"
 hmac = "0.12"
 http = "1"
@@ -54,6 +53,7 @@ opentelemetry = "0.30"
 opentelemetry-appender-tracing = "0.30"
 opentelemetry-otlp = "0.30"
 opentelemetry_sdk = "0.30"
+pin-project = "1"
 pingora = "0.5"
 poem = "3"
 poem-openapi = "5"
