@@ -245,7 +245,7 @@ impl Proxy {
                         async move {
                             fetched.store(true, Ordering::Relaxed);
                             let res = op.read(&path).await;
-                            res.map(|buf| buf.to_bytes()).map_err(anyhow::Error::from)
+                            res.map(|buf| buf.to_bytes()).map_err(foyer::Error::other)
                         }
                     })
                     .await
