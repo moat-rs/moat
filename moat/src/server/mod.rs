@@ -112,7 +112,7 @@ impl Moat {
             }
         }
 
-        let api = ApiService::new(&config.api, meta_manager.clone());
+        let api = ApiService::new(&config.api, meta_manager.clone(), cache.clone(), operator.clone());
         let resigner = AwsSigV4Resigner::new(AwsSigV4ResignerConfig {
             endpoint: config.s3_config.endpoint.clone(),
             region: config.s3_config.region.clone(),
