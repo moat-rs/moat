@@ -113,7 +113,7 @@ async fn locate(body: Body, Data(meta_manager): Data<&MetaManager>) -> Response 
 #[derive(Debug, Deserialize)]
 struct FetchParams {
     path: String,
-    location: Location,
+    location: Option<Location>,
 }
 
 #[handler]
@@ -126,7 +126,7 @@ async fn fetch(
 
     let op = op.clone();
     let cache = cache.clone();
-    let location = params.location;
+    let location = params.location.unwrap_or_default();
 
     tokio::spawn(async move {
         let buf = match op.read(&params.path).await {
@@ -177,7 +177,7 @@ impl ApiService {
             .at(format!("{prefix}/members"), get(members))
             .at(format!("{prefix}/sync"), post(sync))
             .at(format!("{prefix}/locate"), post(locate))
-            .at(format!("{prefix}/fetch"), post(fetch))
+            .at(format!("{prefix}/fetch"), get(fetch))
             .data(meta_manager.clone())
             .data(prefix.clone())
             .data(cache)
