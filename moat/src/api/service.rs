@@ -14,6 +14,9 @@
 
 use std::{fmt::Debug, sync::Arc};
 
+use bytes::Bytes;
+use foyer::{HybridCache, HybridCacheProperties, Location};
+use opendal::Operator;
 use poem::{
     Body, Endpoint, EndpointExt, IntoEndpoint, IntoResponse, Request, Response, Route,
     endpoint::{DynEndpoint, ToDynEndpoint},
@@ -107,6 +110,43 @@ async fn locate(body: Body, Data(meta_manager): Data<&MetaManager>) -> Response 
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct FetchParams {
+    path: String,
+    location: Option<Location>,
+}
+
+#[handler]
+async fn fetch(
+    Query(params): Query<FetchParams>,
+    Data(cache): Data<&HybridCache<Arc<String>, Bytes>>,
+    Data(op): Data<&Operator>,
+) -> Response {
+    tracing::debug!(?params, "fetch");
+
+    let op = op.clone();
+    let cache = cache.clone();
+    let location = params.location.unwrap_or_default();
+
+    tokio::spawn(async move {
+        let buf = match op.read(&params.path).await {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(?e, "failed to read from S3 with fetch API");
+                return;
+            }
+        };
+        let bytes = buf.to_bytes();
+        cache.insert_with_properties(
+            Arc::new(params.path.to_string()),
+            bytes,
+            HybridCacheProperties::default().with_location(location),
+        );
+    });
+
+    ().into_response()
+}
+
 struct Inner {
     endpoint: Arc<dyn DynEndpoint<Output = Response>>,
     prefix: String,
@@ -124,7 +164,12 @@ impl Debug for ApiService {
 }
 
 impl ApiService {
-    pub fn new(config: &ApiConfig, meta_manager: MetaManager) -> Self {
+    pub fn new(
+        config: &ApiConfig,
+        meta_manager: MetaManager,
+        cache: HybridCache<Arc<String>, Bytes>,
+        operator: Operator,
+    ) -> Self {
         let prefix = config.prefix.clone();
         let endpoint = Route::new()
             .at(format!("{prefix}/hello"), get(hello))
@@ -132,8 +177,11 @@ impl ApiService {
             .at(format!("{prefix}/members"), get(members))
             .at(format!("{prefix}/sync"), post(sync))
             .at(format!("{prefix}/locate"), post(locate))
+            .at(format!("{prefix}/fetch"), get(fetch))
             .data(meta_manager.clone())
-            .data(prefix.clone());
+            .data(prefix.clone())
+            .data(cache)
+            .data(operator);
         let endpoint = Arc::new(ToDynEndpoint(endpoint.into_endpoint().map_to_response()));
 
         let inner = Arc::new(Inner { prefix, endpoint });
