@@ -25,35 +25,36 @@ use url::Url;
 use crate::meta::model::{Peer, Role};
 
 #[derive(Debug, Parser, Serialize, Deserialize)]
+#[command(author, version, about, long_about = None)]
 pub struct MoatConfig {
-    #[clap(long, default_value = "127.0.0.1:23456")]
+    #[clap(long, env = "MOAT_LISTEN", default_value = "127.0.0.1:23456")]
     pub listen: SocketAddr,
-    #[clap(long, default_value = "cache")]
+    #[clap(long, env = "MOAT_ROLE", default_value = "cache")]
     pub role: Role,
-    #[clap(long)]
+    #[clap(long, env = "MOAT_PEER")]
     pub peer: Peer,
     // TODO(MrCroxx): Handle tls configuration.
-    #[clap(long, default_value = "false")]
+    #[clap(long, env = "MOAT_TLS", default_value = "false")]
     pub tls: bool,
-    #[clap(long, num_args = 1.., value_delimiter = ',')]
+    #[clap(long, env = "MOAT_BOOTSTRAP_PEERS", num_args = 1.., value_delimiter = ',')]
     pub bootstrap_peers: Vec<Peer>,
-    #[clap(long, value_parser = humantime::parse_duration, default_value = "10s")]
+    #[clap(long, env = "MOAT_PEER_EVICTION_TIMEOUT", value_parser = humantime::parse_duration, default_value = "10s")]
     pub peer_eviction_timeout: Duration,
-    #[clap(long, value_parser = humantime::parse_duration, default_value = "3s")]
+    #[clap(long, env = "MOAT_HEALTH_CHECK_TIMEOUT", value_parser = humantime::parse_duration, default_value = "3s")]
     pub health_check_timeout: Duration,
-    #[clap(long, value_parser = humantime::parse_duration, default_value = "1s")]
+    #[clap(long, env = "MOAT_HEALTH_CHECK_INTERVAL", value_parser = humantime::parse_duration, default_value = "1s")]
     pub health_check_interval: Duration,
-    #[clap(long, default_value_t = 3)]
+    #[clap(long, env = "MOAT_HEALTH_CHECK_PEERS", default_value_t = 3)]
     pub health_check_peers: usize,
-    #[clap(long, value_parser = humantime::parse_duration, default_value = "3s")]
+    #[clap(long, env = "MOAT_SYNC_TIMEOUT", value_parser = humantime::parse_duration, default_value = "3s")]
     pub sync_timeout: Duration,
-    #[clap(long, value_parser = humantime::parse_duration, default_value = "1s")]
+    #[clap(long, env = "MOAT_SYNC_INTERVAL", value_parser = humantime::parse_duration, default_value = "1s")]
     pub sync_interval: Duration,
-    #[clap(long, default_value_t = 3)]
+    #[clap(long, env = "MOAT_SYNC_PEERS", default_value_t = 3)]
     pub sync_peers: usize,
-    #[clap(long, default_value_t = 1)]
+    #[clap(long, env = "MOAT_WEIGHT", default_value_t = 1)]
     pub weight: usize,
-    #[clap(long, default_value = "8MiB")]
+    #[clap(long, env = "MOAT_CHUNK", default_value = "8MiB")]
     pub chunk: ByteSize,
 
     #[clap(flatten)]
@@ -78,48 +79,48 @@ pub struct S3Config {
     /// Aliyun OSS: https://{region}.aliyuncs.com
     /// Tencent COS: https://cos.{region}.myqcloud.com
     /// Minio: http://127.0.0.1:9000
-    #[clap(long = "s3-endpoint")]
+    #[clap(long = "s3-endpoint", env = "MOAT_S3_ENDPOINT")]
     pub endpoint: Url,
-    #[clap(long = "s3-access-key-id")]
+    #[clap(long = "s3-access-key-id", env = "MOAT_S3_ACCESS_KEY_ID")]
     pub access_key_id: String,
-    #[clap(long = "s3-secret-access-key")]
+    #[clap(long = "s3-secret-access-key", env = "MOAT_S3_SECRET_ACCESS_KEY")]
     pub secret_access_key: String,
-    #[clap(long = "s3-region")]
+    #[clap(long = "s3-region", env = "MOAT_S3_REGION")]
     pub region: String,
-    #[clap(long = "s3-bucket")]
+    #[clap(long = "s3-bucket", env = "MOAT_S3_BUCKET")]
     pub bucket: String,
 }
 
 #[derive(Debug, Parser, Serialize, Deserialize)]
 pub struct CacheConfig {
-    #[clap(long, default_value = "64MiB")]
+    #[clap(long, env = "MOAT_CACHE_MEM", default_value = "64MiB")]
     pub mem: ByteSize,
 
-    #[clap(long)]
+    #[clap(long, env = "MOAT_CACHE_DIR")]
     pub dir: Option<String>,
 
-    #[clap(long, default_value = "1GiB", requires = "dir")]
+    #[clap(long, env = "MOAT_CACHE_DISK", default_value = "1GiB", requires = "dir")]
     pub disk: ByteSize,
 
-    #[clap(long, default_value = "64MiB")]
+    #[clap(long, env = "MOAT_CACHE_FILE_SIZE", default_value = "64MiB")]
     pub file_size: ByteSize,
 
     #[clap(flatten)]
     pub throttle: Throttle,
 
-    #[clap(long, default_value_t = 4)]
+    #[clap(long, env = "MOAT_CACHE_FLUSHERS", default_value_t = 4)]
     pub flushers: usize,
 
-    #[clap(long, default_value_t = 2)]
+    #[clap(long, env = "MOAT_CACHE_RECLAIMERS", default_value_t = 2)]
     pub reclaimers: usize,
 
-    #[clap(long, default_value = "64MiB")]
+    #[clap(long, env = "MOAT_CACHE_BUFFER_POOL_SIZE", default_value = "64MiB")]
     pub buffer_pool_size: ByteSize,
 
-    #[clap(long, default_value = "quiet")]
+    #[clap(long, env = "MOAT_CACHE_RECOVER_MODE", default_value = "quiet")]
     pub recover_mode: RecoverMode,
 
-    #[clap(long, default_value_t = 4)]
+    #[clap(long, env = "MOAT_CACHE_RECOVER_CONCURRENCY", default_value_t = 4)]
     pub recover_concurrency: usize,
 }
 
@@ -144,13 +145,21 @@ impl From<Rotation> for TracingAppenderRotation {
 
 #[derive(Debug, Clone, Parser, Serialize, Deserialize)]
 pub struct TelemetryConfig {
-    #[clap(long = "telemetry-service-name", default_value = "moat")]
+    #[clap(
+        long = "telemetry-service-name",
+        env = "MOAT_TELEMETRY_SERVICE_NAME",
+        default_value = "moat"
+    )]
     pub service_name: String,
 
     /// Endpoint for OpenTelemetry meter collector.
     ///
     /// Example: `http://localhost:4317`.
-    #[clap(long = "telemetry-meter-endpoint", default_value = "")]
+    #[clap(
+        long = "telemetry-meter-endpoint",
+        env = "MOAT_TELEMETRY_METER_ENDPOINT",
+        default_value = ""
+    )]
     pub meter_endpoint: String,
     #[clap(long = "telemetry-meter-report-interval", value_parser = humantime::parse_duration, default_value = "1s")]
     pub meter_report_interval: Duration,
@@ -158,20 +167,36 @@ pub struct TelemetryConfig {
     /// Endpoint for OpenTelemetry logging collector.
     ///
     /// Example: `http://localhost:4317`.
-    #[clap(long = "telemetry-logging-endpoint", default_value = "")]
+    #[clap(
+        long = "telemetry-logging-endpoint",
+        env = "MOAT_TELEMETRY_LOGGING_ENDPOINT",
+        default_value = ""
+    )]
     pub logging_endpoint: String,
 
-    #[clap(long = "telemetry-logging-dir", default_value = ".moat/log/")]
+    #[clap(
+        long = "telemetry-logging-dir",
+        env = "MOAT_TELEMETRY_LOGGING_DIR",
+        default_value = ".moat/log/"
+    )]
     pub logging_dir: String,
-    #[clap(long = "telemetry-logging-rotation", default_value = "never")]
+    #[clap(
+        long = "telemetry-logging-rotation",
+        env = "MOAT_TELEMETRY_LOGGING_ROTATION",
+        default_value = "never"
+    )]
     pub logging_rotation: Rotation,
-    #[clap(long = "telemetry-logging-color", default_value_t = false)]
+    #[clap(
+        long = "telemetry-logging-color",
+        env = "MOAT_TELEMETRY_LOGGING_COLOR",
+        default_value_t = false
+    )]
     pub logging_color: bool,
 }
 
 #[derive(Debug, Clone, Parser, Serialize, Deserialize)]
 pub struct ApiConfig {
     /// Prefix for all API endpoints.
-    #[clap(long, default_value = "/api")]
+    #[clap(long, env = "MOAT_API_PREFIX", default_value = "/api")]
     pub prefix: String,
 }
