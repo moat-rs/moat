@@ -68,3 +68,21 @@ Create the disk size to use
 {{- define "moat.disk.size" -}}
 {{- default "10Gi" .Values.moat.disk.size }}
 {{- end }}
+
+{{/*
+Generate the bootstrap peers for moat.
+*/}}
+{{- define "moat.bootstrapPeers" -}}
+{{- $peers := .Values.moat.bootstrapPeers -}}
+{{- if not $peers -}}
+  {{- $replicaCount := .Values.replicaCount | int -}}
+  {{- $name := include "moat.name" . -}}
+  {{- $peerList := list -}}
+  {{- range $i := until $replicaCount -}}
+    {{- $peer := printf "%s-%d.%s:%d" $name $i $name 23456 -}}
+    {{- $peerList = append $peerList $peer -}}
+  {{- end -}}
+  {{- $peers = join "," $peerList -}}
+{{- end -}}
+{{- $peers -}}
+{{- end }}

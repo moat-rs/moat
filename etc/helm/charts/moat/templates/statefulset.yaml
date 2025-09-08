@@ -62,7 +62,39 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           env:
-            {{- toYaml .Values.env | nindent 12 }}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: MOAT_LISTEN
+              value: "{{ .Values.moat.listen }}:{{ .Values.moat.port }}"
+            - name: MOAT_ROLE
+              value: "cache"
+            - name: MOAT_PEER
+              value: "$(POD_NAME).{{ include "moat.fullname" . }}:{{ .Values.moat.port }}"
+            - name: MOAT_BOOTSTRAP_PEERS
+              value: {{ include "moat.bootstrapPeers" . | quote }}
+            - name: MOAT_S3_ENDPOINT
+              value: "{{ .Values.moat.s3.endpoint }}"
+            - name: MOAT_S3_ACCESS_KEY_ID
+              value: "{{ .Values.moat.s3.accessKeyID }}"
+            {{- with .Values.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+            - name: MOAT_S3_SECRET_ACCESS_KEY
+              value: "{{ .Values.moat.s3.secretAccessKey }}"
+            - name: MOAT_S3_BUCKET
+              value: "{{ .Values.moat.s3.bucket }}"
+            - name: MOAT_S3_REGION
+              value: "{{ .Values.moat.s3.region }}"
+            - name: MOAT_WEIGHT
+              value: "{{ .Values.moat.weight }}"
+            - name: MOAT_MEM
+              value: "{{ .Values.moat.mem }}"
+            - name: MOAT_DISK
+              value: "{{ .Values.moat.disk }}"
+            - name: RUST_LOG
+              value: "{{ .Values.moat.logLevel }}"
           command: ["./moat"]
           args: [] 
       {{- with .Values.volumes }}
