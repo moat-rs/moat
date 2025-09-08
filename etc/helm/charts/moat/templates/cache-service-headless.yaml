@@ -13,17 +13,18 @@
 # limitations under the License.
 
 apiVersion: v1
-kind: Pod
+kind: Service
 metadata:
-  name: "{{ include "moat.fullname" . }}-test-connection"
+  name: {{ include "moat.cache.fullname" . }}
   labels:
     {{- include "moat.labels" . | nindent 4 }}
-  annotations:
-    "helm.sh/hook": test
 spec:
-  containers:
-    - name: wget
-      image: busybox
-      command: ['wget']
-      args: ['{{ include "moat.fullname" . }}:{{ .Values.service.port }}']
-  restartPolicy: Never
+  clusterIP: None
+  type: {{ .Values.service.type }}
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "moat.cache.selectorLabels" . | nindent 4 }}

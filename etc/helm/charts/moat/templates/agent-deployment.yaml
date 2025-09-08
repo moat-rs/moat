@@ -13,19 +13,20 @@
 # limitations under the License.
 
 apiVersion: apps/v1
-kind: StatefulSet
+kind: Deployment
 metadata:
-  name: {{ include "moat.fullname" . }}
+  name: {{ include "moat.agent.fullname" . }}
   namespace: {{ .Release.Namespace }}
-  labels: {{ include "moat.labels" . | nindent 4 }}
+  labels:
+    {{ include "moat.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent
 spec:
-  serviceName: {{ include "moat.fullname" . }}
   {{- if not .Values.autoscaling.enabled }}
-  replicas: {{ .Values.replicaCount }}
+  replicas: {{ .Values.moat.replica.agent }}
   {{- end }}
   selector:
     matchLabels:
-      {{- include "moat.selectorLabels" . | nindent 6 }}
+      {{- include "moat.agent.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       {{- with .Values.podAnnotations }}
@@ -33,7 +34,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       labels:
-        {{- include "moat.labels" . | nindent 8 }}
+        {{- include "moat.agent.selectorLabels" . | nindent 8 }}
         {{- with .Values.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -83,9 +84,9 @@ spec:
             - name: MOAT_LISTEN
               value: "{{ .Values.moat.listen }}:{{ .Values.moat.port }}"
             - name: MOAT_ROLE
-              value: "cache"
+              value: "agent"
             - name: MOAT_PEER
-              value: "$(POD_NAME).{{ include "moat.fullname" . }}:{{ .Values.moat.port }}"
+              value: "$(POD_NAME).{{ include "moat.agent.fullname" . }}:{{ .Values.moat.port }}"
             - name: MOAT_BOOTSTRAP_PEERS
               value: {{ include "moat.bootstrapPeers" . | quote }}
             - name: MOAT_S3_ENDPOINT
