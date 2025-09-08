@@ -72,10 +72,6 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          {{- with .Values.volumeMounts }}
-          volumeMounts:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
           env:
             - name: POD_NAME
               valueFrom:
@@ -102,20 +98,10 @@ spec:
               value: "{{ .Values.moat.s3.bucket }}"
             - name: MOAT_S3_REGION
               value: "{{ .Values.moat.s3.region }}"
-            - name: MOAT_WEIGHT
-              value: "{{ .Values.moat.weight }}"
-            - name: MOAT_MEM
-              value: "{{ .Values.moat.mem }}"
-            - name: MOAT_DISK
-              value: "{{ .Values.moat.disk }}"
             - name: RUST_LOG
               value: "{{ .Values.moat.logLevel }}"
           command: ["./moat"]
           args: [] 
-      {{- with .Values.volumes }}
-      volumes:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

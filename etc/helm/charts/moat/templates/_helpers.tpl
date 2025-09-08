@@ -99,7 +99,7 @@ Generate the bootstrap peers for moat.
 {{- $peers := .Values.moat.bootstrapPeers -}}
 {{- if not $peers -}}
   {{- $replicaCount := .Values.moat.replica.cache | int -}}
-  {{- $name := include "moat.name" . -}}
+  {{- $name := include "moat.cache.fullname" . -}}
   {{- $peerList := list -}}
   {{- range $i := until $replicaCount -}}
     {{- $peer := printf "%s-%d.%s:%d" $name $i $name 23456 -}}
