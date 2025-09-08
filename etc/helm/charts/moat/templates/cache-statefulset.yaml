@@ -15,17 +15,19 @@
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: {{ include "moat.fullname" . }}
+  name: {{ include "moat.cache.fullname" . }}
   namespace: {{ .Release.Namespace }}
-  labels: {{ include "moat.labels" . | nindent 4 }}
+  labels: 
+    {{ include "moat.labels" . | nindent 4 }}
+    app.kubernetes.io/component: cache
 spec:
-  serviceName: {{ include "moat.fullname" . }}
+  serviceName: {{ include "moat.cache.fullname" . }}
   {{- if not .Values.autoscaling.enabled }}
-  replicas: {{ .Values.replicaCount }}
+  replicas: {{ .Values.moat.replica.cache }}
   {{- end }}
   selector:
     matchLabels:
-      {{- include "moat.selectorLabels" . | nindent 6 }}
+      {{- include "moat.cache.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       {{- with .Values.podAnnotations }}
@@ -33,7 +35,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       labels:
-        {{- include "moat.labels" . | nindent 8 }}
+        {{- include "moat.cache.selectorLabels" . | nindent 8 }}
         {{- with .Values.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -85,7 +87,7 @@ spec:
             - name: MOAT_ROLE
               value: "cache"
             - name: MOAT_PEER
-              value: "$(POD_NAME).{{ include "moat.fullname" . }}:{{ .Values.moat.port }}"
+              value: "$(POD_NAME).{{ include "moat.cache.fullname" . }}:{{ .Values.moat.port }}"
             - name: MOAT_BOOTSTRAP_PEERS
               value: {{ include "moat.bootstrapPeers" . | quote }}
             - name: MOAT_S3_ENDPOINT
