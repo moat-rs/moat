@@ -75,13 +75,13 @@ env:
   - name: MOAT_BOOTSTRAP_PEERS
     value: "moat-0.moat:23456,moat-1.moat:23456,moat-2.moat:23456"
   - name: MOAT_S3_ENDPOINT
-    value: "minio:9000"
+    value: "http://minio:9000"
   - name: MOAT_S3_ACCESS_KEY_ID
     value: "minioadmin"
   - name: MOAT_S3_SECRET_ACCESS_KEY
     value: "minioadmin"
   - name: MOAT_S3_BUCKET
-    value: "hummock001"
+    value: "default"
   - name: MOAT_S3_REGION
     value: "us-east-1"
   - name: MOAT_WEIGHT
