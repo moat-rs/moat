@@ -73,10 +73,6 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          {{- with .Values.volumeMounts }}
-          volumeMounts:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
           env:
             - name: POD_NAME
               valueFrom:
@@ -113,10 +109,18 @@ spec:
               value: "{{ .Values.moat.logLevel }}"
           command: ["./moat"]
           args: [] 
-      {{- with .Values.volumes }}
-      volumes:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
+          volumeMounts:
+            - name: cache
+              mountPath: /cache
+  volumeClaimTemplates:
+    - metadata:
+        name: cache
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        storageClassName: {{ .Values.persistent.storageClass | quote | default "" }}
+        resources:
+          requests:
+            storage: {{ .Values.persistent.size | quote }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
