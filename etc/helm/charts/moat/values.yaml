@@ -137,21 +137,12 @@ autoscaling:
   targetCPUUtilizationPercentage: 80
   # targetMemoryUtilizationPercentage: 80
 
-# Additional volumes on the output Deployment definition.
-volumes: 
-  - name: cache
-    hostPath:
-      path: /6536/cache
-      type: DirectoryOrCreate
-
-# Additional volumeMounts on the output Deployment definition.
-volumeMounts:
-  - name: cache
-    mountPath: /cache
-    subPathExpr: $(POD_NAME)
-
 nodeSelector: {}
 
 tolerations: []
 
 affinity: {}
+
+persistent:
+  storageClassName: ""
+  size: "10Gi" 
