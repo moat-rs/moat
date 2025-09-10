@@ -168,7 +168,7 @@ pub struct TelemetryConfig {
     #[clap(
         long = "telemetry-meter-prometheus-listen",
         env = "MOAT_TELEMETRY_METER_PROMETHEUS_LISTEN",
-        default_value = "127.0.0.1:1223"
+        required = false
     )]
     pub meter_prometheus_listen: Option<SocketAddr>,
 
