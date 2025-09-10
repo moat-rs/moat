@@ -164,6 +164,14 @@ pub struct TelemetryConfig {
     #[clap(long = "telemetry-meter-report-interval", value_parser = humantime::parse_duration, default_value = "1s")]
     pub meter_report_interval: Duration,
 
+    #[cfg(feature = "prometheus")]
+    #[clap(
+        long = "telemetry-meter-prometheus-listen",
+        env = "MOAT_TELEMETRY_METER_PROMETHEUS_LISTEN",
+        required = false
+    )]
+    pub meter_prometheus_listen: Option<SocketAddr>,
+
     /// Endpoint for OpenTelemetry logging collector.
     ///
     /// Example: `http://localhost:4317`.

@@ -39,6 +39,8 @@ pub struct Up {
     services: Vec<String>,
     #[arg(long, default_value_t = false)]
     release: bool,
+    #[arg(long, default_value_t = false)]
+    prometheus: bool,
 }
 
 pub fn up(args: Up) {
@@ -57,6 +59,9 @@ pub fn up(args: Up) {
     let mut build_args = String::new();
     if args.release {
         build_args.push_str("--release ");
+    }
+    if args.prometheus {
+        build_args.push_str("-F prometheus ");
     }
     env.push(("BUILD_ARGS", build_args));
     run_with_env(&cmd, env);

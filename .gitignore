@@ -6,3 +6,10 @@
 # Ignore docker compose customized configurations.
 *.override.yaml
 .env
+
+# Ignore IDE settings.
+.vscode/
+.idea/
+
+# macOS specific files
+.DS_Store
