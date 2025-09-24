@@ -1,0 +1,16 @@
+apiVersion: v1
+entries:
+  moat:
+  - apiVersion: v2
+    appVersion: 0.1.0
+    created: "2025-09-24T07:43:24.047255529Z"
+    description: A Helm chart for Kubernetes
+    digest: 7d3367b14792b4588b9c9f8c57ef947664329f0b9b1fec5c40e66123358e9734
+    home: https://github.com/mrcroxx/moat
+    icon: https://raw.githubusercontent.com/MrCroxx/moat/refs/heads/main/etc/logo/logo.svg
+    name: moat
+    type: application
+    urls:
+    - https://github.com/moat-rs/moat/releases/download/moat-0.1.0/moat-0.1.0.tgz
+    version: 0.1.0
+generated: "2025-09-24T07:43:24.047261641Z"
