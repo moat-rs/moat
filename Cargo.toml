@@ -1,4 +1,4 @@
-# Copyright 2025 Moat Project Authors
+# Copyright 2026- Moat Project Authors
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,64 +14,42 @@
 
 [workspace]
 resolver = "3"
-members = ["examples", "moat", "xtask"]
+members = ["core/*", "xtask"]
 
 [workspace.package]
 version = "0.0.0"
 edition = "2024"
 repository = "https://github.com/mrcroxx/moat"
 homepage = "https://github.com/mrcroxx/moat"
-keywords = ["cache", "hybrid"]
+keywords = ["storage", "nvme", "chunkserver", "rdma"]
 authors = ["MrCroxx <mrcroxx.cs@gmail.com>"]
 license = "Apache-2.0"
 readme = "README.md"
-rust-version = "1.87"
+rust-version = "1.90"
 
 [workspace.dependencies]
-anyhow = "1"
-# Moat components
 
-# Other dependencies
-async-trait = "0.1"
-bytes = "1"
-bytesize = "2"
-chrono = "0.4"
-clap = { version = "4", features = ["env"] }
+# Third-party crates
+clap = "4"
 colored = "3"
-foyer = "0.19.2"
-futures = "0.3"
-hex = "0.4"
-hmac = "0.12"
-http = "1"
-http-body-util = "0.1"
-humantime = "2"
-hyper = "1.3"
-hyper-util = "0.1"
-itertools = "0.14"
+crc-fast = { version = "1.10", default-features = false, features = ["std"] }
+io-uring = "0.7"
 libc = "0.2"
-mixtrics = "0.2"
-opendal = "0.54"
-opentelemetry = "0.30"
-opentelemetry-appender-tracing = "0.30"
-opentelemetry-otlp = "0.30"
-opentelemetry-prometheus = { package = "opentelemetry-prometheus-xx", version = "0.30" }
-opentelemetry_sdk = "0.30"
-pingora = "0.6"
-poem = "3"
-poem-openapi = "5"
-prometheus = "0.14"
-rand = "0.9"
-reqwest = "0.12"
-scopeguard = "1.2"
-serde = "1"
-serde_json = "1"
-sha2 = "0.10"
+# Moat crates
+moat-common = { path = "core/moat-common" }
+moat-engine = { path = "core/moat-engine" }
+parking_lot = "0.12"
+tempfile = "3"
 thiserror = "2"
-tokio = "1"
-tokio-retry = "0.3"
-tracing = "0.1"
-tracing-appender = "0.2"
-tracing-opentelemetry = "0.31"
-tracing-subscriber = "0.3"
-twox-hash = "2"
-url = "2"
+uuid = { version = "1", default-features = false }
+
+# Unsafe code is allowed: the hot paths (io_uring fixed buffers, registered RDMA
+# memory, hugepage arenas, zero-copy views) depend on it. Every unsafe block
+# must carry a `// SAFETY:` comment stating the invariant it relies on, and
+# unsafe operations inside `unsafe fn` must be wrapped explicitly as well.
+[workspace.lints.rust]
+missing_docs = "warn"
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "deny"

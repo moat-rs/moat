@@ -4,92 +4,117 @@
 
 # moat
 
-S3-compatible Object Store Accelerator.
+A chunkserver built for machines with many large NVMe drives.
 
-***Work In Progress ...***
+***Work in progress. The on-disk format and APIs are not stable yet.***
 
-Inspired by [ScopeDB/Percas](https://github.com/scopedb/percas), a distributed persistent cache service optimized for high performance NMVe SSD and provides simple HTTP APIs.
+moat stores immutable, variable-length chunks (from a few bytes up to a
+configurable maximum, 4 MiB by default) on raw NVMe devices, with one
+independent log-structured engine per disk, an RDMA data path, and a client
+library that stripes arbitrarily large objects across disks and nodes. It is
+designed to be correct first, fast second, and as small as those two allow.
 
-If a HTTP cache service is all your need, please consider it.
+The design document lives at [`docs/design/chunkserver.md`](docs/design/chunkserver.md).
+
+## Status
+
+| Crate | Purpose | State |
+|---|---|---|
+| [`moat-common`](core/moat-common) | Chunk identifiers, CRC32C block checksums, page alignment, huge-page arenas and the buddy buffer pool | usable |
+| [`moat-engine`](core/moat-engine) | Single-disk engine: segments, index, reclaim/eviction, recovery; io_uring with registered buffers, zero-copy read and write paths | usable on raw devices, files and in memory |
+| `moat-transport` | RDMA (verbs) and TCP transports behind one protocol | planned |
+| `moat-server` | Multi-disk node: NVMe discovery, placement, admission, workers | planned |
+| `moat-client` | Node routing, connection management, large-object striping | planned |
+| `moat-tools` | `format`, `fsck`, `dump`, `bench` | planned |
+
+## Trying the engine
+
+```rust
+use std::sync::Arc;
+use moat_common::ChunkId;
+use moat_engine::{FileDevice, FormatOptions, Options, PutOptions, QueueOptions};
+
+let device = Arc::new(FileDevice::create("disk.img", 64 << 30, /* direct */ true)?);
+moat_engine::format(&*device, &FormatOptions::default())?;
+
+let opened = moat_engine::open(device, Options::default())?;
+let (mut writer, reader) = (opened.writer, opened.reader);
+let mut ring = reader.ring(&QueueOptions::default())?; // one per reading thread
+
+let id = ChunkId::from_u128(1);
+writer.put(id, b"hello", PutOptions::default())?;
+writer.flush()?;
+assert_eq!(ring.get_sync(&id, None)?.as_deref(), Some(&b"hello"[..]));
+```
+
+The writer and every read ring own an io_uring instance and a pool of
+pre-registered, huge-page backed buffers; values move between those buffers and
+the device without copies (`Writer::prepare_large` / `put_large` for writes,
+`ChunkData` for reads). `cargo bench -p moat-engine` measures throughput and
+latency on a file or, with `MOAT_BENCH_DEVICE`, a raw device (which it
+**formats**).
+
+`cargo test --workspace` runs the unit tests plus the engine's crash-injection,
+reclaim and randomized model tests against an in-memory device.
+
+## Benchmarking
+
+Run the engine benchmark without additional configuration to use a temporary
+4 GiB file. The benchmark enables `O_DIRECT` when the backing filesystem
+supports it and falls back to buffered I/O otherwise.
+
+```sh
+cargo bench -p moat-engine
+```
+
+To benchmark a block device, pass its path explicitly:
+
+```sh
+MOAT_BENCH_DEVICE=/path/to/block-device \
+MOAT_BENCH_BYTES=$((64 << 30)) \
+cargo bench -p moat-engine
+```
+
+**The benchmark formats `MOAT_BENCH_DEVICE` and destroys data on it. Never use
+a system disk or a device containing data you need.** Device paths are examples
+only and must not be committed as project configuration.
+
+The workload can be adjusted with the following environment variables:
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `MOAT_BENCH_BYTES` | Bytes exercised by the benchmark | 4 GiB |
+| `MOAT_BENCH_READERS` | Concurrent reader threads | 1 |
+| `MOAT_BENCH_LARGE` | Large-value size in bytes | 1 MiB |
+| `MOAT_BENCH_SMALL` | Small-value size in bytes | 4 KiB |
+| `MOAT_BENCH_SYNC` | Use the blocking queue instead of io_uring when set | unset |
+
+Benchmark results are hardware-specific. Published results should include the
+CPU, storage device, kernel, filesystem or raw-device mode, benchmark variables,
+and the corresponding `fio` configuration when making comparisons.
 
 ## Development
 
-***Moat*** use the way called [cargo-xtask](https://github.com/matklad/cargo-xtask) for development. You only need to setup the rust toolchain to run the tasks.
+Rust stable (see `rust-version` in `Cargo.toml`). Development tasks follow the
+[cargo-xtask](https://github.com/matklad/cargo-xtask) convention and are run
+through the `cargo x` alias:
 
-To install rust toolchain with rustup if you didn't set it up:
+| Command | What it does |
+|---|---|
+| `cargo x` | The default suite: `tools`, `check`, `test`, `udeps`, `license`, `doc` |
+| `cargo x tools [-y]` | Installs the helper tools the other tasks need (`typos`, `taplo`, `cargo-sort`, `cargo-machete`, `cargo-nextest`, `license-eye`) |
+| `cargo x check` | Spelling, TOML and Rust formatting (applied in place, nightly rustfmt when available), clippy with warnings denied |
+| `cargo x test` | `cargo nextest run` plus doctests |
+| `cargo x udeps` | Unused dependencies |
+| `cargo x license` | Apache 2.0 header check (`.licenserc.yaml`) |
+| `cargo x doc` | `cargo doc` with warnings denied |
 
-```sh
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-```
+`cargo x tools` installs helper binaries under `CARGO_HOME`; when it is unset,
+the standard `$HOME/.cargo` location is used. Downloaded archives are kept in a
+temporary directory and removed after installation.
 
-Then run `cargo x -h` for usage.
+Run `cargo x` before opening a pull request; CI runs the same checks.
 
-E.g.
+## License
 
-`cargo x`: Run the default task sult, alias for `cargo x all`.
-
-`cargo x dev up [<service>]`: Start moat cluster development environment.
-`cargo x dev up [<service>]`: Start moat cluster development environment.
-`cargo x dev clean`: Stop moat cluster development environment if it is running, and clean the volumes, logs and caches. (Build caches will NOT be cleaned.)
-
-> ***HINT:*** It will be much smoother with the following alias:
->
-> ```sh
-> alias x="cargo x"
-> alias xd="cargo x dev"
-> ```
-
-### Develop moat cluster with a proxy to the internet
-
-In some countries and regions, accessing the complete internet requires the use of a proxy. To ensure that the build and run of moat can access the internet normally without affecting communication between them, the following configuration can be implemented:
-
-- `docker-compose.override.yaml`
-
-```yaml
-services:
-  node-exporter:
-    environment:
-      - no_proxy=${MOAT_NO_PROXY}
-  prometheus:
-    environment:
-      - no_proxy=${MOAT_NO_PROXY}
-  loki:
-    environment:
-      - no_proxy=${MOAT_NO_PROXY}
-  otel-collector:
-    environment:
-      - no_proxy=${MOAT_NO_PROXY}
-  grafana:
-    environment:
-      - no_proxy=${MOAT_NO_PROXY}
-  minio:
-    environment:
-      - no_proxy=${MOAT_NO_PROXY}
-  init:
-    environment:
-      - no_proxy=${MOAT_NO_PROXY}
-  moat-cache-1: &moat
-    build:
-      args:
-        - HTTP_PROXY=${MOAT_PROXY}
-        - HTTPS_PROXY=${MOAT_PROXY}
-        - NO_PROXY=${MOAT_NO_PROXY}
-    environment:
-      - http_proxy=${MOAT_PROXY}
-      - https_proxy=${MOAT_PROXY}
-      - no_proxy=${MOAT_NO_PROXY}
-  moat-cache-2: *moat
-  moat-cache-3: *moat
-  moat-cache-4: *moat
-  moat-agent-1: *moat
-  moat-agent-2: *moat
-```
-
-- `.env`
-
-```properties
-MOAT_NO_PROXY=localhost,127.0.0.1,minio,moat,moat-cache-1,moat-cache-2,moat-cache-3,moat-cache-4,moat-agent-1,moat-agent-2,prometheus,grafana,node-exporter,otel-collector,loki
-MOAT_PROXY=<YOUR PROXY ENDPOINT>
-```
-
-Additionally, the docker-daemon may also need a proxy to fetch images. Please refer to the [docker official document](https://docs.docker.com/engine/cli/proxy/).
+Licensed under the [Apache License, Version 2.0](LICENSE).
