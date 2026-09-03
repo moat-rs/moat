@@ -27,6 +27,7 @@ use moat_engine::{
 
 const SEGMENT: u64 = 1 << 20;
 const CHUNK_MAX: u32 = 128 << 10;
+const FILE_CHUNK_MAX: u32 = 64 << 10;
 
 fn format_options() -> FormatOptions {
     FormatOptions {
@@ -57,15 +58,15 @@ fn options() -> Options {
     }
 }
 
-/// Keep the two registered pools used by the file-backed test below the
-/// locked-memory limit of standard hosted CI runners. The 256 KiB class still
-/// accommodates the test format's 128 KiB maximum chunk plus its metadata.
+/// Keep the registered pools used by the file-backed test below the
+/// locked-memory limit of standard hosted CI runners. The 128 KiB class still
+/// accommodates the test format's 64 KiB maximum chunk plus its metadata.
 fn file_queue_options() -> QueueOptions {
     QueueOptions {
         depth: 64,
         pool: PoolOptions {
-            bytes: 2 << 20,
-            max_class: 256 << 10,
+            bytes: 1 << 20,
+            max_class: 128 << 10,
             huge_pages: HugePages::Disabled,
         },
         force_sync: false,
@@ -74,10 +75,17 @@ fn file_queue_options() -> QueueOptions {
 
 fn file_options() -> Options {
     Options {
-        batch_limit: 256 << 10,
-        scan_window: 256 << 10,
+        batch_limit: 128 << 10,
+        scan_window: 128 << 10,
         queue: file_queue_options(),
         ..Default::default()
+    }
+}
+
+fn file_format_options() -> FormatOptions {
+    FormatOptions {
+        chunk_max: FILE_CHUNK_MAX,
+        ..format_options()
     }
 }
 
@@ -1028,7 +1036,7 @@ fn file_device_roundtrip_with_direct_io() {
         Err(_) => FileDevice::create(&path, len, false).unwrap(),
     };
     let device: Arc<FileDevice> = Arc::new(device);
-    moat_engine::format(&*device, &format_options()).unwrap();
+    moat_engine::format(&*device, &file_format_options()).unwrap();
 
     let mut rng = XorShift(0xfeed);
     let mut expected = HashMap::new();
@@ -1036,7 +1044,8 @@ fn file_device_roundtrip_with_direct_io() {
         let Opened { mut writer, reader, .. } = moat_engine::open(device.clone(), file_options()).unwrap();
         let mut ring = reader.ring(&file_queue_options()).unwrap();
         for i in 0..64u128 {
-            let v = value_for(i, 0, random_len(&mut rng));
+            let len = random_len(&mut rng).min(FILE_CHUNK_MAX as usize);
+            let v = value_for(i, 0, len);
             writer.put(id(i), &v, PutOptions::default()).unwrap();
             expected.insert(i, v);
         }
