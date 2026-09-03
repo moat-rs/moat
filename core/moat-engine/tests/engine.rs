@@ -57,6 +57,30 @@ fn options() -> Options {
     }
 }
 
+/// Keep the two registered pools used by the file-backed test below the
+/// locked-memory limit of standard hosted CI runners. The 256 KiB class still
+/// accommodates the test format's 128 KiB maximum chunk plus its metadata.
+fn file_queue_options() -> QueueOptions {
+    QueueOptions {
+        depth: 64,
+        pool: PoolOptions {
+            bytes: 2 << 20,
+            max_class: 256 << 10,
+            huge_pages: HugePages::Disabled,
+        },
+        force_sync: false,
+    }
+}
+
+fn file_options() -> Options {
+    Options {
+        batch_limit: 256 << 10,
+        scan_window: 256 << 10,
+        queue: file_queue_options(),
+        ..Default::default()
+    }
+}
+
 fn new_device(segments: u64) -> Arc<MemDevice> {
     let device = Arc::new(MemDevice::new(SEGMENT * (segments + 1)));
     moat_engine::format(&*device, &format_options()).unwrap();
@@ -1009,8 +1033,8 @@ fn file_device_roundtrip_with_direct_io() {
     let mut rng = XorShift(0xfeed);
     let mut expected = HashMap::new();
     {
-        let Opened { mut writer, reader, .. } = moat_engine::open(device.clone(), options()).unwrap();
-        let mut ring = open_ring(&reader);
+        let Opened { mut writer, reader, .. } = moat_engine::open(device.clone(), file_options()).unwrap();
+        let mut ring = reader.ring(&file_queue_options()).unwrap();
         for i in 0..64u128 {
             let v = value_for(i, 0, random_len(&mut rng));
             writer.put(id(i), &v, PutOptions::default()).unwrap();
@@ -1023,8 +1047,8 @@ fn file_device_roundtrip_with_direct_io() {
         writer.close().unwrap();
     }
     let reopened = Arc::new(FileDevice::open(&path, false).unwrap());
-    let Opened { reader, report, .. } = moat_engine::open(reopened, options()).unwrap();
-    let mut ring = open_ring(&reader);
+    let Opened { reader, report, .. } = moat_engine::open(reopened, file_options()).unwrap();
+    let mut ring = reader.ring(&file_queue_options()).unwrap();
     assert_eq!(report.chunks, 64);
     for (i, v) in &expected {
         assert_eq!(read(&mut ring, &id(*i)).unwrap(), *v);
