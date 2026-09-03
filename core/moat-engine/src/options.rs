@@ -101,6 +101,11 @@ pub struct Options {
     /// is raised automatically to fit the largest batch, the batch limit and
     /// the scan window.
     pub queue: QueueOptions,
+    /// Minimum writer pool capacity as a multiple of its largest required
+    /// buffer class. Larger values allow more large I/O operations to remain
+    /// in flight; smaller values reduce mapped and registered memory. The
+    /// configured pool size remains the lower bound. Default: 8.
+    pub writer_pool_capacity_multiplier: usize,
     /// Always read and verify a record's header (key, LSN, kind) on `get`.
     /// Framed single-block records are otherwise verified from the CRC in the
     /// index alone, which costs one page per read; with this on they read
@@ -118,6 +123,7 @@ impl Default for Options {
             index_shards: 64,
             sync_on_flush: false,
             queue: QueueOptions::default(),
+            writer_pool_capacity_multiplier: 8,
             verify_header_on_read: false,
         }
     }
@@ -132,6 +138,7 @@ impl std::fmt::Debug for Options {
             .field("index_shards", &self.index_shards)
             .field("sync_on_flush", &self.sync_on_flush)
             .field("queue", &self.queue)
+            .field("writer_pool_capacity_multiplier", &self.writer_pool_capacity_multiplier)
             .field("verify_header_on_read", &self.verify_header_on_read)
             .finish_non_exhaustive()
     }
@@ -145,7 +152,27 @@ impl Options {
         if self.batch_limit < PAGE_SIZE as usize {
             return Err(Error::InvalidOption("batch_limit must be at least one page".into()));
         }
+        if self.writer_pool_capacity_multiplier == 0 {
+            return Err(Error::InvalidOption(
+                "writer_pool_capacity_multiplier must be at least one".into(),
+            ));
+        }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn writer_pool_capacity_multiplier_must_be_positive() {
+        assert_eq!(Options::default().writer_pool_capacity_multiplier, 8);
+        let options = Options {
+            writer_pool_capacity_multiplier: 0,
+            ..Default::default()
+        };
+        assert!(matches!(options.validate(), Err(Error::InvalidOption(_))));
     }
 }
 

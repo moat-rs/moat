@@ -139,7 +139,10 @@ pub fn open(device: Arc<dyn Device>, mut options: Options) -> Result<Opened> {
         .max(options.scan_window)
         .next_power_of_two();
     options.queue.pool.max_class = options.queue.pool.max_class.max(needed);
-    options.queue.pool.bytes = options.queue.pool.bytes.max(8 * needed);
+    let minimum_pool_bytes = needed
+        .checked_mul(options.writer_pool_capacity_multiplier)
+        .ok_or_else(|| Error::InvalidOption("writer pool capacity exceeds addressable memory".into()))?;
+    options.queue.pool.bytes = options.queue.pool.bytes.max(minimum_pool_bytes);
     let geometry = Geometry::for_device(device.capacity(), superblock.segment_size);
     if geometry.segment_count < superblock.segment_count {
         return Err(Error::Unformatted(format!(
