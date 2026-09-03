@@ -13,8 +13,8 @@
 # limitations under the License.
 
 [package]
-name = "xtask"
-description = "Development tasks for the moat workspace; run with `cargo x`."
+name = "moat-engine"
+description = "Single-disk log-structured chunk engine: segments, index, reclaim and recovery."
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
@@ -24,11 +24,22 @@ authors.workspace = true
 license.workspace = true
 readme.workspace = true
 rust-version.workspace = true
-publish = false
 
 [dependencies]
-clap = { workspace = true, features = ["derive"] }
-colored = { workspace = true }
+libc = { workspace = true }
+moat-common = { workspace = true }
+parking_lot = { workspace = true }
+thiserror = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+io-uring = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[[bench]]
+name = "engine"
+harness = false
 
 [lints]
 workspace = true

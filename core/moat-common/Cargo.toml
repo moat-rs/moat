@@ -13,8 +13,8 @@
 # limitations under the License.
 
 [package]
-name = "xtask"
-description = "Development tasks for the moat workspace; run with `cargo x`."
+name = "moat-common"
+description = "Common types shared by all moat components: chunk identifiers, checksums, alignment helpers."
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
@@ -24,11 +24,20 @@ authors.workspace = true
 license.workspace = true
 readme.workspace = true
 rust-version.workspace = true
-publish = false
+
+[features]
+# `From` conversions between `ChunkId` and `uuid::Uuid`.
+uuid = ["dep:uuid"]
 
 [dependencies]
-clap = { workspace = true, features = ["derive"] }
-colored = { workspace = true }
+crc-fast = { workspace = true }
+libc = { workspace = true }
+parking_lot = { workspace = true }
+uuid = { workspace = true, optional = true }
+
+[[bench]]
+name = "checksum"
+harness = false
 
 [lints]
 workspace = true
