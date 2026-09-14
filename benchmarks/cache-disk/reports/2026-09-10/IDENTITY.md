@@ -7,7 +7,7 @@ as moat in each matrix. Foyer's internal hashing and read verification are uncha
 
 ## CPU-only identity comparison
 
-Five alternating pairs per key size, one million calls per sample, CPU 9.
+Five alternating pairs per key size, one million calls per sample, on one pinned CPU.
 The previous cached BLAKE3 implementation is the control. Each call includes
 namespace, version and key length. Timings include the full ID implementation,
 not just a bare hash primitive. The common benchmark lock excludes disk runs.

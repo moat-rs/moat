@@ -2,6 +2,10 @@
 *.log
 *.img
 
+# Python tooling caches.
+__pycache__/
+.ruff_cache/
+
 # IDE settings.
 .vscode/
 .idea/
