@@ -1,5 +1,5 @@
 <p align="center">
-    <img src="https://raw.githubusercontent.com/mrcroxx/moat/main/etc/logo/slogan.svg" />
+    <img src="https://raw.githubusercontent.com/moat-rs/moat/main/etc/logo/slogan.svg" />
 </p>
 
 # moat
@@ -160,6 +160,9 @@ CPU, storage device, kernel, filesystem or raw-device mode, benchmark variables,
 and the corresponding `fio` configuration when making comparisons.
 
 ## Development
+
+See the [development guide](docs/README.md) for the repository layout,
+suggested reading order, and design document index.
 
 Rust stable (see `rust-version` in `Cargo.toml`). Development tasks follow the
 [cargo-xtask](https://github.com/matklad/cargo-xtask) convention and are run

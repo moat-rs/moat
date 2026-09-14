@@ -19,8 +19,8 @@ members = ["core/*", "xtask"]
 [workspace.package]
 version = "0.0.0"
 edition = "2024"
-repository = "https://github.com/mrcroxx/moat"
-homepage = "https://github.com/mrcroxx/moat"
+repository = "https://github.com/moat-rs/moat"
+homepage = "https://github.com/moat-rs/moat"
 keywords = ["storage", "nvme", "chunkserver", "rdma"]
 authors = ["MrCroxx <mrcroxx.cs@gmail.com>"]
 license = "Apache-2.0"
@@ -29,7 +29,7 @@ rust-version = "1.90"
 
 [workspace.dependencies]
 
-# Third-party crates
+# Workspace and third-party crates, ordered by name.
 clap = "4"
 colored = "3"
 crc-fast = { version = "1.10", default-features = false, features = ["std"] }
@@ -40,7 +40,6 @@ futures-util = "0.3"
 hashbrown = { version = "0.16", default-features = false }
 io-uring = "0.7"
 libc = "0.2"
-# Moat crates
 moat-cache = { path = "core/moat-cache" }
 moat-cache-memory = { path = "core/moat-cache-memory" }
 moat-cache-store = { path = "core/moat-cache-store" }
