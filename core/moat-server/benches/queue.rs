@@ -46,17 +46,18 @@ mod cpus;
 mod pool;
 
 #[cfg(target_os = "linux")]
-use moat_common::{PoolOptions, crc32c};
-#[cfg(target_os = "linux")]
-use moat_engine::{Device, FileDevice, IoQueue, QueueOptions};
-#[cfg(target_os = "linux")]
-use moat_server::{disk, worker::pin_to_core};
-#[cfg(target_os = "linux")]
 use std::{
     hint::black_box,
     sync::{Arc, Barrier},
     time::{Duration, Instant},
 };
+
+#[cfg(target_os = "linux")]
+use moat_common::{PoolOptions, crc32c};
+#[cfg(target_os = "linux")]
+use moat_engine::{Device, FileDevice, IoQueue, QueueOptions};
+#[cfg(target_os = "linux")]
+use moat_server::{disk, worker::pin_to_core};
 
 #[cfg(target_os = "linux")]
 fn env(name: &str, default: u64) -> u64 {

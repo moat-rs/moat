@@ -31,8 +31,9 @@ fn topology_order_contains_each_selected_cpu_once() {
 
 #[cfg(test)]
 mod tests {
-    use super::cpus::spread_in;
     use std::fs;
+
+    use super::cpus::spread_in;
 
     #[test]
     fn spreads_caches_before_cores_and_smt_with_offline_siblings() {

@@ -16,16 +16,12 @@
 //!
 //! This crate turns a set of [`moat_engine::Engine`]s into a running node:
 //!
-//! - [`disk`] finds the machine's NVMe namespaces by serial and tells the
-//!   system disk (partitioned, mounted, or under an md/dm holder) apart from
-//!   data disks.
-//! - [`placement`] decides which disk a chunk lives on, deterministically and
-//!   without a table.
-//! - [`worker`] is the thread that owns one I/O queue and drives every disk
-//!   through it: a reader for each disk, the writer for each disk it owns,
-//!   and a pluggable [`worker::Handler`] as the source of requests.
-//! - [`node`] opens every disk in parallel, assigns owners and starts
-//!   workers.
+//! - [`disk`] finds the machine's NVMe namespaces by serial and tells the system disk (partitioned, mounted, or under
+//!   an md/dm holder) apart from data disks.
+//! - [`placement`] decides which disk a chunk lives on, deterministically and without a table.
+//! - [`worker`] is the thread that owns one I/O queue and drives every disk through it: a reader for each disk, the
+//!   writer for each disk it owns, and a pluggable [`worker::Handler`] as the source of requests.
+//! - [`node`] opens every disk in parallel, assigns owners and starts workers.
 //!
 //! The network transport is not here yet; the handler abstraction is where it
 //! plugs in.
