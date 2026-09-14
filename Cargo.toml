@@ -19,8 +19,8 @@ members = ["core/*", "xtask"]
 [workspace.package]
 version = "0.0.0"
 edition = "2024"
-repository = "https://github.com/mrcroxx/moat"
-homepage = "https://github.com/mrcroxx/moat"
+repository = "https://github.com/moat-rs/moat"
+homepage = "https://github.com/moat-rs/moat"
 keywords = ["storage", "nvme", "chunkserver", "rdma"]
 authors = ["MrCroxx <mrcroxx.cs@gmail.com>"]
 license = "Apache-2.0"

@@ -1,6 +1,6 @@
 # Engine layout diagrams
 
-These diagrams illustrate the current moat-engine layout for code review. Labels are in English; sizes are schematic. Generated with the built-in image_gen tool and reviewed against the implementation. The [prompt set](PROMPTS.md) includes the batch diagram correction.
+These diagrams illustrate the current moat-engine layout for code review. Labels are in English; sizes are schematic. AI-generated and reviewed against the implementation. The [prompt set](PROMPTS.md) includes the batch diagram correction.
 
 ## Device and segment
 

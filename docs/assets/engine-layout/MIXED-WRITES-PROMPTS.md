@@ -1,6 +1,6 @@
 # Mixed-write lifecycle diagram
 
-Generated with the built-in image_gen tool and checked against Writer::poll, close_all_pending, close_pending, enqueue_batch, write_large, and ensure_room.
+AI-generated diagram checked against Writer::poll, close_all_pending, close_pending, enqueue_batch, write_large, and ensure_room.
 
 ## Initial prompt
 

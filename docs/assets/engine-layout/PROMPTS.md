@@ -1,6 +1,6 @@
 # Image generation prompts
 
-Generated with the built-in image_gen tool. All images use English labels and depict the implementation reviewed on 2026-09-11. Diagrams are schematic, not to scale.
+AI-generated diagrams. All images use English labels and depict the implementation reviewed on 2026-09-11. Diagrams are schematic, not to scale.
 
 ## Figure 1
 

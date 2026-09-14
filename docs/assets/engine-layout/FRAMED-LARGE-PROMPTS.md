@@ -1,6 +1,6 @@
 # Exact framed and large batch diagrams
 
-Generated with the built-in image_gen tool. Example byte ranges were computed from the implementation before generation. Rendered sizes, ranges, padding, checksum coverage, and BatchHeader fields were visually checked against those calculations.
+AI-generated diagrams. Example byte ranges were computed from the implementation before generation. Rendered sizes, ranges, padding, checksum coverage, and BatchHeader fields were visually checked against those calculations.
 
 ## Framed batch
 

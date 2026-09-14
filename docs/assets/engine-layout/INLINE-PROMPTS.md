@@ -1,6 +1,6 @@
 # Exact inline layout redraws
 
-Generated with the built-in image_gen tool. The prompts below supply byte ranges computed from the current implementation. The rendered ranges, lengths, record boundaries, and page counts were visually checked.
+AI-generated diagrams. The prompts below supply byte ranges computed from the current implementation. The rendered ranges, lengths, record boundaries, and page counts were visually checked.
 
 ## No inter-record gap
 

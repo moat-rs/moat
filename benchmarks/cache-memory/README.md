@@ -51,10 +51,11 @@ eviction throughput, RSS, tail latency, or end-to-end storage performance.
 Recorded run
 ------------
 
-[Full CSV](results/2026-09-09-9950x.csv): AMD Ryzen 9 9950X, Linux x86-64,
+[Full CSV](results/2026-09-09-resident.csv): Linux x86-64,
 `rustc 1.98.0 (88d9e12ae 2026-08-18)`, release profile with debug information,
-CPU affinity restricted to physical cores 0-3. This is one development-machine
-run, not a cross-machine performance guarantee. Five samples describe within-run
+CPU affinity restricted to four physical cores. The CPU model and exact core
+identifiers are omitted. This is one benchmark run, not a cross-machine
+performance guarantee. Five samples describe within-run
 variation and do not establish statistical confidence across independent runs.
 
 For 16-byte keys and 128-byte values, median nanoseconds per completed hit:
