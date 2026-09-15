@@ -382,6 +382,107 @@ fn failed_admission_and_encoding_preserve_accepted_work() {
 }
 
 #[test]
+fn capacity_errors_distinguish_rejection_from_frame_segment_and_buffer_changes() {
+    let limits = FrameLimits::new(8192, 4096).unwrap();
+    let mut builder = FrameBuilder::new(limits);
+    assert_eq!(
+        builder.push(key(1), 1, &[7; 4097]),
+        Err(Error::ValueTooLarge { len: 4097, max: 4096 })
+    );
+    assert!(builder.is_empty());
+
+    builder.push(key(1), 1, &[7; 4096]).unwrap();
+    assert_eq!(
+        builder.push(key(2), 2, &[8; 4096]),
+        Err(Error::FrameFull {
+            required: 12288,
+            limit: 8192
+        })
+    );
+    assert_eq!(builder.len(), 1);
+
+    let mut short = [0xab; 4096];
+    assert_eq!(
+        builder.encode_into(position(), &mut short),
+        Err(Error::BufferTooSmall {
+            required: 8192,
+            available: 4096
+        })
+    );
+    assert_eq!(short, [0xab; 4096]);
+
+    let mut output = [0xab; 8192];
+    let near_end = FramePosition::new(17, 4096, 8192).unwrap();
+    assert_eq!(
+        builder.encode_into(near_end, &mut output),
+        Err(Error::SegmentFull {
+            required: 8192,
+            available: 4096
+        })
+    );
+    assert_eq!(output, [0xab; 8192]);
+    builder.encode_into(position(), &mut output).unwrap();
+    assert_eq!(
+        Frame::decode(&output, limits, position()).unwrap().value(0),
+        Some(&[7; 4096][..])
+    );
+}
+
+#[test]
+fn prepared_errors_preserve_payload_and_report_the_failing_limit() {
+    let limits = FrameLimits::new(8192, 4096).unwrap();
+    assert_eq!(
+        PreparedFrame::required_len(limits, 4097),
+        Err(Error::ValueTooLarge { len: 4097, max: 4096 })
+    );
+    assert_eq!(
+        PreparedFrame::required_len(FrameLimits::new(4096, 4096).unwrap(), 4096),
+        Err(Error::FrameFull {
+            required: 8192,
+            limit: 4096
+        })
+    );
+    let mut short = [0xab; 4096];
+    assert!(matches!(
+        PreparedFrame::new(limits, 4096, &mut short),
+        Err(Error::BufferTooSmall {
+            required: 8192,
+            available: 4096
+        })
+    ));
+    assert_eq!(short, [0xab; 4096]);
+
+    let mut output = [0xab; 8192];
+    let mut prepared = PreparedFrame::new(limits, 4096, &mut output).unwrap();
+    prepared.value_mut().fill(7);
+    let near_end = FramePosition::new(17, 4096, 8192).unwrap();
+    assert_eq!(
+        prepared.finish(near_end, key(1), 1),
+        Err(Error::SegmentFull {
+            required: 8192,
+            available: 4096
+        })
+    );
+    assert_eq!(output[..4096], [0xab; 4096]);
+    assert_eq!(output[4096..], [7; 4096]);
+    let prepared = PreparedFrame::new(limits, 4096, &mut output).unwrap();
+    let bytes = prepared.finish(position(), key(1), 1).unwrap();
+    assert_eq!(
+        Frame::decode(bytes, limits, position()).unwrap().value(0),
+        Some(&[7; 4096][..])
+    );
+}
+
+#[test]
+fn codec_errors_remain_small_and_thread_safe() {
+    fn assert_traits<T: std::error::Error + Send + Sync + 'static>() {}
+    assert_traits::<Error>();
+    // Expected admission failures travel through the writer's normal path.
+    // Keep error storage bounded as diagnostics evolve; this is not an ABI.
+    assert!(std::mem::size_of::<Error>() <= 24);
+}
+
+#[test]
 fn format_bounds_are_independent_of_a_smaller_future_batch_target() {
     let value = vec![9; 2 << 20];
     let bytes = encode(&[&value]);

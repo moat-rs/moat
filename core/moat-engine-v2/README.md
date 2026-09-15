@@ -98,6 +98,25 @@ Verified reads must eventually fetch metadata and distant payload as separate ex
 
 Checksums detect corruption; they do not make writes atomic or durable. Recovery prefix rules, publication order, persistence barriers, and segment reuse cannot be established by this codec alone.
 
+## Error contract
+
+`frame::Error` and `frame::Result` are defined in `src/frame/error.rs` and re-exported from `frame`. The error is a non-exhaustive enum: callers match variants and numeric fields, with a fallback for future variants. Diagnostic strings and `Display` text are for humans and are not a stable parsing interface.
+
+Capacity failures identify the resource that needs attention:
+
+| Variant | Meaning and caller response |
+| --- | --- |
+| `ValueTooLarge { len, max }` | The logical value exceeds the format limit; changing buffers or flushing does not help. |
+| `FrameFull { required, limit }` | The record set exceeds the encoded frame limit. Close a nonempty builder and retry the next record separately; reject a record that cannot fit by itself. |
+| `SegmentFull { required, available }` | The supplied segment position lacks room; choose another position. This does not report device-wide free space. |
+| `BufferTooSmall { required, available }` | The output buffer is too small; supply a larger buffer. |
+
+Invalid arguments, incomplete input, unsupported versions, corrupt metadata, and payload checksum failures have separate variants. `Truncated` describes the supplied bytes, not an unconditional retry decision: an incremental reader may fetch more, while recovery must distinguish an unfinished active tail from damage before a sealed boundary. The codec therefore exposes no universal `is_retryable()` flag.
+
+The design borrows OpenDAL's emphasis on actionable error categories and separate diagnostics. This codec expresses categories directly as enum variants; a second enum mirroring every variant would add no information. Its errors carry inline numeric fields and static strings, with no heap allocation or automatic backtrace capture. Tests bound the representation to 24 bytes without making that size a public ABI guarantee. `thiserror` generates the standard error and formatting implementations; it does not impose a boxed error representation or expose its own error type to callers.
+
+When device I/O is introduced, its error boundary should preserve the original `std::io::Error` as a source and attach typed operation and physical-location context. Routine backpressure must stay cheap, and replay safety must depend on the operation's submission state. A generic string context collection, backtrace policy, or blanket retry flag is not introduced in this stage.
+
 ## Subsequent engine boundaries
 
 The upper layer decides which chunks to delete and controls segment selection, scheduling, placement policy, and maintenance budgets. The engine should expose segment statistics and execute explicitly requested physical reclamation, validating a segment handle that includes its allocation incarnation. It remains responsible for liveness revalidation, conditional index updates, persistence before freeing storage, and reader safety. A default victim-selection heuristic belongs in the caller's policy, not in the only engine execution entry point.

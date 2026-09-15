@@ -91,9 +91,9 @@ impl FramePosition {
 
     pub(super) fn check_len(self, len: usize) -> Result<()> {
         if len > self.available as usize {
-            return Err(Error::Full {
-                required: len,
-                limit: self.available as usize,
+            return Err(Error::SegmentFull {
+                required: len as u64,
+                available: self.available,
             });
         }
         Ok(())

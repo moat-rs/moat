@@ -80,9 +80,9 @@ impl<'a> FrameBuilder<'a> {
 
     fn admit(&mut self, input: Input<'a>) -> Result<()> {
         if input.value.len() as u64 > self.limits.max_value_len() as u64 {
-            return Err(Error::Full {
-                required: input.value.len(),
-                limit: self.limits.max_value_len() as usize,
+            return Err(Error::ValueTooLarge {
+                len: input.value.len() as u64,
+                max: self.limits.max_value_len(),
             });
         }
         let checksum_len = self.checksum_len + 4 * block_count(input.value.len() as u64) as u64;
@@ -97,9 +97,9 @@ impl<'a> FrameBuilder<'a> {
                 .fold(metadata_len, |end, record| place(end, record.value.len()).1);
             let required = align_up(end, PAGE);
             if required > self.limits.max_frame_len() as u64 {
-                return Err(Error::Full {
-                    required: usize::try_from(required).unwrap_or(usize::MAX),
-                    limit: self.limits.max_frame_len() as usize,
+                return Err(Error::FrameFull {
+                    required,
+                    limit: self.limits.max_frame_len(),
                 });
             }
         }
@@ -148,9 +148,9 @@ impl<'a> FrameBuilder<'a> {
         let frame_len = self.encoded_len();
         position.check_len(frame_len)?;
         if bytes.len() < frame_len {
-            return Err(Error::Full {
+            return Err(Error::BufferTooSmall {
                 required: frame_len,
-                limit: bytes.len(),
+                available: bytes.len(),
             });
         }
         let bytes = &mut bytes[..frame_len];
@@ -242,9 +242,9 @@ impl<'a> PreparedFrame<'a> {
     /// Required buffer length for a prepared, page-aligned value.
     pub fn required_len(limits: FrameLimits, value_len: u32) -> Result<usize> {
         if value_len > limits.max_value_len() {
-            return Err(Error::Full {
-                required: value_len as usize,
-                limit: limits.max_value_len() as usize,
+            return Err(Error::ValueTooLarge {
+                len: value_len as u64,
+                max: limits.max_value_len(),
             });
         }
         let metadata_len = HEADER_LEN as u64 + DESCRIPTOR_LEN as u64 + 4 * block_count(value_len as u64) as u64;
@@ -254,9 +254,9 @@ impl<'a> PreparedFrame<'a> {
             align_up(align_up(metadata_len, PAGE) + value_len as u64, PAGE)
         };
         if len > limits.max_frame_len() as u64 {
-            return Err(Error::Full {
-                required: usize::try_from(len).unwrap_or(usize::MAX),
-                limit: limits.max_frame_len() as usize,
+            return Err(Error::FrameFull {
+                required: len,
+                limit: limits.max_frame_len(),
             });
         }
         Ok(len as usize)
@@ -266,9 +266,9 @@ impl<'a> PreparedFrame<'a> {
     pub fn new(limits: FrameLimits, value_len: u32, bytes: &'a mut [u8]) -> Result<Self> {
         let len = Self::required_len(limits, value_len)?;
         if bytes.len() < len {
-            return Err(Error::Full {
+            return Err(Error::BufferTooSmall {
                 required: len,
-                limit: bytes.len(),
+                available: bytes.len(),
             });
         }
         let metadata_len = HEADER_LEN + DESCRIPTOR_LEN + 4 * block_count(value_len as u64) as usize;
