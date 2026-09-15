@@ -1,8 +1,9 @@
 # Unified immutable frames for the chunk engine
 
-Status: proposed. The engine still writes Inline, Framed, and Large batches.
-This document specifies a replacement direction and its implementation gates;
-it does not change the engine, its public API, or the format-version constant.
+Status: staged implementation in the independent
+[`moat-engine-v2` crate](../../core/moat-engine-v2/README.md). Stage 1 implements
+the frame codec, construction, and validation. The existing `moat-engine`
+still writes Inline, Framed, and Large batches; its API and format are unchanged.
 
 ## Summary
 
@@ -57,8 +58,9 @@ barrier, and a segment need not be sealed to be recoverable.
 
 The diagram is schematic; its labeled offsets are exact for the example.
 The **segment footer** belongs to the whole segment, not to an individual Frame.
-Frames have no footer or mandatory trailer page. The 64-byte Frame header and
-64-byte descriptors are candidate encoding sizes, not frozen format constants.
+Frames have no footer or mandatory trailer page. The independent codec implements
+the 64-byte Frame header and 64-byte descriptors; these sizes remain subject to
+review before enabling a new engine writer.
 The gap-filling placement shown is optional; sequential placement is the
 initial implementation baseline.
 
@@ -159,7 +161,9 @@ All integers use an explicit little-endian encoding, not Rust struct layout.
 Stored value and checksum offsets are Frame-relative. Field offsets in the
 tables are relative to the start of the corresponding structure. Reserved bytes
 and padding are written as zero; unsupported flags and versions are rejected.
-Magic values and version assignment must be finalized with the codec.
+The independent codec uses frame magic `MOATFRM2` and version `2`. Device and
+segment encodings remain a later stage; these constants do not define a
+complete new device format.
 
 ### Frame header
 
@@ -449,8 +453,16 @@ data, and a Frame's validation boundary is not hardware write atomicity.
 
 ### Reclaim
 
-Keep storage GC: select a sealed victim, validate its Frame metadata and live
-values, relocate live records with their original LSNs, and conditionally
+Separate physical reclamation policy from execution. The upper layer selects
+the sealed segment and controls scheduling and maintenance budgets. The engine
+exposes segment statistics and accepts an explicit segment handle containing
+both segment number and allocation incarnation. It revalidates eligibility
+when executing the request; stale snapshots cannot authorize reuse of a
+different allocation. A default selection heuristic may be provided by the
+caller, but must not be the only engine entry point.
+
+The engine validates the selected segment's Frame metadata and live values,
+relocates live records with their original LSNs, and conditionally
 replace index locations only if they still refer to the source. Foreground
 pending writes and tombstones continue to participate in liveness decisions.
 
@@ -561,15 +573,18 @@ of migration, but the implementation must explicitly reject incompatible
 media unless a separate decoder is provided. Decide version/magic handling
 before enabling the writer. This documentation change formats no devices.
 
-1. **Codec and recovery:** finalize field encodings, bounds, checksum coverage,
-   Frame identity, footer/index location fields, and incompatible-media
-   handling. Implement bounded parsing and fault injection first.
+1. **Independent frame crate:** implement field encodings, bounds, checksum
+   coverage, Frame identity, mixed-value construction, prepared buffers, and
+   malformed-input tests in `moat-engine-v2`. Review this stage before adding
+   engine pipelines; keep the original crate available for comparison.
 2. **Writer and reader integration:** one ordinary builder per stream,
    sequential placement, actual-size metadata, prepared large Frames,
-   footer reservations, and verified-read planning. Keep current submission
-   timing to isolate format effects.
+   device/segment encoding, footer/index location fields, footer reservations,
+   and verified-read planning. Keep current submission timing to isolate format
+   effects and explicitly reject incompatible media.
 3. **Lifecycle validation:** apply-order failures, barriers, seal, LSN/tombstone
-   recovery, reader pins, GC conditional relocation, and persistence-before-free.
+   recovery, reader pins, explicitly selected segment reclamation, conditional
+   relocation, and persistence-before-free.
 4. **Performance evaluation:** compare identical request windows against the
    old layout before introducing independent deadline batching or gap filling.
 5. **Optional optimizations:** descriptor/summary compression, metadata caching,

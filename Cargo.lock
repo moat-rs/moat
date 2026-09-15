@@ -363,6 +363,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "moat-engine-v2"
+version = "0.0.0"
+dependencies = [
+ "moat-common",
+ "thiserror",
+]
+
+[[package]]
 name = "moat-server"
 version = "0.0.0"
 dependencies = [
