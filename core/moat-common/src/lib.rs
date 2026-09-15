@@ -34,7 +34,8 @@ pub use align::{PAGE_SIZE, align_down, align_up, is_aligned};
 pub use arena::{Arena, HugePages};
 pub use buf::AlignedBuf;
 pub use checksum::{
-    CHECKSUM_BLOCK_SIZE, Crc32c, block_checksums, block_count, crc32c, verify_blocks, verify_blocks_with,
+    CHECKSUM_BLOCK_SIZE, Crc32c, block_checksums, block_checksums_iter, block_count, crc32c, verify_blocks,
+    verify_blocks_with,
 };
 pub use chunk_id::ChunkId;
 pub use pool::{BufferPool, PoolOptions, PooledBuf};

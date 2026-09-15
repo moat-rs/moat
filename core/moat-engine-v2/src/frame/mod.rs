@@ -41,13 +41,6 @@ pub const FORMAT_VERSION: u32 = 2;
 /// Frame identification bytes. Legacy batch encodings are never accepted.
 pub const MAGIC: [u8; 8] = *b"MOATFRM2";
 
-const PAGE: usize = moat_common::PAGE_SIZE as usize;
 // Fixed format invariant. The small-value CRC path can consume aligned u64
 // words without first processing an unaligned bytewise prefix.
-const VALUE_ALIGN: usize = 8;
-
-// All layout calculations use u64, including on 32-bit hosts. Callers check
-// against the u32 format bound before converting back to slice indices.
-fn align_up(value: u64, alignment: usize) -> u64 {
-    value.div_ceil(alignment as u64) * alignment as u64
-}
+const VALUE_ALIGN: u64 = 8;

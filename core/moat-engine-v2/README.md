@@ -1,6 +1,6 @@
 # moat-engine-v2
 
-Independent implementation of the [unified immutable frame proposal](../../docs/design/engine-frame-layout.md), developed alongside `moat-engine` for review before replacement. It does not depend on, wrap, or copy the old engine's pipelines. Shared primitives come from `moat-common`: chunk identifiers, CRC32C, and buffers.
+Independent implementation of the [unified immutable frame proposal](../../docs/design/engine-frame-layout.md), developed alongside `moat-engine` for review before replacement. It does not depend on, wrap, or copy the old engine's pipelines. Shared primitives come from `moat-common`: chunk identifiers, alignment helpers, CRC32C generation and verification, and buffers. Frame assembly uses the common checksum iterator to write directly into the metadata area without allocating a checksum vector.
 
 **Stage 1: frame format, construction, and validation.** This crate is not yet a storage engine or a drop-in replacement. Device/superblock encoding, segment footers, I/O queues, indexing, read/write pipelines, recovery, and physical space reclamation remain subsequent stages. The existing engine and its consumers continue to use their current implementation.
 

@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::{DESCRIPTOR_LEN, Error, FORMAT_VERSION, HEADER_LEN, MAGIC, PAGE, Result, codec::*};
+use moat_common::{PAGE_SIZE, is_aligned};
+
+use super::{DESCRIPTOR_LEN, Error, FORMAT_VERSION, HEADER_LEN, MAGIC, Result, codec::*};
 
 /// Format-wide decoding bounds, independent of a writer's batching target.
 ///
@@ -27,7 +29,7 @@ pub struct FrameLimits {
 impl FrameLimits {
     /// Sets the maximum encoded frame and logical value lengths in bytes.
     pub fn new(max_frame_len: u32, max_value_len: u32) -> Result<Self> {
-        if max_frame_len == 0 || !(max_frame_len as usize).is_multiple_of(PAGE) {
+        if max_frame_len == 0 || !is_aligned(max_frame_len as u64, PAGE_SIZE) {
             return Err(Error::InvalidArgument("frame limit must be a nonzero page multiple"));
         }
         if max_value_len > max_frame_len {
@@ -65,9 +67,9 @@ impl FramePosition {
     /// frame offsets must fit in the format's 32-bit geometry fields. The
     /// segment allocator must separately reserve space for its eventual footer.
     pub fn new(segment_seq: u64, offset: u32, segment_len: u32) -> Result<Self> {
-        if !(segment_len as usize).is_multiple_of(PAGE)
-            || !(offset as usize).is_multiple_of(PAGE)
-            || offset < PAGE as u32
+        if !is_aligned(segment_len as u64, PAGE_SIZE)
+            || !is_aligned(offset as u64, PAGE_SIZE)
+            || offset < PAGE_SIZE as u32
             || offset >= segment_len
         {
             return Err(Error::InvalidArgument("invalid segment length or frame offset"));
@@ -139,7 +141,7 @@ impl FrameHeader {
         let directory_len = u32_at(bytes, 36);
         let checksum_len = u32_at(bytes, 40);
         if frame_len == 0
-            || !(frame_len as usize).is_multiple_of(PAGE)
+            || !is_aligned(frame_len as u64, PAGE_SIZE)
             || frame_len > limits.max_frame_len
             || frame_len > position.available
         {

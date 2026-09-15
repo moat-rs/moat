@@ -14,7 +14,7 @@
 
 use std::ops::Range;
 
-use moat_common::{CHECKSUM_BLOCK_SIZE, block_count, crc32c, verify_blocks_with};
+use moat_common::{CHECKSUM_BLOCK_SIZE, align_down, align_up, block_count, crc32c, is_aligned, verify_blocks_with};
 
 use super::{
     DESCRIPTOR_LEN, Error, FrameHeader, FrameLimits, FramePosition, HEADER_LEN, RecordDescriptor, RecordKind, Result,
@@ -74,7 +74,10 @@ impl<'a> Metadata<'a> {
             checksum_at = checksum_end as usize;
             let start = descriptor.value_offset as usize;
             let end = start as u64 + descriptor.value_len as u64;
-            if start < header.metadata_len() || !start.is_multiple_of(VALUE_ALIGN) || end > header.frame_len() as u64 {
+            if start < header.metadata_len()
+                || !is_aligned(start as u64, VALUE_ALIGN)
+                || end > header.frame_len() as u64
+            {
                 return Err(Error::Corrupt("value range or alignment"));
             }
             ordered &= start >= previous_end;
@@ -163,8 +166,8 @@ impl Record<'_> {
             return Ok(range);
         }
         let block = CHECKSUM_BLOCK_SIZE as u64;
-        let start = range.start as u64 / block * block;
-        let end = (range.end as u64).div_ceil(block) * block;
+        let start = align_down(range.start as u64, block);
+        let end = align_up(range.end as u64, block);
         Ok(start as u32..end.min(self.descriptor.value_len as u64) as u32)
     }
 

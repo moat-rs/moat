@@ -511,6 +511,16 @@ fn invalid_positions_and_limits_fail_without_allocation() {
 }
 
 #[test]
+fn prepared_size_rounding_keeps_u32_overflow_in_the_u64_error_path() {
+    let max = u32::MAX - (PAGE as u32 - 1);
+    let limits = FrameLimits::new(max, max).unwrap();
+    assert!(matches!(
+        PreparedFrame::required_len(limits, max),
+        Err(Error::FrameFull { required, limit }) if required > u32::MAX as u64 && limit == max
+    ));
+}
+
+#[test]
 fn admission_matches_exact_layout_across_alignment_boundaries() {
     // Deterministic randomized coverage, including the final page where the
     // builder's O(1) bound falls back to exact placement. No extra dependency.

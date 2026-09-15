@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use moat_common::{CHECKSUM_BLOCK_SIZE, ChunkId, block_count, crc32c};
+use moat_common::{CHECKSUM_BLOCK_SIZE, ChunkId, PAGE_SIZE, align_up, block_checksums_iter, block_count, crc32c};
 
 use super::{
-    DESCRIPTOR_LEN, Error, FrameHeader, FrameLimits, FramePosition, HEADER_LEN, PAGE, RecordDescriptor, RecordKind,
-    Result, VALUE_ALIGN, align_up, codec::put_u32,
+    DESCRIPTOR_LEN, Error, FrameHeader, FrameLimits, FramePosition, HEADER_LEN, RecordDescriptor, RecordKind, Result,
+    VALUE_ALIGN, codec::put_u32,
 };
 
 #[derive(Clone, Copy)]
@@ -88,14 +88,14 @@ impl<'a> FrameBuilder<'a> {
         let checksum_len = self.checksum_len + 4 * block_count(input.value.len() as u64) as u64;
         let metadata_len = HEADER_LEN as u64 + (self.records.len() as u64 + 1) * DESCRIPTOR_LEN as u64 + checksum_len;
         let payload_end = place(self.payload_end, input.value.len()).1;
-        let upper = align_up(metadata_len, PAGE) + align_up(payload_end, PAGE);
+        let upper = align_up(metadata_len, PAGE_SIZE) + align_up(payload_end, PAGE_SIZE);
         if upper > self.limits.max_frame_len() as u64 {
             let end = self
                 .records
                 .iter()
                 .chain(std::iter::once(&input))
                 .fold(metadata_len, |end, record| place(end, record.value.len()).1);
-            let required = align_up(end, PAGE);
+            let required = align_up(end, PAGE_SIZE);
             if required > self.limits.max_frame_len() as u64 {
                 return Err(Error::FrameFull {
                     required,
@@ -132,7 +132,7 @@ impl<'a> FrameBuilder<'a> {
         let end = self.records.iter().fold(self.metadata_len() as u64, |end, record| {
             place(end, record.value.len()).1
         });
-        align_up(end, PAGE) as usize
+        align_up(end, PAGE_SIZE) as usize
     }
 
     /// Encodes accepted records in directory order using sequential placement.
@@ -201,15 +201,17 @@ impl<'a> FrameBuilder<'a> {
 // Pick the earliest 8-byte-aligned start that minimizes whole-value read pages.
 // Values of at least one checksum block always start on a page for range I/O.
 // No gap filling: the format permits it, but the initial builder stays linear.
+// Format limits bound lengths to u32. Calculate in u64, including the candidate
+// that may exceed the limit, so rounding cannot overflow before admission.
 fn place(end: u64, len: usize) -> (u64, u64) {
     if len == 0 {
         return (0, end);
     }
     let packed = align_up(end, VALUE_ALIGN);
     let len = len as u64;
-    let extra_page = (packed % PAGE as u64 + len).div_ceil(PAGE as u64) > len.div_ceil(PAGE as u64);
+    let extra_page = (packed % PAGE_SIZE + len).div_ceil(PAGE_SIZE) > len.div_ceil(PAGE_SIZE);
     let start = if len >= CHECKSUM_BLOCK_SIZE as u64 || extra_page {
-        align_up(end, PAGE)
+        align_up(end, PAGE_SIZE)
     } else {
         packed
     };
@@ -217,10 +219,12 @@ fn place(end: u64, len: usize) -> (u64, u64) {
 }
 
 fn write_checksums(bytes: &mut [u8], mut at: usize, value_at: usize, value_len: usize) -> usize {
-    for start in (0..value_len).step_by(CHECKSUM_BLOCK_SIZE) {
-        let end = (start + CHECKSUM_BLOCK_SIZE).min(value_len);
-        let sum = crc32c(&bytes[value_at + start..value_at + end]);
-        put_u32(bytes, at, sum);
+    if value_len == 0 {
+        return at;
+    }
+    let (metadata, payload) = bytes.split_at_mut(value_at);
+    for sum in block_checksums_iter(&payload[..value_len]) {
+        put_u32(metadata, at, sum);
         at += 4;
     }
     at
@@ -249,9 +253,9 @@ impl<'a> PreparedFrame<'a> {
         }
         let metadata_len = HEADER_LEN as u64 + DESCRIPTOR_LEN as u64 + 4 * block_count(value_len as u64) as u64;
         let len = if value_len == 0 {
-            PAGE as u64
+            PAGE_SIZE
         } else {
-            align_up(align_up(metadata_len, PAGE) + value_len as u64, PAGE)
+            align_up(align_up(metadata_len, PAGE_SIZE) + value_len as u64, PAGE_SIZE)
         };
         if len > limits.max_frame_len() as u64 {
             return Err(Error::FrameFull {
@@ -275,7 +279,7 @@ impl<'a> PreparedFrame<'a> {
         let value_at = if value_len == 0 {
             0
         } else {
-            align_up(metadata_len as u64, PAGE) as usize
+            align_up(metadata_len as u64, PAGE_SIZE) as usize
         };
         Ok(Self {
             bytes: &mut bytes[..len],
