@@ -2,8 +2,9 @@
 
 Status: implemented in `moat-engine-v2` as the next review stage after the frame
 codec. This specifies segment metadata and allocation accounting, with recovery
-from caller-supplied byte slices. Device superblocks, I/O submission, persistence
-barriers, index publication, and physical reclamation are subsequent work.
+from caller-supplied byte slices. The subsequent [I/O pipeline stage](engine-io-pipeline.md)
+adds file/io_uring submission, ordered index publication, and flush. Device
+superblocks, crash-safe header updates, and physical reclamation remain later work.
 
 The [frame proposal](engine-frame-layout.md) remains the architectural reference.
 The existing frame encoding is unchanged. This document resolves the initial
@@ -183,8 +184,9 @@ does not authorize appending new frames behind the recovered prefix.
 
 ## Remaining persistence work
 
-These APIs construct and validate bytes; the tests exercise in-memory write
-images and corruption, not device persistence. In particular, a torn in-place
+These segment APIs construct and validate bytes; their tests exercise in-memory
+write images and corruption. The separate pipeline stage adds small real-I/O
+tests, but does not yet establish device-wide power-loss recovery. In particular, a torn in-place
 segment-header update is detected but cannot be repaired by this codec. The
 persistent I/O integration must establish a recoverable header-update protocol
 before claiming power-loss safety. Device superblock generations, durable

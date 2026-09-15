@@ -29,6 +29,12 @@ rust-version.workspace = true
 moat-common = { workspace = true }
 thiserror = { workspace = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+io-uring = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
 [[bench]]
 name = "frame"
 harness = false

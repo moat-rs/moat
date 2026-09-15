@@ -170,16 +170,7 @@ impl Record<'_> {
     /// Expands an in-bounds value-relative range to complete checksum blocks.
     /// Empty ranges remain empty and require no payload I/O or verification.
     pub fn verification_range(self, range: Range<u32>) -> Result<Range<u32>> {
-        if range.start > range.end || range.end > self.descriptor.value_len {
-            return Err(Error::InvalidArgument("read range exceeds value"));
-        }
-        if range.is_empty() {
-            return Ok(range);
-        }
-        let block = CHECKSUM_BLOCK_SIZE as u64;
-        let start = align_down(range.start as u64, block);
-        let end = align_up(range.end as u64, block);
-        Ok(start as u32..end.min(self.descriptor.value_len as u64) as u32)
+        verification_range(self.descriptor.value_len, range)
     }
 
     /// Verifies complete logical checksum blocks supplied by a range read.
@@ -247,4 +238,18 @@ impl<'a> Frame<'a> {
         let start = descriptor.value_offset as usize;
         Some(&self.bytes[start..start + descriptor.value_len as usize])
     }
+}
+
+// Shared with read planning so checksum coverage has one definition.
+pub(crate) fn verification_range(value_len: u32, range: Range<u32>) -> Result<Range<u32>> {
+    if range.start > range.end || range.end > value_len {
+        return Err(Error::InvalidArgument("read range exceeds value"));
+    }
+    if range.is_empty() {
+        return Ok(range);
+    }
+    let block = CHECKSUM_BLOCK_SIZE as u64;
+    let start = align_down(range.start as u64, block);
+    let end = align_up(range.end as u64, block);
+    Ok(start as u32..end.min(value_len as u64) as u32)
 }

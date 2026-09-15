@@ -28,6 +28,7 @@ mod header;
 mod record;
 
 pub use builder::{FrameBuilder, PreparedFrame};
+pub(crate) use decode::verification_range;
 pub use decode::{Frame, Metadata, Record};
 pub use error::{Error, Result};
 pub use header::{FrameHeader, FrameLimits, FramePosition};

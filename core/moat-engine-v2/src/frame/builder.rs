@@ -288,6 +288,11 @@ impl<'a> PreparedFrame<'a> {
         })
     }
 
+    /// Actual header, descriptor, and checksum bytes reserved for this value.
+    pub fn metadata_len(&self) -> usize {
+        HEADER_LEN + DESCRIPTOR_LEN + 4 * block_count(self.value_len as u64) as usize
+    }
+
     /// Final payload region; its offset is page-aligned for nonempty values.
     pub fn value_mut(&mut self) -> &mut [u8] {
         &mut self.bytes[self.value_at..self.value_at + self.value_len]

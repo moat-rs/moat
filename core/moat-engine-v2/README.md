@@ -2,7 +2,7 @@
 
 Independent implementation of the [unified immutable frame proposal](../../docs/design/engine-frame-layout.md), developed alongside `moat-engine` for review before replacement. It does not depend on, wrap, or copy the old engine's pipelines. Shared primitives come from `moat-common`: chunk identifiers, alignment helpers, CRC32C generation and verification, and buffers. Frame assembly uses the common checksum iterator to write directly into the metadata area without allocating a checksum vector.
 
-**Implemented: frame codec and segment metadata/recovery primitives.** The new segment layer adds header/footer encoding, footer-aware allocation accounting, and incremental frame recovery from caller-supplied bytes. This crate is not yet a storage engine or a drop-in replacement. Device/superblock encoding, I/O queues, indexing, persistence protocols, and physical space reclamation remain subsequent stages. The existing engine and its consumers continue to use their current implementation.
+**Implemented: frame codec, segment metadata/recovery primitives, and a single-owner I/O pipeline.** `Pipeline<Q>` connects one explicitly assigned segment to file or Linux io_uring I/O, a local index, verified reads, ordered write completion, and flush. This crate is not yet a complete device engine or a drop-in replacement. Device/superblock encoding, cross-segment management, crash-safe header updates, and physical space reclamation remain subsequent stages. The existing engine and its consumers continue to use their current implementation.
 
 ## Usage
 
@@ -94,9 +94,9 @@ The common admission path uses a constant-time upper bound. Near capacity, it wa
 - `Record::verification_range` expands a requested range to complete logical checksum blocks. `Record::verify` requires the exact expanded bytes, so a short read cannot silently validate as a partial final block.
 - `Frame::decode` additionally checks every value checksum before returning any accepted frame. A damaged later record rejects the entire frame. The segment recovery scanner uses this to accept complete frames only.
 
-Verified reads must eventually fetch metadata and distant payload as separate extents, coalescing only when useful. For 32 records of 1 KiB each, metadata occupies 2240 bytes and the last value begins at offset 34816. The APIs let a reader validate the front metadata and that value without fetching intervening payloads. Actual read planning and I/O submission are not part of this stage.
+Verified reads must eventually fetch metadata and distant payload as separate extents, coalescing only when useful. For 32 records of 1 KiB each, metadata occupies 2240 bytes and the last value begins at offset 34816. The APIs let a reader validate the front metadata and that value without fetching intervening payloads. The pipeline now implements this read planning and I/O submission, including reusing payload bytes already fetched with metadata.
 
-Checksums detect corruption; they do not make writes atomic or durable. The segment scanner implements prefix validation. Publication order, persistence barriers, and safe segment reuse require the future I/O layer.
+Checksums detect corruption; they do not make writes atomic or durable. The segment scanner implements prefix validation. The pipeline implements ordered publication and flush barriers; device lifecycle and safe segment reuse remain caller responsibilities.
 
 ## Segment metadata and recovery
 
@@ -133,7 +133,7 @@ assert_eq!(footer.frames().next().unwrap().record(0).unwrap().descriptor().lsn, 
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-The current tests use memory images. They establish validation and reservation behavior, not power-loss safety. In particular, a torn in-place segment-header update is detectable but not repairable here; a recoverable update protocol remains required before persistent I/O integration.
+Segment codec tests use memory images; pipeline tests also use small temporary files and Linux io_uring. They establish validation, I/O ordering, and reservation behavior, not power-loss safety. In particular, a torn in-place segment-header update is detectable but not repairable here; a recoverable update protocol remains required before persistent I/O integration.
 
 ## Error contract
 
@@ -152,7 +152,21 @@ Invalid arguments, incomplete input, unsupported versions, corrupt metadata, and
 
 The design borrows OpenDAL's emphasis on actionable error categories and separate diagnostics. This codec expresses categories directly as enum variants; a second enum mirroring every variant would add no information. Its errors carry inline numeric fields and static strings, with no heap allocation or automatic backtrace capture. Tests bound the representation to 24 bytes without making that size a public ABI guarantee. `thiserror` generates the standard error and formatting implementations; it does not impose a boxed error representation or expose its own error type to callers.
 
-When device I/O is introduced, its error boundary should preserve the original `std::io::Error` as a source and attach typed operation and physical-location context. Routine backpressure must stay cheap, and replay safety must depend on the operation's submission state. A generic string context collection, backtrace policy, or blanket retry flag is not introduced in this stage.
+The pipeline I/O boundary preserves the original `std::io::Error` as a source and attaches typed operation and physical-location context. Routine backpressure must stay cheap, and replay safety must depend on the operation's submission state. A generic string context collection, backtrace policy, or blanket retry flag is not introduced in this stage.
+
+## Single-owner I/O pipeline
+
+The [pipeline document](../../docs/design/engine-io-pipeline.md) describes ownership, publication, verified reads, failure handling, and durability. `Pipeline<Q>` requires an exclusive queue and one segment whose initial metadata and format limits are already persisted by the caller. It does not allocate or reuse segments automatically.
+
+- `write(&builder, buffer)` encodes and submits borrowed records. `write_prepared(key, lsn, value_len, buffer)` submits an already filled prepared value without another payload copy.
+- `poll(wait, &mut completions)` drives I/O and returns frame/read/flush results with reusable buffers. No channels, mutexes, or per-ticket atomics are needed inside the pipeline.
+- `read_requirements(key, range)` reports the needed buffer capacities. `read(key, range, buffers)` validates metadata, then fetches the required checksum blocks only when they are not already in the metadata buffer. `buffers.view(result?)` exposes the verified bytes without copying.
+- `flush()` waits for preceding writes and a data-sync operation. Write completion alone does not imply durability. A write or sync failure blocks further writes to the assigned allocation.
+- `read_only` and `restore` accept recovered storage and scanner/footer metadata without authorizing new writes to the recovered tail.
+
+`io::FileQueue` is a blocking functional backend. `io::UringQueue` is asynchronous on Linux; it currently uses ordinary aligned READ/WRITE rather than fixed registered buffers. The index, operation slots, and write publication queue have a single mutable owner. Upper-layer segment selection and future reclamation safety remain separate work.
+
+`examples/segment_io.rs` demonstrates the small file-backed write, verified-read, flush, and read-only recovery path. It creates a new file and never overwrites an existing path. This is a functional example, not a device formatter or performance workload.
 
 ## Subsequent engine boundaries
 
@@ -171,3 +185,5 @@ cargo bench -p moat-engine-v2 --bench frame
 ```
 
 The benchmark measures in-memory assembly, full validation, and prepared finalization. It does not measure device throughput, recovery, or end-to-end latency, and does not establish an improvement over the old engine.
+
+Pipeline functional checks can be run with `cargo test -p moat-engine-v2 --test pipeline -- --test-threads=1`. No benchmarks or stress tests were run for the pipeline stage; those await a dedicated machine.
