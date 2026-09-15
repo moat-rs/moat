@@ -1,10 +1,10 @@
 # Single-owner segment I/O pipeline
 
 Status: implemented in `moat-engine-v2`. This stage connects frame construction,
-segment admission, real file I/O, an in-memory index, verified reads, ordered
+segment admission, real file I/O, an in-memory index, optional read verification, ordered
 write completion, and flush. It does not yet implement a complete device engine.
-No throughput or latency claims are made; performance runs are deferred to a
-dedicated test machine.
+Measured comparisons and their limits are maintained in the
+[benchmark reports](../../benchmarks/engine/README.md).
 
 ## Ownership and scope
 
@@ -93,9 +93,9 @@ success and failure. A fatal queue error instead makes the whole pipeline
 unusable because completion state is unknown; the queue retains submitted
 buffers until it can safely release them.
 
-## Verified reads
+## Reads and verification
 
-`read_requirements` reports the metadata and value buffer capacities for the
+`read_requirements(key, range, verify)` reports metadata and value buffer capacities for the
 currently indexed version without reserving a slot. Read admission checks those
 capacities again, so a changed index cannot make a previously sized buffer unsafe.
 A read captures the currently published index location at admission. Its result
@@ -104,6 +104,23 @@ read is in flight. Immutable storage and the prohibition on segment reuse make
 this safe without reader locks or index revalidation loops. Future concurrent
 reclamation will require its own pin/ownership protocol.
 
+`read(key, range, verify, buffers)` selects verification per request and returns
+one `Completion::Read` type in both modes. With `verify = false`, the pipeline
+uses the indexed value address and length to read only the pages covering the
+requested range. It does not issue a metadata read, decode front metadata, calculate CRCs, or
+expand the range to 64-KiB checksum blocks. This trusts the index established by
+successful writes or recovery and the caller's exclusive segment ownership.
+It detects I/O failures and short transfers, but does not detect silent media
+corruption or externally changed record identity. Writing and recovery retain
+their checksum checks regardless of this per-read choice.
+
+Unverified reads need only `ReadBuffers::new(value_buffer)`; their metadata
+requirement is zero. If a caller supplies an optional metadata buffer anyway,
+it returns untouched. Empty ranges consume a pipeline slot and complete on the
+next `poll` without disk I/O. These ready completions suppress a blocking queue
+wait, and their storage is bounded by the same operation depth.
+
+With `verify = true`, the caller also supplies `metadata: Some(buffer)`.
 The pipeline first reads the page-rounded metadata extent. It validates frame
 identity, metadata CRC, geometry, and the indexed descriptor's key, LSN, kind,
 value range, and frame geometry. It then verifies all complete logical checksum
@@ -117,7 +134,7 @@ read, so payload completion reuses its validated view instead of recalculating
 metadata CRC. Both buffers return to the caller, and `ReadBuffers::view` resolves
 the result's `ReadRange` into a borrowed slice.
 
-Empty ranges validate metadata only. Read I/O or checksum errors return both
+Empty verified ranges validate metadata only. Read I/O or checksum errors return all
 buffers and do not poison unrelated writes. Resource or range rejection occurs
 before an I/O request is submitted.
 
@@ -139,7 +156,7 @@ metadata.
 ## Review and functional validation
 
 Read `io/mod.rs`, `pipeline/mod.rs`, `pipeline/write.rs`, `pipeline/driver.rs`,
-and `pipeline/read.rs`, followed by the two queue implementations. Runtime errors
+`pipeline/read.rs`, and `pipeline/verify.rs`, followed by the two queue implementations. Runtime errors
 remain in `pipeline/error.rs`; index application is isolated in `pipeline/index.rs`.
 
 `tests/pipeline.rs` uses small temporary files and deterministic queues for
@@ -148,5 +165,5 @@ buffer ownership, LSN/tombstone ordering, snapshot reads, separate extents,
 prepared payload identity, and read-only restart. Linux tests exercise a small
 real io_uring write/read/flush and drop with outstanding work.
 
-These are functional checks, run serially. Benchmarks, stress tests, and large
-workspace I/O workloads are intentionally deferred.
+These are functional checks, run serially. The separate benchmark harness
+compares both verification modes and full-value or partial-range reads.

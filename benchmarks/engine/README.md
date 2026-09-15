@@ -6,7 +6,8 @@ engine. The v2 side exercises its current single-segment pipeline; this is not
 a comparison of complete storage services.
 
 The [2026-09-15 report](reports/2026-09-15/REPORT.md) includes three repetitions,
-fresh fio baselines, numeric samples and independent CPU profiles.
+fresh fio baselines, numeric samples and independent CPU profiles. That report
+used `--verify true`; use the same flag to reproduce its read policy.
 
 ## Build and run
 
@@ -49,7 +50,7 @@ and never creates or truncates a file. Direct I/O must be supported.
 ```sh
 truncate -s 4G /path/to/new-disposable.img
 target/engine-compare/x86_64-unknown-linux-gnu/release/moat-engine-compare \
-  /path/to/new-disposable.img v2 mixed 64 1 1,64 --overwrite-first-4g
+  /path/to/new-disposable.img v2 mixed 64 1 1,64 --overwrite-first-4g --verify false
 ```
 
 ## Matched workload
@@ -72,9 +73,17 @@ target/engine-compare/x86_64-unknown-linux-gnu/release/moat-engine-compare \
 - Uniform random full-value reads use logical concurrency 1 and 64; 4-MiB
   records also use concurrency 16. Each phase warms for two seconds, measures
   for ten seconds by default, and drains accepted requests before stopping.
-- Both sides enable checksum verification. The harness additionally validates
-  the requested key embedded in each returned payload, its length and final
-  byte. Any I/O, checksum, admission or content error terminates the run.
+- Both sides use the same verification policy: `--verify false` (default) or
+  `--verify true`. Writes always compute CRCs and end with a durable flush.
+  Reads additionally check length, the first eight returned bytes and the last
+  byte against the deterministic input pattern. The key prefix is checked only
+  when included in the requested range. These samples are not a full integrity
+  scan. Any I/O, enabled checksum, admission or sampled content error terminates
+  the run.
+- `--range START:END` selects a logical byte range instead of the full value.
+  Use `--sizes` on the runner to select values large enough to contain it, for
+  example `--sizes 65536 4194304 --range 4096:8192`. Range reads use concurrency
+  1 and 64. Keep different range/mode runs in separate output directories.
 - Three fresh write/read repetitions alternate engine order. Read selection
   uses the same fixed random seed. Latency samples cover one request in 16,
   from read admission through delivery to the common verification callback.
@@ -90,7 +99,8 @@ separate. Store raw files outside the repository; publish only sanitized data.
 python3 benchmarks/engine/analyze.py /path/to/results /path/to/summary
 ```
 
-The analyzer retains each numeric sample and reports medians and the minimum
+The analyzer groups by verification mode and range as well as workload, engine
+and concurrency. It retains each numeric sample and reports medians and the minimum
 and maximum throughput per configuration. Median latency columns are medians
 of run percentiles, not percentiles of a combined latency histogram.
 
@@ -109,5 +119,5 @@ and do not isolate only the on-disk format or the benefit of removing locks.
 
 The data window is small and repeatedly accessed. Direct I/O bypasses the OS
 page cache but does not eliminate device-side caching or prove cold-media
-latency. This suite does not test recovery, crashes, bit corruption, range
-reads, rollover, multi-worker scaling, concurrent mutation or space reclamation.
+latency. This suite does not test recovery, crashes, bit corruption,
+rollover, multi-worker scaling, concurrent mutation or space reclamation.

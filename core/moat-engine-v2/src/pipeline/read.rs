@@ -16,28 +16,32 @@ use std::ops::Range;
 
 use moat_common::{AlignedBuf, ChunkId, PAGE_SIZE, align_down, align_up};
 
-use super::{Error, Result, Ticket, index::Location};
-use crate::frame::{FrameHeader, FrameLimits, FramePosition, Metadata, RecordKind, verification_range};
+use super::{Pending, Pipeline, Rejected, Result, Ticket};
+use crate::{
+    frame,
+    io::{Operation, Queue},
+};
 
 /// Reusable, caller-owned buffers for metadata and the requested value extent.
 #[derive(Debug)]
 pub struct ReadBuffers {
-    /// Space for the page-rounded front metadata region.
-    pub metadata: AlignedBuf,
-    /// Space for the page-rounded complete checksum blocks covering the request.
+    /// Space for front metadata when verification is enabled; otherwise optional.
+    pub metadata: Option<AlignedBuf>,
+    /// Space for requested pages, expanded to checksum blocks when verifying.
     pub value: AlignedBuf,
 }
 
 /// Minimum buffer capacities for a read of the currently indexed version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReadRequirements {
-    /// Page-rounded front metadata extent.
+    /// Page-rounded front metadata extent; zero when verification is disabled.
     pub metadata_len: usize,
-    /// Page-rounded value extent, or zero if metadata already covers it.
+    /// Page-rounded value extent, expanded to checksum blocks when verifying.
+    /// Zero for empty ranges or verified bytes already covered by metadata.
     pub value_len: usize,
 }
 
-/// Location of verified bytes within the returned buffers.
+/// Location of requested bytes within the returned buffers.
 /// Small values already fetched with metadata need no second read or payload copy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReadRange {
@@ -57,10 +61,15 @@ impl ReadRange {
 }
 
 impl ReadBuffers {
-    /// Borrows a verified result without copying it or changing buffer ownership.
+    /// Creates buffers for ordinary reads without allocating metadata storage.
+    pub fn new(value: AlignedBuf) -> Self {
+        Self { metadata: None, value }
+    }
+
+    /// Borrows returned bytes without copying them.
     pub fn view(&self, range: ReadRange) -> &[u8] {
         match range {
-            ReadRange::Metadata(range) => &self.metadata[range],
+            ReadRange::Metadata(range) => &self.metadata.as_ref().expect("metadata read returned its buffer")[range],
             ReadRange::Value(range) => &self.value[range],
         }
     }
@@ -68,124 +77,112 @@ impl ReadBuffers {
 
 pub(super) struct Read {
     pub ticket: Ticket,
-    pub key: ChunkId,
-    pub location: Location,
-    pub requested: Range<u32>,
-    pub verified: Range<u32>,
-    pub io_offset: u64,
-    pub io_len: usize,
-    pub prefix: usize,
+    pub range: Range<usize>,
     pub metadata: Option<AlignedBuf>,
-    pub value: Option<AlignedBuf>,
-    validated_header: Option<FrameHeader>,
 }
 
-impl Read {
-    pub fn plan(ticket: Ticket, key: ChunkId, location: Location, requested: Range<u32>, base: u64) -> Result<Self> {
-        let verified = verification_range(location.value_len, requested.clone())?;
-        let start = base + location.frame_offset as u64 + location.value_offset as u64 + verified.start as u64;
+// The caller validates the range and supplies a value address inside the
+// pipeline's bounded segment. Both read paths use the same page geometry.
+pub(super) struct ReadExtent {
+    pub offset: u64,
+    pub len: usize,
+    pub prefix: usize,
+}
+
+impl ReadExtent {
+    pub fn new(value_start: u64, range: &Range<u32>) -> Self {
+        let start = value_start + range.start as u64;
         let offset = align_down(start, PAGE_SIZE);
         let prefix = (start - offset) as usize;
-        let io_len = if requested.is_empty() {
+        let len = if range.is_empty() {
             0
         } else {
-            align_up(prefix as u64 + verified.len() as u64, PAGE_SIZE) as usize
+            align_up(prefix as u64 + (range.end - range.start) as u64, PAGE_SIZE) as usize
         };
-        Ok(Self {
-            ticket,
-            key,
-            location,
-            requested,
-            verified,
-            io_offset: offset,
-            io_len,
-            prefix,
-            metadata: None,
-            value: None,
-            validated_header: None,
-        })
+        Self { offset, len, prefix }
     }
+}
 
-    pub fn value_buffer_len(&self) -> usize {
-        if self.requested.is_empty()
-            || self.location.value_offset as usize + self.verified.end as usize <= self.metadata_len()
-        {
-            0
+impl<Q: Queue> Pipeline<Q> {
+    /// Required capacities for the currently indexed version and read policy.
+    /// Without verification metadata is unused and ranges only round to pages.
+    /// Admission checks capacities again if a write publishes in the meantime.
+    pub fn read_requirements(&self, key: ChunkId, range: Range<u32>, verify: bool) -> Result<ReadRequirements> {
+        if verify {
+            self.verified_read_requirements(key, range)
         } else {
-            self.io_len
+            Ok(ReadRequirements {
+                metadata_len: 0,
+                value_len: self.direct_extent(key, &range)?.len,
+            })
         }
     }
 
-    pub fn metadata_len(&self) -> usize {
-        align_up(self.location.metadata_len as u64, PAGE_SIZE) as usize
+    /// Reads a snapshot of the indexed version into reusable buffers.
+    ///
+    /// With `verify = false`, read only requested value pages and trust the
+    /// published index. No metadata is decoded and no CRC is checked. I/O errors,
+    /// short transfers, range bounds and segment lifetime rules still apply.
+    /// With `verify = true`, also fetch and validate metadata and verify complete
+    /// checksum blocks. In both modes buffers return on completion or rejection.
+    /// Empty unverified reads complete through `poll` without submitting I/O.
+    pub fn read(
+        &mut self,
+        key: ChunkId,
+        range: Range<u32>,
+        verify: bool,
+        buffers: ReadBuffers,
+    ) -> std::result::Result<Ticket, Rejected<ReadBuffers>> {
+        if verify {
+            self.read_verified(key, range, buffers)
+        } else {
+            self.read_direct(key, range, buffers)
+        }
     }
 
-    pub fn validate_metadata(&mut self, limits: FrameLimits, position: FramePosition) -> Result<()> {
-        let metadata = Metadata::decode(
-            self.metadata.as_ref().expect("metadata read completed"),
-            limits,
-            position,
-        )?;
-        let d = metadata
-            .record(self.location.ordinal)
-            .ok_or(Error::Frame(crate::frame::Error::Corrupt("indexed record is missing")))?
-            .descriptor();
-        if metadata.header().frame_len() != self.location.frame_len as usize
-            || metadata.header().metadata_len() != self.location.metadata_len as usize
-            || d.key != self.key
-            || d.lsn != self.location.lsn
-            || d.value_len != self.location.value_len
-            || d.value_offset != self.location.value_offset
-            || d.kind != RecordKind::Data
-        {
-            return Err(Error::Frame(crate::frame::Error::Corrupt("indexed record identity")));
-        }
-        self.validated_header = Some(metadata.header());
-        Ok(())
+    fn direct_extent(&self, key: ChunkId, range: &Range<u32>) -> Result<ReadExtent> {
+        let location = self.location(key)?;
+        frame::validate_range(location.value_len, range)?;
+        Ok(ReadExtent::new(
+            self.base + location.frame_offset as u64 + location.value_offset as u64,
+            range,
+        ))
     }
 
-    pub fn finish_metadata(&mut self, limits: FrameLimits, position: FramePosition) -> Result<Option<ReadRange>> {
-        self.validate_metadata(limits, position)?;
-        if self.requested.is_empty() {
-            return Ok(Some(ReadRange::Value(0..0)));
+    fn read_direct(
+        &mut self,
+        key: ChunkId,
+        range: Range<u32>,
+        buffers: ReadBuffers,
+    ) -> std::result::Result<Ticket, Rejected<ReadBuffers>> {
+        let prepare = || -> Result<(Ticket, ReadExtent)> {
+            let ticket = self.admission(false)?;
+            let extent = self.direct_extent(key, &range)?;
+            if buffers.value.len() < extent.len {
+                return Err(frame::Error::BufferTooSmall {
+                    required: extent.len,
+                    available: buffers.value.len(),
+                }
+                .into());
+            }
+            Ok((ticket, extent))
+        };
+        let (ticket, extent) = match prepare() {
+            Ok(prepared) => prepared,
+            Err(error) => return Err(Rejected { error, input: buffers }),
+        };
+        if extent.len == 0 {
+            let slot = self.take_slot(Pending::EmptyRead { ticket, buffers });
+            self.ready_reads.push_back(slot);
+        } else {
+            let read = Read {
+                ticket,
+                range: extent.prefix..extent.prefix + (range.end - range.start) as usize,
+                metadata: buffers.metadata,
+            };
+            let slot = self.take_slot(Pending::Read(read));
+            self.submit(slot, Operation::Read, extent.offset, extent.len, Some(buffers.value));
         }
-        let start = self.location.value_offset as usize + self.verified.start as usize;
-        let end = self.location.value_offset as usize + self.verified.end as usize;
-        if end > self.metadata_len() {
-            return Ok(None);
-        }
-        let bytes = self.metadata.as_ref().expect("metadata read completed");
-        let header = self.validated_header.expect("metadata validated");
-        let metadata = Metadata::from_validated(&bytes[..header.metadata_len()], header);
-        metadata
-            .record(self.location.ordinal)
-            .expect("validated indexed record")
-            .verify(self.verified.clone(), &bytes[start..end])?;
-        let start = self.location.value_offset as usize + self.requested.start as usize;
-        Ok(Some(ReadRange::Metadata(start..start + self.requested.len())))
-    }
-
-    pub fn verify(&self) -> Result<ReadRange> {
-        // This buffer is retained unchanged after the metadata phase. Reuse its
-        // validated view rather than recalculating metadata CRC on payload completion.
-        let header = self.validated_header.expect("metadata phase succeeded");
-        let bytes = &self.metadata.as_ref().expect("owned metadata")[..header.metadata_len()];
-        let metadata = Metadata::from_validated(bytes, header);
-        let record = metadata
-            .record(self.location.ordinal)
-            .expect("validated indexed record");
-        record.verify(
-            self.verified.clone(),
-            &self.value.as_ref().expect("value read completed")[self.prefix..self.prefix + self.verified.len()],
-        )?;
-        let start = self.prefix + (self.requested.start - self.verified.start) as usize;
-        Ok(ReadRange::Value(start..start + self.requested.len()))
-    }
-
-    pub fn buffers(self) -> ReadBuffers {
-        ReadBuffers {
-            metadata: self.metadata.expect("metadata buffer returned"),
-            value: self.value.expect("value buffer returned"),
-        }
+        Ok(ticket)
     }
 }

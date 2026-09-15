@@ -2,7 +2,7 @@
 
 Independent implementation of the [unified immutable frame proposal](../../docs/design/engine-frame-layout.md), developed alongside `moat-engine` for review before replacement. It does not depend on, wrap, or copy the old engine's pipelines. Shared primitives come from `moat-common`: chunk identifiers, alignment helpers, CRC32C generation and verification, and buffers. Frame assembly uses the common checksum iterator to write directly into the metadata area without allocating a checksum vector.
 
-**Implemented: frame codec, segment metadata/recovery primitives, and a single-owner I/O pipeline.** `Pipeline<Q>` connects one explicitly assigned segment to file or Linux io_uring I/O, a local index, verified reads, ordered write completion, and flush. This crate is not yet a complete device engine or a drop-in replacement. Device/superblock encoding, cross-segment management, crash-safe header updates, and physical space reclamation remain subsequent stages. The existing engine and its consumers continue to use their current implementation.
+**Implemented: frame codec, segment metadata/recovery primitives, and a single-owner I/O pipeline.** `Pipeline<Q>` connects one explicitly assigned segment to file or Linux io_uring I/O, a local index, reads with optional verification, ordered write completion, and flush. This crate is not yet a complete device engine or a drop-in replacement. Device/superblock encoding, cross-segment management, crash-safe header updates, and physical space reclamation remain subsequent stages. The existing engine and its consumers continue to use their current implementation.
 
 ## Usage
 
@@ -156,11 +156,11 @@ The pipeline I/O boundary preserves the original `std::io::Error` as a source an
 
 ## Single-owner I/O pipeline
 
-The [pipeline document](../../docs/design/engine-io-pipeline.md) describes ownership, publication, verified reads, failure handling, and durability. `Pipeline<Q>` requires an exclusive queue and one segment whose initial metadata and format limits are already persisted by the caller. It does not allocate or reuse segments automatically.
+The [pipeline document](../../docs/design/engine-io-pipeline.md) describes ownership, publication, read verification, failure handling, and durability. `Pipeline<Q>` requires an exclusive queue and one segment whose initial metadata and format limits are already persisted by the caller. It does not allocate or reuse segments automatically.
 
 - `write(&builder, buffer)` encodes and submits borrowed records. `write_prepared(key, lsn, value_len, buffer)` submits an already filled prepared value without another payload copy.
 - `poll(wait, &mut completions)` drives I/O and returns frame/read/flush results with reusable buffers. No channels, mutexes, or per-ticket atomics are needed inside the pipeline.
-- `read_requirements(key, range)` reports the needed buffer capacities. `read(key, range, buffers)` validates metadata, then fetches the required checksum blocks only when they are not already in the metadata buffer. `buffers.view(result?)` exposes the verified bytes without copying.
+- `read_requirements(key, range, verify)` reports the needed buffer capacities. `read(key, range, verify, buffers)` selects verification per request. With `verify = false`, it trusts the published index and fetches only requested pages into `ReadBuffers::new(value_buffer)`, without CRC checks or metadata I/O. With `verify = true`, supply `metadata: Some(buffer)` as well; the pipeline validates metadata and complete intersecting checksum blocks. `buffers.view(result?)` exposes either result without copying. Empty unverified reads complete through `poll` without I/O, while still consuming a bounded operation slot.
 - `flush()` waits for preceding writes and a data-sync operation. Write completion alone does not imply durability. A write or sync failure blocks further writes to the assigned allocation.
 - `read_only` and `restore` accept recovered storage and scanner/footer metadata without authorizing new writes to the recovered tail.
 
@@ -186,4 +186,4 @@ cargo bench -p moat-engine-v2 --bench frame
 
 The benchmark measures in-memory assembly, full validation, and prepared finalization. It does not measure device throughput, recovery, or end-to-end latency, and does not establish an improvement over the old engine.
 
-Pipeline functional checks can be run with `cargo test -p moat-engine-v2 --test pipeline -- --test-threads=1`. No benchmarks or stress tests were run for the pipeline stage; those await a dedicated machine.
+Pipeline functional checks can be run with `cargo test -p moat-engine-v2 --test pipeline -- --test-threads=1`. Device comparisons are maintained separately in the [benchmark reports](../../benchmarks/engine/README.md).

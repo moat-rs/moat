@@ -24,15 +24,17 @@ mod driver;
 mod error;
 mod index;
 mod read;
+mod verify;
 mod write;
 
-use std::{collections::VecDeque, ops::Range};
+use std::collections::VecDeque;
 
 pub use error::{Error, Rejected, Result};
 use index::{Index, Location};
 use moat_common::{AlignedBuf, ChunkId, PAGE_SIZE, is_aligned};
-use read::Read;
+use read::{Read, ReadExtent};
 pub use read::{ReadBuffers, ReadRange, ReadRequirements};
+use verify::VerifiedRead;
 
 use crate::{
     frame::{FrameLimits, FramePosition, Metadata, RecordKind},
@@ -63,7 +65,7 @@ pub enum Completion {
         /// Original frame buffer.
         buffer: AlignedBuf,
     },
-    /// Verified read of the version visible at admission.
+    /// Read of the version visible at admission, with the requested verification policy.
     Read {
         /// Admission identity.
         ticket: Ticket,
@@ -99,6 +101,8 @@ struct Write {
 enum Pending {
     Write(Write),
     Read(Read),
+    VerifiedRead(VerifiedRead),
+    EmptyRead { ticket: Ticket, buffers: ReadBuffers },
     Flush { ticket: Ticket, submitted: bool },
 }
 
@@ -118,6 +122,7 @@ pub struct Pipeline<Q> {
     slots: Vec<Option<Pending>>,
     free: Vec<usize>,
     writes: VecDeque<usize>,
+    ready_reads: VecDeque<usize>,
     flush: Option<usize>,
     next_ticket: u64,
     failed_at: Option<u64>,
@@ -160,6 +165,7 @@ impl<Q: Queue> Pipeline<Q> {
             slots: (0..depth).map(|_| None).collect(),
             free: (0..depth).rev().collect(),
             writes: VecDeque::with_capacity(depth),
+            ready_reads: VecDeque::with_capacity(depth),
             flush: None,
             next_ticket: 1,
             failed_at: None,
@@ -198,6 +204,14 @@ impl<Q: Queue> Pipeline<Q> {
             .footer_range()
             .map_or(self.header.segment_len(), |range| range.start);
         Ok(FramePosition::new(self.header.id().sequence, offset, end)?)
+    }
+
+    fn location(&self, key: ChunkId) -> Result<Location> {
+        self.index
+            .get(&key)
+            .copied()
+            .filter(|loc| loc.kind == RecordKind::Data)
+            .ok_or(Error::NotFound)
     }
 
     fn admission(&self, write: bool) -> Result<Ticket> {
@@ -242,64 +256,6 @@ impl<Q: Queue> Pipeline<Q> {
                 buffer,
             })
             .expect("queue violated its capacity contract");
-    }
-
-    /// Computes buffer sizes without reserving capacity or submitting I/O.
-    /// If another write publishes before `read`, admission checks sizes again.
-    pub fn read_requirements(&self, key: ChunkId, range: Range<u32>) -> Result<ReadRequirements> {
-        let location = *self
-            .index
-            .get(&key)
-            .filter(|loc| loc.kind == RecordKind::Data)
-            .ok_or(Error::NotFound)?;
-        let read = Read::plan(Ticket(self.next_ticket), key, location, range, self.base)?;
-        Ok(ReadRequirements {
-            metadata_len: read.metadata_len(),
-            value_len: read.value_buffer_len(),
-        })
-    }
-
-    /// Starts a verified range read of the newest currently published version.
-    /// Metadata and payload use separate aligned extents; intervening values are
-    /// never read merely to reach this value. Empty ranges validate metadata only.
-    pub fn read(
-        &mut self,
-        key: ChunkId,
-        range: Range<u32>,
-        buffers: ReadBuffers,
-    ) -> std::result::Result<Ticket, Rejected<ReadBuffers>> {
-        let prepare = || -> Result<Read> {
-            let ticket = self.admission(false)?;
-            let location = *self
-                .index
-                .get(&key)
-                .filter(|loc| loc.kind == RecordKind::Data)
-                .ok_or(Error::NotFound)?;
-            let read = Read::plan(ticket, key, location, range, self.base)?;
-            for (required, available) in [
-                (read.metadata_len(), buffers.metadata.len()),
-                (read.value_buffer_len(), buffers.value.len()),
-            ] {
-                if required > available {
-                    return Err(Error::Frame(crate::frame::Error::BufferTooSmall {
-                        required,
-                        available,
-                    }));
-                }
-            }
-            Ok(read)
-        };
-        let mut read = match prepare() {
-            Ok(read) => read,
-            Err(error) => return Err(Rejected { error, input: buffers }),
-        };
-        let ticket = read.ticket;
-        let offset = self.base + read.location.frame_offset as u64;
-        let len = read.metadata_len();
-        read.value = Some(buffers.value);
-        let slot = self.take_slot(Pending::Read(read));
-        self.submit(slot, Operation::Read, offset, len, Some(buffers.metadata));
-        Ok(ticket)
     }
 
     /// Queues a persistence barrier after preceding writes, blocking new write

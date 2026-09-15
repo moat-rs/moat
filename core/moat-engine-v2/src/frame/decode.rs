@@ -242,9 +242,7 @@ impl<'a> Frame<'a> {
 
 // Shared with read planning so checksum coverage has one definition.
 pub(crate) fn verification_range(value_len: u32, range: Range<u32>) -> Result<Range<u32>> {
-    if range.start > range.end || range.end > value_len {
-        return Err(Error::InvalidArgument("read range exceeds value"));
-    }
+    validate_range(value_len, &range)?;
     if range.is_empty() {
         return Ok(range);
     }
@@ -252,4 +250,11 @@ pub(crate) fn verification_range(value_len: u32, range: Range<u32>) -> Result<Ra
     let start = align_down(range.start as u64, block);
     let end = align_up(range.end as u64, block);
     Ok(start as u32..end.min(value_len as u64) as u32)
+}
+
+pub(crate) fn validate_range(value_len: u32, range: &Range<u32>) -> Result<()> {
+    if range.start > range.end || range.end > value_len {
+        return Err(Error::InvalidArgument("read range exceeds value"));
+    }
+    Ok(())
 }

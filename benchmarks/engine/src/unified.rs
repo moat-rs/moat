@@ -15,6 +15,7 @@
 use std::{
     fs::OpenOptions,
     io::{Seek, SeekFrom},
+    ops::Range,
     os::unix::fs::{FileExt, OpenOptionsExt},
 };
 
@@ -36,6 +37,7 @@ pub(super) struct Unified {
     out: Vec<Completion>,
     acked: u64,
     submitted: u64,
+    verify: bool,
 }
 
 impl Unified {
@@ -78,6 +80,7 @@ impl Unified {
             out: Vec::with_capacity(DEPTH),
             acked: 0,
             submitted: 0,
+            verify: config.verify,
         }
     }
 
@@ -173,31 +176,32 @@ impl Backend for Unified {
         assert_eq!(self.acked, self.submitted);
     }
 
-    fn prepare_reads(&mut self, sizes: &[usize], qd: usize) {
+    fn prepare_reads(&mut self, config: &Config, sizes: &[usize], qd: usize) {
         let mut metadata = 4096;
         let mut value = 4096;
         for number in 0..sizes.len() {
             let len = sizes[number % sizes.len()];
             let requirements = self
                 .pipeline
-                .read_requirements(key(number as u64), 0..len as u32)
+                .read_requirements(key(number as u64), config.read_range(len), self.verify)
                 .unwrap();
             metadata = metadata.max(requirements.metadata_len);
             value = value.max(requirements.value_len);
         }
         self.reads = (0..qd)
             .map(|_| ReadBuffers {
-                metadata: AlignedBuf::zeroed(metadata),
+                metadata: self.verify.then(|| AlignedBuf::zeroed(metadata)),
                 value: AlignedBuf::zeroed(value),
             })
             .collect();
     }
 
-    fn read(&mut self, number: u64, len: usize) -> u64 {
+    fn read(&mut self, number: u64, range: Range<u32>) -> u64 {
         self.pipeline
             .read(
                 key(number),
-                0..len as u32,
+                range,
+                self.verify,
                 self.reads.pop().expect("read depth exceeded"),
             )
             .map_err(|rejected| rejected.error)

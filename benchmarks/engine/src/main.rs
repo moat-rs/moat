@@ -20,6 +20,7 @@ mod unified;
 use std::{
     collections::HashMap,
     fs,
+    ops::Range,
     path::PathBuf,
     time::{Duration, Instant},
 };
@@ -40,15 +41,16 @@ struct Config {
     seconds: u64,
     qds: Vec<usize>,
     disk_stat: Option<PathBuf>,
+    verify: bool,
+    range: Option<Range<u32>>,
 }
 
 impl Config {
     fn parse() -> Self {
         let args: Vec<_> = std::env::args().collect();
-        assert_eq!(
-            args.len(),
-            8,
-            "usage: moat-engine-compare PATH legacy|v2 SIZE|mixed PAYLOAD_MIB SECONDS QDS --overwrite-first-4g"
+        assert!(
+            args.len() >= 8 && (args.len() - 8).is_multiple_of(2),
+            "usage: moat-engine-compare PATH legacy|v2 SIZE|mixed PAYLOAD_MIB SECONDS QDS --overwrite-first-4g [--verify true|false] [--range full|START:END]"
         );
         assert_eq!(args[7], "--overwrite-first-4g");
         assert!(matches!(args[2].as_str(), "legacy" | "v2"));
@@ -56,7 +58,7 @@ impl Config {
         let stat = PathBuf::from("/sys/class/block")
             .join(path.file_name().unwrap())
             .join("stat");
-        let config = Self {
+        let mut config = Self {
             path,
             engine: args[2].clone(),
             workload: args[3].clone(),
@@ -64,10 +66,34 @@ impl Config {
             seconds: args[5].parse().unwrap(),
             qds: args[6].split(',').map(|s| s.parse().unwrap()).collect(),
             disk_stat: stat.exists().then_some(stat),
+            verify: false,
+            range: None,
         };
+        for option in args[8..].as_chunks::<2>().0 {
+            match option[0].as_str() {
+                "--verify" => config.verify = option[1].parse().expect("verify must be true or false"),
+                "--range" if option[1] == "full" => config.range = None,
+                "--range" => {
+                    let (start, end) = option[1].split_once(':').expect("range must be START:END");
+                    config.range = Some(start.parse().unwrap()..end.parse().unwrap());
+                }
+                _ => panic!("unknown option: {}", option[0]),
+            }
+        }
+        for size in config.sizes() {
+            let range = config.read_range(size);
+            assert!(
+                range.start < range.end && range.end <= size as u32,
+                "range must fit every value"
+            );
+        }
         assert!((1..=512 << 20).contains(&config.bytes));
         assert!(config.seconds > 0 && config.qds.iter().all(|&qd| (1..=DEPTH).contains(&qd)));
         config
+    }
+
+    fn read_range(&self, len: usize) -> Range<u32> {
+        self.range.clone().unwrap_or(0..len as u32)
     }
 
     fn sizes(&self) -> Vec<usize> {
@@ -103,8 +129,8 @@ fn fresh_identity() -> [u8; 16] {
 trait Backend {
     fn write_batch(&mut self, records: &[Record]);
     fn flush(&mut self, records: u64);
-    fn prepare_reads(&mut self, sizes: &[usize], qd: usize);
-    fn read(&mut self, number: u64, len: usize) -> u64;
+    fn prepare_reads(&mut self, config: &Config, sizes: &[usize], qd: usize);
+    fn read(&mut self, number: u64, range: Range<u32>) -> u64;
     fn poll_reads(&mut self, visit: impl FnMut(u64, &[u8]));
     fn finish(self);
 }
@@ -188,7 +214,8 @@ impl Measurement {
                 "device_write_bytes": after.write_bytes - self.before.write_bytes,
                 "device_read_ios": after.read_ios - self.before.read_ios,
                 "device_write_ios": after.write_ios - self.before.write_ios,
-                "verified_reads": true, "durable_flush": true,
+                "verified_reads": config.verify, "durable_flush": true,
+                "read_range": config.range.as_ref().map_or_else(|| "full".to_owned(), |r| format!("{}:{}", r.start, r.end)),
             })
         );
     }
@@ -209,23 +236,35 @@ fn read_phase(backend: &mut impl Backend, config: &Config, sizes: &[usize], coun
             let number = rng % count;
             let len = sizes[number as usize % sizes.len()];
             let started = issued.is_multiple_of(16).then(Instant::now);
-            let ticket = backend.read(number, len);
-            assert!(pending.insert(ticket, (number, len, started)).is_none());
+            let range = config.read_range(len);
+            let ticket = backend.read(number, range.clone());
+            assert!(pending.insert(ticket, (number, range, started)).is_none());
             issued += 1;
         }
         if pending.is_empty() {
             break;
         }
         backend.poll_reads(|ticket, data| {
-            let (number, len, started) = pending.remove(&ticket).expect("unknown completion");
-            assert_eq!(data.len(), len);
-            assert_eq!(&data[..8], &number.to_le_bytes());
-            assert_eq!(data[len - 1], ((len - 1) % 253) as u8);
+            let (number, range, started) = pending.remove(&ticket).expect("unknown completion");
+            assert_eq!(data.len(), range.len());
+            // Sample both ends without scanning the payload in the timed callback.
+            // The key is checked only when the requested range includes its prefix.
+            let expected = |offset: usize| {
+                if offset < 8 {
+                    number.to_le_bytes()[offset]
+                } else {
+                    (offset % 253) as u8
+                }
+            };
+            for (i, &byte) in data.iter().take(8).enumerate() {
+                assert_eq!(byte, expected(range.start as usize + i));
+            }
+            assert_eq!(data[data.len() - 1], expected(range.end as usize - 1));
             if let Some(started) = started {
                 measurement.latencies.push(started.elapsed().as_nanos() as u64);
             }
             measurement.completed += 1;
-            measurement.bytes += len as u64;
+            measurement.bytes += data.len() as u64;
         });
     }
     assert_eq!(measurement.completed, issued);
@@ -260,7 +299,7 @@ fn run(mut backend: impl Backend, config: &Config) {
     measurement.bytes = groups * group_bytes;
     measurement.report(config, "write", DEPTH);
     for &qd in &config.qds {
-        backend.prepare_reads(&sizes, qd);
+        backend.prepare_reads(config, &sizes, qd);
         read_phase(&mut backend, config, &sizes, count, qd, true);
         read_phase(&mut backend, config, &sizes, count, qd, false);
     }

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::{Completion, Error, Pending, Pipeline, Result, index};
+use super::{Completion, Error, Pending, Pipeline, ReadBuffers, ReadRange, Result, index};
 use crate::io::{self, Operation, Queue};
 
 impl<Q: Queue> Pipeline<Q> {
@@ -26,6 +26,17 @@ impl<Q: Queue> Pipeline<Q> {
         }
         let before = out.len();
         self.start_flush(out);
+        while let Some(slot) = self.ready_reads.pop_front() {
+            let Some(Pending::EmptyRead { ticket, buffers }) = self.slots[slot].take() else {
+                unreachable!()
+            };
+            self.free.push(slot);
+            out.push(Completion::Read {
+                ticket,
+                result: Ok(ReadRange::Value(0..0)),
+                buffers,
+            });
+        }
         if let Err(error) = self.queue.poll(wait && out.len() == before) {
             self.queue_failed = true;
             return Err(Error::Queue(error));
@@ -60,6 +71,18 @@ impl<Q: Queue> Pipeline<Q> {
             }),
         };
         match pending {
+            Pending::Read(read) => {
+                out.push(Completion::Read {
+                    ticket: read.ticket,
+                    result: result.map(|()| ReadRange::Value(read.range)),
+                    buffers: ReadBuffers {
+                        metadata: read.metadata,
+                        value: request.buffer.take().expect("read returned its buffer"),
+                    },
+                });
+                self.free.push(slot);
+            }
+            Pending::EmptyRead { .. } => unreachable!("empty reads do not submit I/O"),
             Pending::Write(mut write) => {
                 if result.is_err() {
                     self.failed_at = Some(self.failed_at.map_or(write.ticket.0, |old| old.min(write.ticket.0)));
@@ -67,7 +90,7 @@ impl<Q: Queue> Pipeline<Q> {
                 write.completed = Some((result, request.buffer.take().expect("write returned its buffer")));
                 self.slots[slot] = Some(Pending::Write(write));
             }
-            Pending::Read(mut read) => {
+            Pending::VerifiedRead(mut read) => {
                 let metadata_phase = read.metadata.is_none();
                 if metadata_phase {
                     read.metadata = request.buffer.take();
@@ -86,7 +109,7 @@ impl<Q: Queue> Pipeline<Q> {
                     let buffer = read.value.take().expect("reserved value buffer");
                     let offset = read.io_offset;
                     let len = read.io_len;
-                    self.slots[slot] = Some(Pending::Read(read));
+                    self.slots[slot] = Some(Pending::VerifiedRead(read));
                     self.submit(slot, Operation::Read, offset, len, Some(buffer));
                 } else {
                     let ticket = read.ticket;

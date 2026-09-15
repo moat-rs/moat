@@ -41,20 +41,21 @@ def main():
         repeat = int(path.stem.split("-")[1])
         for line in path.read_text().splitlines():
             row = {"repeat": repeat, **json.loads(line)}
-            if row["operations"] <= 0 or not row["verified_reads"] or not row["durable_flush"]:
+            if row["operations"] <= 0 or not row["durable_flush"]:
                 raise ValueError(f"invalid sample: {path.name}")
+            row.setdefault("read_range", "full")
             row["device_read_bytes_per_op"] = row["device_read_bytes"] / row["operations"]
             row["device_write_amplification"] = row["device_write_bytes"] / row["payload_bytes"]
             row["cpu_percent"] = (row["cpu_user_s"] + row["cpu_system_s"]) / row["seconds"] * 100
             rows.append(row)
-            groups[(row["workload"], row["phase"], row["qd"], row["engine"])].append(row)
+            groups[(row["workload"], row["phase"], row["qd"], row["engine"], row["verified_reads"], row["read_range"])].append(row)
     if not rows:
         raise ValueError("no engine samples")
     summaries = []
-    for (workload, phase, qd, engine), samples in sorted(groups.items()):
+    for (workload, phase, qd, engine, verify, read_range), samples in sorted(groups.items()):
         if len({row["repeat"] for row in samples}) != len(samples):
             raise ValueError("duplicate repetition")
-        summary = {"workload": workload, "phase": phase, "qd": qd, "engine": engine, "samples": len(samples)}
+        summary = {"workload": workload, "phase": phase, "qd": qd, "engine": engine, "samples": len(samples), "verified_reads": verify, "read_range": read_range}
         for column in ["gib_s", "ops_s", "p50_us", "p99_us", "p999_us", "device_read_bytes_per_op", "device_write_amplification", "cpu_percent"]:
             values = [row[column] for row in samples if row[column] is not None]
             summary[column] = median(values) if values else None

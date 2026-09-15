@@ -68,7 +68,7 @@ fn write<Q: Queue>(pipeline: &mut Pipeline<Q>, id: u128, lsn: u64, value: &[u8])
 }
 fn buffers() -> ReadBuffers {
     ReadBuffers {
-        metadata: AlignedBuf::zeroed(PAGE),
+        metadata: Some(AlignedBuf::zeroed(PAGE)),
         value: AlignedBuf::zeroed(128 * 1024),
     }
 }
@@ -89,6 +89,7 @@ struct State {
     done: VecDeque<io::Completion>,
     log: Vec<(Operation, u64, usize)>,
     queue_error: bool,
+    last_wait: bool,
 }
 struct ManualQueue {
     depth: usize,
@@ -111,7 +112,8 @@ impl Queue for ManualQueue {
         state.pending.push_back(request);
         Ok(())
     }
-    fn poll(&mut self, _wait: bool) -> stdio::Result<()> {
+    fn poll(&mut self, wait: bool) -> stdio::Result<()> {
+        self.state.borrow_mut().last_wait = wait;
         if self.state.borrow().queue_error {
             Err(stdio::Error::other("injected queue failure"))
         } else {
@@ -164,12 +166,12 @@ fn real_file_write_verified_read_flush_and_reopen() {
         _ => panic!("expected write"),
     }
     let read = buffers();
-    let address = read.metadata.as_ptr();
-    pipeline.read(key(1), 6..11, read).unwrap();
+    let address = read.metadata.as_ref().unwrap().as_ptr();
+    pipeline.read(key(1), 6..11, true, read).unwrap();
     match drain(&mut pipeline).pop().unwrap() {
         Completion::Read { result, buffers, .. } => {
             assert_eq!(buffers.view(result.unwrap()), b"world");
-            assert_eq!(buffers.metadata.as_ptr(), address);
+            assert_eq!(buffers.metadata.as_ref().unwrap().as_ptr(), address);
         }
         _ => panic!("expected read"),
     }
@@ -190,8 +192,10 @@ fn real_file_write_verified_read_flush_and_reopen() {
         };
         reader.restore(frame.metadata()).unwrap();
     }
-    reader.read(key(1), 0..5, buffers()).unwrap();
-    assert!(matches!(&drain(&mut reader)[0], Completion::Read { result: Ok(_), .. }));
+    for verify in [false, true] {
+        reader.read(key(1), 0..5, verify, buffers()).unwrap();
+        assert!(matches!(&drain(&mut reader)[0], Completion::Read { result: Ok(_), .. }));
+    }
     assert!(matches!(
         reader
             .write(&input, AlignedBuf::zeroed(input.encoded_len()))
@@ -312,7 +316,7 @@ fn newest_lsn_wins_and_tombstones_prevent_resurrection() {
     write(&mut pipeline, 1, 30, b"new");
     write(&mut pipeline, 1, 10, b"old");
     drain(&mut pipeline);
-    pipeline.read(key(1), 0..3, buffers()).unwrap();
+    pipeline.read(key(1), 0..3, true, buffers()).unwrap();
     match drain(&mut pipeline).pop().unwrap() {
         Completion::Read { result, buffers, .. } => assert_eq!(buffers.view(result.unwrap()), b"new"),
         _ => panic!("read"),
@@ -326,7 +330,7 @@ fn newest_lsn_wins_and_tombstones_prevent_resurrection() {
     drain(&mut pipeline);
     assert!(!pipeline.contains(&key(1)));
     assert!(matches!(
-        pipeline.read(key(1), 0..1, buffers()).unwrap_err().error,
+        pipeline.read(key(1), 0..1, true, buffers()).unwrap_err().error,
         Error::NotFound
     ));
 }
@@ -342,7 +346,7 @@ fn late_small_record_reads_metadata_and_value_without_intervening_payload() {
     pipeline.write(&input, AlignedBuf::zeroed(input.encoded_len())).unwrap();
     finish(&state, &file, 0, None);
     pipeline.poll(false, &mut Vec::new()).unwrap();
-    pipeline.read(key(31), 0..1024, buffers()).unwrap();
+    pipeline.read(key(31), 0..1024, true, buffers()).unwrap();
     finish(&state, &file, 0, None);
     pipeline.poll(false, &mut Vec::new()).unwrap();
     let reads: Vec<_> = state
@@ -372,7 +376,7 @@ fn range_crossing_checksum_blocks_reads_and_verifies_both_blocks() {
     write(&mut pipeline, 1, 1, &value);
     finish(&state, &file, 0, None);
     pipeline.poll(false, &mut Vec::new()).unwrap();
-    pipeline.read(key(1), 65530..65540, buffers()).unwrap();
+    pipeline.read(key(1), 65530..65540, true, buffers()).unwrap();
     finish(&state, &file, 0, None);
     pipeline.poll(false, &mut Vec::new()).unwrap();
     assert_eq!(state.borrow().pending.front().unwrap().len, 18 * PAGE);
@@ -392,7 +396,7 @@ fn corrupt_metadata_stops_before_payload_io_and_returns_both_buffers() {
     finish(&state, &file, 0, None);
     pipeline.poll(false, &mut Vec::new()).unwrap();
     file.write_all_at(&[0xff], PAGE as u64 + 12).unwrap();
-    pipeline.read(key(1), 0..5, buffers()).unwrap();
+    pipeline.read(key(1), 0..5, true, buffers()).unwrap();
     finish(&state, &file, 0, None);
     let mut out = Vec::new();
     pipeline.poll(false, &mut out).unwrap();
@@ -422,7 +426,7 @@ fn truncated_and_corrupt_payload_reads_fail_without_poisoning_writes() {
         write(&mut pipeline, 1, 1, &vec![0x48; PAGE]);
         finish(&state, &file, 0, None);
         pipeline.poll(false, &mut Vec::new()).unwrap();
-        pipeline.read(key(1), 0..5, buffers()).unwrap();
+        pipeline.read(key(1), 0..5, true, buffers()).unwrap();
         finish(&state, &file, 0, None);
         pipeline.poll(false, &mut Vec::new()).unwrap();
         if !short {
@@ -444,7 +448,7 @@ fn empty_ranges_and_empty_values_need_metadata_only() {
         finish(&state, &file, 0, None);
         pipeline.poll(false, &mut Vec::new()).unwrap();
         let end = value.len() as u32;
-        pipeline.read(key(1), end..end, buffers()).unwrap();
+        pipeline.read(key(1), end..end, true, buffers()).unwrap();
         finish(&state, &file, 0, None);
         let mut out = Vec::new();
         pipeline.poll(false, &mut out).unwrap();
@@ -461,7 +465,7 @@ fn a_read_keeps_its_admission_snapshot_after_an_overwrite() {
     write(&mut pipeline, 1, 1, &old);
     finish(&state, &file, 0, None);
     pipeline.poll(false, &mut Vec::new()).unwrap();
-    pipeline.read(key(1), 0..3, buffers()).unwrap();
+    pipeline.read(key(1), 0..3, true, buffers()).unwrap();
     write(&mut pipeline, 1, 2, b"new");
     finish(&state, &file, 1, None);
     pipeline.poll(false, &mut Vec::new()).unwrap();
@@ -543,10 +547,12 @@ fn uring_runs_the_same_small_read_write_flush_path() {
         &drain(&mut pipeline)[0],
         Completion::Write { result: Ok(()), .. }
     ));
-    pipeline.read(key(1), 0..5, buffers()).unwrap();
-    match drain(&mut pipeline).pop().unwrap() {
-        Completion::Read { result, buffers, .. } => assert_eq!(buffers.view(result.unwrap()), b"async"),
-        _ => panic!("read"),
+    for verify in [false, true] {
+        pipeline.read(key(1), 0..5, verify, buffers()).unwrap();
+        match drain(&mut pipeline).pop().unwrap() {
+            Completion::Read { result, buffers, .. } => assert_eq!(buffers.view(result.unwrap()), b"async"),
+            _ => panic!("read"),
+        }
     }
     pipeline.flush().unwrap();
     assert!(matches!(
@@ -615,7 +621,7 @@ fn prepared_submission_keeps_the_original_payload_allocation() {
     );
     finish(&state, &file, 0, None);
     pipeline.poll(false, &mut Vec::new()).unwrap();
-    pipeline.read(key(1), 69990..70000, buffers()).unwrap();
+    pipeline.read(key(1), 69990..70000, true, buffers()).unwrap();
     finish(&state, &file, 0, None);
     pipeline.poll(false, &mut Vec::new()).unwrap();
     finish(&state, &file, 0, None);
@@ -635,14 +641,14 @@ fn invalid_read_ranges_and_short_buffers_never_submit_io() {
     finish(&state, &file, 0, None);
     pipeline.poll(false, &mut Vec::new()).unwrap();
     for range in [70000..70001, std::ops::Range { start: 2, end: 1 }] {
-        assert!(pipeline.read(key(1), range, buffers()).is_err());
+        assert!(pipeline.read(key(1), range, true, buffers()).is_err());
     }
     let small = ReadBuffers {
-        metadata: AlignedBuf::zeroed(PAGE),
+        metadata: Some(AlignedBuf::zeroed(PAGE)),
         value: AlignedBuf::zeroed(PAGE),
     };
     let address = small.value.as_ptr();
-    let rejected = pipeline.read(key(1), 1..2, small).unwrap_err();
+    let rejected = pipeline.read(key(1), 1..2, true, small).unwrap_err();
     assert!(matches!(rejected.error, Error::Frame(_)));
     assert_eq!(rejected.input.value.as_ptr(), address);
     assert!(state.borrow().pending.is_empty());
@@ -670,10 +676,12 @@ fn assignment_uses_absolute_base_for_reads_and_writes() {
     let mut prefix = vec![1; base as usize];
     file.read_exact_at(&mut prefix, 0).unwrap();
     assert!(prefix.iter().all(|&byte| byte == 0));
-    pipeline.read(key(1), 0..6, buffers()).unwrap();
-    match drain(&mut pipeline).pop().unwrap() {
-        Completion::Read { result, buffers, .. } => assert_eq!(buffers.view(result.unwrap()), b"offset"),
-        _ => panic!("read"),
+    for verify in [false, true] {
+        pipeline.read(key(1), 0..6, verify, buffers()).unwrap();
+        match drain(&mut pipeline).pop().unwrap() {
+            Completion::Read { result, buffers, .. } => assert_eq!(buffers.view(result.unwrap()), b"offset"),
+            _ => panic!("read"),
+        }
     }
 }
 
@@ -702,18 +710,18 @@ fn small_values_already_in_metadata_use_one_read_and_no_copy() {
     write(&mut pipeline, 1, 1, b"inline");
     finish(&state, &file, 0, None);
     pipeline.poll(false, &mut Vec::new()).unwrap();
-    let requirements = pipeline.read_requirements(key(1), 0..6).unwrap();
+    let requirements = pipeline.read_requirements(key(1), 0..6, true).unwrap();
     assert_eq!(requirements.metadata_len, PAGE);
     assert_eq!(requirements.value_len, 0);
     let input = buffers();
-    let address = input.metadata.as_ptr();
-    pipeline.read(key(1), 0..6, input).unwrap();
+    let address = input.metadata.as_ref().unwrap().as_ptr();
+    pipeline.read(key(1), 0..6, true, input).unwrap();
     finish(&state, &file, 0, None);
     let mut out = Vec::new();
     pipeline.poll(false, &mut out).unwrap();
     match out.pop().unwrap() {
         Completion::Read { result, buffers, .. } => {
-            assert_eq!(buffers.metadata.as_ptr(), address);
+            assert_eq!(buffers.metadata.as_ref().unwrap().as_ptr(), address);
             let range = result.unwrap();
             assert!(matches!(range, moat_engine_v2::pipeline::ReadRange::Metadata(_)));
             assert_eq!(buffers.view(range), b"inline");
@@ -739,7 +747,7 @@ fn corrupt_inline_payload_is_rejected_without_a_second_read() {
     finish(&state, &file, 0, None);
     pipeline.poll(false, &mut Vec::new()).unwrap();
     file.write_all_at(&[0xff], PAGE as u64 + 136).unwrap();
-    pipeline.read(key(1), 0..5, buffers()).unwrap();
+    pipeline.read(key(1), 0..5, true, buffers()).unwrap();
     finish(&state, &file, 0, None);
     let mut out = Vec::new();
     pipeline.poll(false, &mut out).unwrap();
@@ -751,4 +759,287 @@ fn corrupt_inline_payload_is_rejected_without_a_second_read() {
         }
     ));
     assert!(state.borrow().pending.is_empty());
+}
+
+#[test]
+fn direct_ranges_read_only_requested_pages_and_return_the_original_buffer() {
+    let (mut pipeline, state, file) = manual(2);
+    let value: Vec<_> = (0..70000).map(|i| (i % 251) as u8).collect();
+    write(&mut pipeline, 1, 1, &value);
+    finish(&state, &file, 0, None);
+    pipeline.poll(false, &mut Vec::new()).unwrap();
+    // The large value begins one page into the first frame.
+    let value_start = 2 * PAGE as u64;
+    for (range, page, pages) in [
+        (0..1, 0, 1),
+        (4096..8192, 1, 1),
+        (4095..4097, 0, 2),
+        (65530..65540, 15, 2),
+        (69999..70000, 17, 1),
+    ] {
+        let len = pipeline
+            .read_requirements(key(1), range.clone(), false)
+            .unwrap()
+            .value_len;
+        assert_eq!(len, pages * PAGE);
+        let buffer = AlignedBuf::zeroed(len);
+        let address = buffer.as_ptr();
+        pipeline
+            .read(key(1), range.clone(), false, ReadBuffers::new(buffer))
+            .unwrap();
+        assert_eq!(state.borrow().pending.len(), 1);
+        let request = state.borrow().log.last().copied().unwrap();
+        assert_eq!(request, (Operation::Read, value_start + page * PAGE as u64, len));
+        finish(&state, &file, 0, None);
+        match drain(&mut pipeline).pop().unwrap() {
+            Completion::Read { result, buffers, .. } => {
+                assert_eq!(buffers.value.as_ptr(), address);
+                assert_eq!(
+                    buffers.view(result.unwrap()),
+                    &value[range.start as usize..range.end as usize]
+                );
+            }
+            _ => panic!("expected ordinary read"),
+        }
+        assert!(state.borrow().pending.is_empty());
+    }
+}
+
+#[test]
+fn direct_reads_trust_the_index_without_verifying_metadata_or_payload_crc() {
+    let (mut pipeline, state, file) = manual(2);
+    write(&mut pipeline, 1, 1, &vec![0x42; PAGE]);
+    finish(&state, &file, 0, None);
+    pipeline.poll(false, &mut Vec::new()).unwrap();
+    file.write_all_at(&[0xff], PAGE as u64 + 12).unwrap();
+    file.write_all_at(&[0x19], 2 * PAGE as u64 + 7).unwrap();
+    pipeline
+        .read(key(1), 7..8, false, ReadBuffers::new(AlignedBuf::zeroed(PAGE)))
+        .unwrap();
+    assert_eq!(
+        *state.borrow().log.last().unwrap(),
+        (Operation::Read, 2 * PAGE as u64, PAGE)
+    );
+    finish(&state, &file, 0, None);
+    match drain(&mut pipeline).pop().unwrap() {
+        Completion::Read { result, buffers, .. } => assert_eq!(buffers.view(result.unwrap()), &[0x19]),
+        _ => panic!("expected direct read"),
+    }
+    pipeline.read(key(1), 7..8, true, buffers()).unwrap();
+    finish(&state, &file, 0, None);
+    assert!(matches!(
+        &drain(&mut pipeline)[0],
+        Completion::Read {
+            result: Err(Error::Frame(_)),
+            ..
+        }
+    ));
+}
+
+#[test]
+fn direct_empty_reads_are_bounded_and_complete_without_disk_io() {
+    for value in [&b"hello"[..], &b""[..]] {
+        let (mut pipeline, state, file) = manual(1);
+        write(&mut pipeline, 1, 1, value);
+        finish(&state, &file, 0, None);
+        pipeline.poll(false, &mut Vec::new()).unwrap();
+        let end = value.len() as u32;
+        assert_eq!(
+            pipeline.read_requirements(key(1), end..end, false).unwrap().value_len,
+            0
+        );
+        let buffer = AlignedBuf::zeroed(PAGE);
+        let address = buffer.as_ptr();
+        let ticket = pipeline
+            .read(key(1), end..end, false, ReadBuffers::new(buffer))
+            .unwrap();
+        assert_eq!(pipeline.in_flight(), 1);
+        let rejected = pipeline
+            .read(key(1), end..end, false, ReadBuffers::new(AlignedBuf::zeroed(PAGE)))
+            .unwrap_err();
+        assert!(matches!(rejected.error, Error::Backpressure));
+        assert!(state.borrow().pending.is_empty());
+        let mut out = Vec::new();
+        pipeline.poll(true, &mut out).unwrap();
+        match out.pop().unwrap() {
+            Completion::Read {
+                ticket: actual,
+                result,
+                buffers,
+            } => {
+                assert_eq!(actual, ticket);
+                assert!(result.unwrap().is_empty());
+                assert_eq!(buffers.value.as_ptr(), address);
+            }
+            _ => panic!("expected empty read"),
+        }
+        assert_eq!(pipeline.in_flight(), 0);
+        assert!(state.borrow().log.iter().all(|entry| entry.0 != Operation::Read));
+        pipeline.read(key(1), end..end, false, rejected.input).unwrap();
+        assert_eq!(drain(&mut pipeline).len(), 1);
+    }
+}
+
+#[test]
+fn direct_rejections_preserve_buffers_and_do_not_submit_io() {
+    let (mut pipeline, state, file) = manual(1);
+    write(&mut pipeline, 1, 1, &vec![3; 70000]);
+    finish(&state, &file, 0, None);
+    pipeline.poll(false, &mut Vec::new()).unwrap();
+    for (id, range) in [
+        (1, 70000..70001),
+        (1, std::ops::Range { start: 2, end: 1 }),
+        (1, 0..70000),
+        (2, 0..0),
+    ] {
+        let mut buffer = AlignedBuf::zeroed(PAGE);
+        buffer.fill(0x55);
+        let address = buffer.as_ptr();
+        let rejected = pipeline
+            .read(key(id), range, false, ReadBuffers::new(buffer))
+            .unwrap_err();
+        assert_eq!(rejected.input.value.as_ptr(), address);
+        assert!(rejected.input.value.iter().all(|&byte| byte == 0x55));
+        assert_eq!(pipeline.in_flight(), 0);
+        assert!(state.borrow().pending.is_empty());
+    }
+    pipeline
+        .read(key(1), 0..1, false, ReadBuffers::new(AlignedBuf::zeroed(PAGE)))
+        .unwrap();
+    let rejected = pipeline
+        .read(key(1), 0..1, false, ReadBuffers::new(AlignedBuf::zeroed(PAGE)))
+        .unwrap_err();
+    assert!(matches!(rejected.error, Error::Backpressure));
+    finish(&state, &file, 0, None);
+    drain(&mut pipeline);
+    let mut frame = FrameBuilder::new(limits());
+    frame.push_tombstone(key(1), 2).unwrap();
+    pipeline.write(&frame, AlignedBuf::zeroed(frame.encoded_len())).unwrap();
+    finish(&state, &file, 0, None);
+    drain(&mut pipeline);
+    assert!(matches!(
+        pipeline.read(key(1), 0..0, false, rejected.input).unwrap_err().error,
+        Error::NotFound
+    ));
+}
+
+#[test]
+fn direct_io_failures_return_buffers_without_poisoning_writes() {
+    for forced in [Ok(PAGE - 1), Err(stdio::Error::other("injected read failure"))] {
+        let (mut pipeline, state, file) = manual(1);
+        write(&mut pipeline, 1, 1, b"hello");
+        finish(&state, &file, 0, None);
+        drain(&mut pipeline);
+        let buffer = AlignedBuf::zeroed(PAGE);
+        let address = buffer.as_ptr();
+        pipeline.read(key(1), 0..5, false, ReadBuffers::new(buffer)).unwrap();
+        finish(&state, &file, 0, Some(forced));
+        match drain(&mut pipeline).pop().unwrap() {
+            Completion::Read { result, buffers, .. } => {
+                assert!(matches!(
+                    result,
+                    Err(Error::ShortIo {
+                        operation: Operation::Read,
+                        ..
+                    }) | Err(Error::Io {
+                        operation: Operation::Read,
+                        ..
+                    })
+                ));
+                assert_eq!(buffers.value.as_ptr(), address);
+            }
+            _ => panic!("expected direct read error"),
+        }
+        write(&mut pipeline, 2, 2, b"still writable");
+        finish(&state, &file, 0, None);
+        assert!(matches!(
+            &drain(&mut pipeline)[0],
+            Completion::Write { result: Ok(()), .. }
+        ));
+    }
+}
+
+#[test]
+fn direct_and_verified_reads_keep_their_snapshot_across_overwrite() {
+    let (mut pipeline, state, file) = manual(4);
+    write(&mut pipeline, 1, 1, b"old");
+    finish(&state, &file, 0, None);
+    drain(&mut pipeline);
+    pipeline
+        .read(key(1), 0..3, false, ReadBuffers::new(AlignedBuf::zeroed(PAGE)))
+        .unwrap();
+    pipeline.read(key(1), 0..3, true, buffers()).unwrap();
+    write(&mut pipeline, 1, 2, b"new");
+    finish(&state, &file, 2, None);
+    pipeline.poll(false, &mut Vec::new()).unwrap();
+    finish(&state, &file, 1, None);
+    finish(&state, &file, 0, None);
+    let out = drain(&mut pipeline);
+    assert_eq!(out.len(), 2);
+    for completion in out {
+        match completion {
+            Completion::Read { result, buffers, .. } => assert_eq!(buffers.view(result.unwrap()), b"old"),
+            _ => panic!("expected read"),
+        }
+    }
+}
+
+#[test]
+fn verification_requires_metadata_and_direct_reads_return_it_untouched() {
+    let (mut pipeline, state, file) = manual(1);
+    write(&mut pipeline, 1, 1, b"value");
+    finish(&state, &file, 0, None);
+    drain(&mut pipeline);
+    let value = AlignedBuf::zeroed(PAGE);
+    let address = value.as_ptr();
+    let rejected = pipeline.read(key(1), 0..5, true, ReadBuffers::new(value)).unwrap_err();
+    assert!(matches!(
+        rejected.error,
+        Error::Frame(moat_engine_v2::frame::Error::BufferTooSmall {
+            required: PAGE,
+            available: 0,
+        })
+    ));
+    assert_eq!(rejected.input.value.as_ptr(), address);
+    assert!(state.borrow().pending.is_empty());
+    assert_eq!(pipeline.in_flight(), 0);
+    let mut input = rejected.input;
+    let mut metadata = AlignedBuf::zeroed(PAGE);
+    metadata.fill(0x55);
+    let address = metadata.as_ptr();
+    input.metadata = Some(metadata);
+    pipeline.read(key(1), 0..5, false, input).unwrap();
+    finish(&state, &file, 0, None);
+    match drain(&mut pipeline).pop().unwrap() {
+        Completion::Read { result, buffers, .. } => {
+            assert_eq!(buffers.view(result.unwrap()), b"value");
+            let metadata = buffers.metadata.unwrap();
+            assert_eq!(metadata.as_ptr(), address);
+            assert!(metadata.iter().all(|&byte| byte == 0x55));
+        }
+        _ => panic!("expected read"),
+    }
+}
+
+#[test]
+fn empty_read_completion_does_not_wait_for_unrelated_io() {
+    let (mut pipeline, state, file) = manual(2);
+    write(&mut pipeline, 1, 1, b"value");
+    finish(&state, &file, 0, None);
+    drain(&mut pipeline);
+    pipeline
+        .read(key(1), 0..0, false, ReadBuffers::new(AlignedBuf::zeroed(PAGE)))
+        .unwrap();
+    write(&mut pipeline, 2, 2, b"pending");
+    let mut out = Vec::new();
+    assert_eq!(pipeline.poll(true, &mut out).unwrap(), 1);
+    assert!(!state.borrow().last_wait);
+    assert!(matches!(&out[0], Completion::Read { result: Ok(range), .. } if range.is_empty()));
+    assert_eq!(pipeline.in_flight(), 1);
+    assert_eq!(state.borrow().pending.len(), 1);
+    finish(&state, &file, 0, None);
+    assert!(matches!(
+        &drain(&mut pipeline)[0],
+        Completion::Write { result: Ok(()), .. }
+    ));
 }

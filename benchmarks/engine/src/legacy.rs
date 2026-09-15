@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{io, os::fd::BorrowedFd, sync::Arc};
+use std::{io, ops::Range, os::fd::BorrowedFd, sync::Arc};
 
 use moat_common::{HugePages, PoolOptions};
 use moat_engine::{
@@ -77,7 +77,7 @@ impl Legacy {
             device,
             Options {
                 index_capacity,
-                verify_reads: true,
+                verify_reads: config.verify,
                 sync_on_flush: true,
                 ..Options::default()
             },
@@ -164,13 +164,20 @@ impl Backend for Legacy {
         assert_eq!(self.acked, records);
     }
 
-    fn prepare_reads(&mut self, _: &[usize], _: usize) {}
+    fn prepare_reads(&mut self, _: &Config, _: &[usize], _: usize) {}
 
-    fn read(&mut self, number: u64, _: usize) -> u64 {
+    fn read(&mut self, number: u64, range: Range<u32>) -> u64 {
         let ticket = self.next;
         self.next += 1;
         assert!(matches!(
-            self.reader.get(&mut *self.queue, &key(number), None, ticket).unwrap(),
+            self.reader
+                .get(
+                    &mut *self.queue,
+                    &key(number),
+                    Some(range.start as u64..range.end as u64),
+                    ticket
+                )
+                .unwrap(),
             ReadOutcome::Submitted
         ));
         ticket

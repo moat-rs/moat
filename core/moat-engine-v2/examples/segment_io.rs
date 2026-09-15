@@ -88,10 +88,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     let buffers = ReadBuffers {
-        metadata: AlignedBuf::zeroed(PAGE_SIZE as usize),
+        metadata: Some(AlignedBuf::zeroed(PAGE_SIZE as usize)),
         value: AlignedBuf::zeroed(PAGE_SIZE as usize),
     };
-    reader.read(key, 0..5, buffers).map_err(|rejected| rejected.error)?;
+    reader
+        .read(key, 0..5, true, buffers)
+        .map_err(|rejected| rejected.error)?;
     while reader.in_flight() != 0 {
         reader.poll(true, &mut completions)?;
     }
