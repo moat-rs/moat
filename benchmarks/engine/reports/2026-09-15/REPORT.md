@@ -1,5 +1,9 @@
 # Single-NVMe engine pipeline measurements
 
+This report measures reads with verification enabled. The later
+[direct-read follow-up](../2026-09-15-direct/REPORT.md) remeasures both engines
+with verification disabled and includes partial-range reads.
+
 The unified pipeline improves small-record burst writes and verified 4-KiB reads, but its
 current read implementation regresses for 100-B, 1-KiB, 64-KiB and mixed records.
 At concurrency 64, both engines reach approximately the same bandwidth for

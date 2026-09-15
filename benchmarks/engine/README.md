@@ -9,6 +9,11 @@ The [2026-09-15 report](reports/2026-09-15/REPORT.md) includes three repetitions
 fresh fio baselines, numeric samples and independent CPU profiles. That report
 used `--verify true`; use the same flag to reproduce its read policy.
 
+The [direct-read follow-up](reports/2026-09-15-direct/REPORT.md) remeasures both
+engines with `--verify false`, adds partial ranges, and separates user/system CPU
+cost. It includes 168 engine samples and records the large boundary-range
+variation rather than treating its median as a stable throughput advantage.
+
 ## Build and run
 
 Build for GNU/Linux with glibc. `x86-64-v3` requires a compatible destination CPU;
