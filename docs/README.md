@@ -54,7 +54,8 @@ single `Writer`:
 | [Chunkserver design](design/chunkserver.md) | Overall architecture and goals |
 | [Chunkserver audit](design/chunkserver-audit.md) | Design review and constraints |
 | [Engine API](design/engine-api.md) | Queue and read/write pipeline interfaces |
-| [Engine write layout proposal](design/engine-write-layout.md) | Open inline pages, unified value extents, and a recovery validation model |
+| [Unified Frame layout proposal](design/engine-frame-layout.md) | Immutable frames, mixed-value placement, read/write paths, recovery, and tradeoffs |
+| [Earlier engine write layout proposal](design/engine-write-layout.md) | Open inline pages, unified value extents, and a recovery validation model |
 | [Memory cache](design/cache-memory.md) | Resident cache, shared handles, and eviction policies |
 | [Disk cache adapter](design/cache-store.md) | Async requests, budgets, and read coalescing |
 | [Hybrid cache](design/cache-hybrid.md) | Stable key identity, disk catalog, and conditional population |

@@ -1,6 +1,11 @@
 # Engine write layout: open inline pages and unified value extents
 
-Status: reviewable proposal and executable recovery model. No engine layout, writer behavior, device capability, or format-version constant has changed.
+Status: earlier proposal and executable recovery model. The
+[unified immutable Frame proposal](engine-frame-layout.md) supersedes this
+document's recommended default. This document remains a reference for the
+page-rewrite fault model; its prototype does not validate the new Frame
+encoding. No engine layout, writer behavior, device capability, or
+format-version constant has changed.
 
 The project is alpha. The eventual implementation may break compatibility without a version increment or migration support. Existing media would need reformatting; this proposal does not perform or authorize device formatting.
 
