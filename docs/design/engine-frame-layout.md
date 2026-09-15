@@ -131,10 +131,11 @@ submitted long before the segment fills.
 
 The segment footer summarizes records for index reconstruction. Its entries
 must locate the Frame and descriptor as needed by the new reader, as well as
-preserving keys, LSNs, value locations, lengths, and tombstones. The exact
-summary encoding remains an implementation gate; its size must participate in
-admission accounting. The current 48-byte entry is useful as a cost baseline,
-not a promise that all new fields fit unchanged.
+preserving keys, LSNs, value locations, lengths, and tombstones. The initial
+implementation stores each Frame's original metadata in the footer;
+the [segment format document](engine-segment-format.md) specifies its exact
+encoding and admission accounting. This preserves checksums and reuses Frame
+validation, with a larger footprint than the old 48-byte summary entry.
 
 Before placing a Frame, reserve enough room for both data and the eventual
 footer, including records allocated but not yet applied:
@@ -161,8 +162,9 @@ All integers use an explicit little-endian encoding, not Rust struct layout.
 Stored value and checksum offsets are Frame-relative. Field offsets in the
 tables are relative to the start of the corresponding structure. Reserved bytes
 and padding are written as zero; unsupported flags and versions are rejected.
-The independent codec uses frame magic `MOATFRM2` and version `2`. Device and
-segment encodings remain a later stage; these constants do not define a
+The independent codec uses frame magic `MOATFRM2` and version `2`. The segment
+encoding is specified [separately](engine-segment-format.md).
+Device encoding remains a later stage; these constants do not define a
 complete new device format.
 
 ### Frame header

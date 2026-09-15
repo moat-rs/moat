@@ -19,8 +19,9 @@
 //! contiguous range. All offsets are frame-relative unless stated otherwise.
 //! See the crate README for the encoding and buffer ownership contract.
 
+use crate::codec;
+
 mod builder;
-mod codec;
 mod decode;
 mod error;
 mod header;

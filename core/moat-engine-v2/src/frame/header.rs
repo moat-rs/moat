@@ -123,7 +123,7 @@ impl FrameHeader {
         if bytes[..8] != MAGIC {
             return Err(Error::Corrupt("frame magic"));
         }
-        if u32_at(bytes, 12) != header_crc(bytes) {
+        if u32_at(bytes, 12) != crc_with_zeroed_checksum(&bytes[..HEADER_LEN]) {
             return Err(Error::Corrupt("header checksum"));
         }
         let version = u32_at(bytes, 8);
@@ -194,6 +194,6 @@ impl FrameHeader {
         put_u32(bytes, 36, self.record_count * DESCRIPTOR_LEN as u32);
         put_u32(bytes, 40, self.checksum_len);
         put_u32(bytes, 44, self.metadata_crc);
-        put_u32(bytes, 12, header_crc(bytes));
+        put_u32(bytes, 12, crc_with_zeroed_checksum(&bytes[..HEADER_LEN]));
     }
 }

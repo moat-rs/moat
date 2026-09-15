@@ -16,26 +16,28 @@
 
 use moat_common::Crc32c;
 
-pub(super) fn u32_at(bytes: &[u8], at: usize) -> u32 {
+pub(crate) fn u32_at(bytes: &[u8], at: usize) -> u32 {
     u32::from_le_bytes(bytes[at..at + 4].try_into().expect("validated field bounds"))
 }
 
-pub(super) fn u64_at(bytes: &[u8], at: usize) -> u64 {
+pub(crate) fn u64_at(bytes: &[u8], at: usize) -> u64 {
     u64::from_le_bytes(bytes[at..at + 8].try_into().expect("validated field bounds"))
 }
 
-pub(super) fn put_u32(bytes: &mut [u8], at: usize, value: u32) {
+pub(crate) fn put_u32(bytes: &mut [u8], at: usize, value: u32) {
     bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
 }
 
-pub(super) fn put_u64(bytes: &mut [u8], at: usize, value: u64) {
+pub(crate) fn put_u64(bytes: &mut [u8], at: usize, value: u64) {
     bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
 }
 
-pub(super) fn header_crc(bytes: &[u8]) -> u32 {
+// All checksummed headers place their CRC32C field at byte offset 12.
+// The caller supplies the exact protected extent, including footer padding.
+pub(crate) fn crc_with_zeroed_checksum(bytes: &[u8]) -> u32 {
     Crc32c::new()
         .update(&bytes[..12])
         .update(&[0; 4])
-        .update(&bytes[16..super::HEADER_LEN])
+        .update(&bytes[16..])
         .finalize()
 }

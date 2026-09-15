@@ -14,4 +14,7 @@
 
 #![doc = include_str!("../README.md")]
 
+mod codec;
+
 pub mod frame;
+pub mod segment;

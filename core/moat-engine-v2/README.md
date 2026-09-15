@@ -2,7 +2,7 @@
 
 Independent implementation of the [unified immutable frame proposal](../../docs/design/engine-frame-layout.md), developed alongside `moat-engine` for review before replacement. It does not depend on, wrap, or copy the old engine's pipelines. Shared primitives come from `moat-common`: chunk identifiers, alignment helpers, CRC32C generation and verification, and buffers. Frame assembly uses the common checksum iterator to write directly into the metadata area without allocating a checksum vector.
 
-**Stage 1: frame format, construction, and validation.** This crate is not yet a storage engine or a drop-in replacement. Device/superblock encoding, segment footers, I/O queues, indexing, read/write pipelines, recovery, and physical space reclamation remain subsequent stages. The existing engine and its consumers continue to use their current implementation.
+**Implemented: frame codec and segment metadata/recovery primitives.** The new segment layer adds header/footer encoding, footer-aware allocation accounting, and incremental frame recovery from caller-supplied bytes. This crate is not yet a storage engine or a drop-in replacement. Device/superblock encoding, I/O queues, indexing, persistence protocols, and physical space reclamation remain subsequent stages. The existing engine and its consumers continue to use their current implementation.
 
 ## Usage
 
@@ -92,11 +92,48 @@ The common admission path uses a constant-time upper bound. Near capacity, it wa
 
 - `Metadata::decode` needs only the header, directory, and checksum bytes. Ordered payload layouts allocate nothing; reordered layouts temporarily sort ranges to rule out overlap.
 - `Record::verification_range` expands a requested range to complete logical checksum blocks. `Record::verify` requires the exact expanded bytes, so a short read cannot silently validate as a partial final block.
-- `Frame::decode` additionally checks every value checksum before returning any accepted frame. A damaged later record rejects the entire frame. This is the primitive for a future active-tail recovery scanner.
+- `Frame::decode` additionally checks every value checksum before returning any accepted frame. A damaged later record rejects the entire frame. The segment recovery scanner uses this to accept complete frames only.
 
 Verified reads must eventually fetch metadata and distant payload as separate extents, coalescing only when useful. For 32 records of 1 KiB each, metadata occupies 2240 bytes and the last value begins at offset 34816. The APIs let a reader validate the front metadata and that value without fetching intervening payloads. Actual read planning and I/O submission are not part of this stage.
 
-Checksums detect corruption; they do not make writes atomic or durable. Recovery prefix rules, publication order, persistence barriers, and segment reuse cannot be established by this codec alone.
+Checksums detect corruption; they do not make writes atomic or durable. The segment scanner implements prefix validation. Publication order, persistence barriers, and safe segment reuse require the future I/O layer.
+
+## Segment metadata and recovery
+
+The [segment format document](../../docs/design/engine-segment-format.md) specifies exact header/footer fields, admission costs, recovery rules, and remaining persistence work. Segment errors live separately in `src/segment/error.rs`.
+
+`SegmentHeader` binds device identity, segment number, and allocation incarnation. `SegmentBuilder::position` checks both the next frame and the growing footer; `append` records its validated metadata before I/O submission. This accounting includes allocated writes that have not completed. `seal_into` constructs a footer and sealed header; it does not submit or persist either one.
+
+The footer contains each frame's original metadata rather than a separate record summary. It reuses frame validation and retains the checksums needed by verified reads, at the cost of larger footer entries. `Footer::frames` returns borrowed metadata without reading payloads. `Scanner` validates payloads frame by frame, stops at a damaged active tail, and reports corruption before a sealed boundary. A bad footer can fall back to scanning with the sealed boundary preserved.
+
+```rust
+use moat_common::ChunkId;
+use moat_engine_v2::{
+    frame::{FrameBuilder, FrameLimits, Metadata},
+    segment::{Footer, SegmentBuilder, SegmentHeader, SegmentId},
+};
+
+let limits = FrameLimits::new(8 << 20, 4 << 20)?;
+let id = SegmentId { device_id: [1; 16], segment_no: 0, sequence: 1 };
+let active = SegmentHeader::new(id, 1 << 30)?;
+let mut segment = SegmentBuilder::new(active)?;
+let mut frame = FrameBuilder::new(limits);
+frame.push(ChunkId::from_u128(7), 42, b"hello")?;
+let position = segment.position(frame.encoded_len(), frame.metadata_len())?;
+let mut bytes = vec![0; frame.encoded_len()];
+frame.encode_into(position, &mut bytes)?;
+segment.append(Metadata::decode(&bytes, limits, position)?)?;
+
+// Construct metadata only. An I/O caller must persist frames and footer before
+// writing the sealed header, and must retain all submitted buffers until done.
+let mut footer_bytes = vec![0; segment.footer_len()];
+let sealed = segment.seal_into(&mut footer_bytes)?;
+let footer = Footer::decode(&footer_bytes, sealed, limits)?;
+assert_eq!(footer.frames().next().unwrap().record(0).unwrap().descriptor().lsn, 42);
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+The current tests use memory images. They establish validation and reservation behavior, not power-loss safety. In particular, a torn in-place segment-header update is detectable but not repairable here; a recoverable update protocol remains required before persistent I/O integration.
 
 ## Error contract
 
@@ -121,7 +158,7 @@ When device I/O is introduced, its error boundary should preserve the original `
 
 The upper layer decides which chunks to delete and controls segment selection, scheduling, placement policy, and maintenance budgets. The engine should expose segment statistics and execute explicitly requested physical reclamation, validating a segment handle that includes its allocation incarnation. It remains responsible for liveness revalidation, conditional index updates, persistence before freeing storage, and reader safety. A default victim-selection heuristic belongs in the caller's policy, not in the only engine execution entry point.
 
-This stage does not fix the number of streams, encode Hot/Cold categories, or implement a reclamation scheduler. Those interfaces will be reviewed when segment management is implemented.
+This stage does not fix the number of streams, encode Hot/Cold categories, or implement a reclamation scheduler. `SegmentId` supplies physical allocation identity; live statistics, reader pins, and reclamation execution remain later work.
 
 ## Review and validation
 

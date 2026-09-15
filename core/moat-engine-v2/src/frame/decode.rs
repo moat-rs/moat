@@ -103,6 +103,17 @@ impl<'a> Metadata<'a> {
         Ok(metadata)
     }
 
+    // Used when iterating an immutable footer that already validated each frame.
+    // The slice must be exactly the validated metadata for this header.
+    pub(crate) fn from_validated(bytes: &'a [u8], header: FrameHeader) -> Self {
+        Self { bytes, header }
+    }
+
+    /// The encoded header, directory, and checksum area, without payload or padding.
+    pub fn as_bytes(self) -> &'a [u8] {
+        self.bytes
+    }
+
     /// The validated fixed header.
     pub fn header(self) -> FrameHeader {
         self.header
