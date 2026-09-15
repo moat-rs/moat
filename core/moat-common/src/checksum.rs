@@ -79,7 +79,16 @@ pub const fn block_count(len: u64) -> u32 {
 
 /// Computes the per-block checksums of `data`.
 pub fn block_checksums(data: &[u8]) -> Vec<u32> {
-    data.chunks(CHECKSUM_BLOCK_SIZE).map(crc32c).collect()
+    block_checksums_iter(data).collect()
+}
+
+/// Computes per-block checksums lazily, without allocating an output buffer.
+///
+/// Each item covers one logical [`CHECKSUM_BLOCK_SIZE`] block, including the
+/// final partial block. An empty value produces no items.
+#[inline]
+pub fn block_checksums_iter(data: &[u8]) -> impl ExactSizeIterator<Item = u32> + '_ {
+    data.chunks(CHECKSUM_BLOCK_SIZE).map(crc32c)
 }
 
 /// Verifies `data` against `checksums`, where `data` starts at checksum block
@@ -134,6 +143,20 @@ mod tests {
         assert_eq!(block_count(1), 1);
         assert_eq!(block_count(CHECKSUM_BLOCK_SIZE as u64), 1);
         assert_eq!(block_count(CHECKSUM_BLOCK_SIZE as u64 + 1), 2);
+    }
+
+    #[test]
+    fn checksum_iterator_handles_empty_full_and_partial_blocks() {
+        assert_eq!(block_checksums_iter(&[]).next(), None);
+        let mut data = vec![0u8; CHECKSUM_BLOCK_SIZE + 9];
+        data[CHECKSUM_BLOCK_SIZE..].copy_from_slice(b"123456789");
+        let mut sums = block_checksums_iter(&data);
+        assert_eq!(sums.len(), 2);
+        assert_eq!(sums.next(), Some(crc32c(&data[..CHECKSUM_BLOCK_SIZE])));
+        assert_eq!(sums.len(), 1);
+        assert_eq!(sums.next(), Some(0xe306_9283));
+        assert_eq!(sums.len(), 0);
+        assert_eq!(sums.next(), None);
     }
 
     #[test]
