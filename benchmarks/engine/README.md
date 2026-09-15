@@ -5,6 +5,9 @@ Linux direct-I/O device. Neither engine depends on this harness or on the other
 engine. The v2 side exercises its current single-segment pipeline; this is not
 a comparison of complete storage services.
 
+The [2026-09-15 report](reports/2026-09-15/REPORT.md) includes three repetitions,
+fresh fio baselines, numeric samples and independent CPU profiles.
+
 ## Build and run
 
 Build for GNU/Linux with glibc. `x86-64-v3` requires a compatible destination CPU;
@@ -82,6 +85,14 @@ JSON lines contain payload throughput, completed API operations, sampled
 latencies, process user/system CPU time and Linux block-device counters.
 The runner never overwrites an existing sample file. Operational stderr stays
 separate. Store raw files outside the repository; publish only sanitized data.
+
+```sh
+python3 benchmarks/engine/analyze.py /path/to/results /path/to/summary
+```
+
+The analyzer retains each numeric sample and reports medians and the minimum
+and maximum throughput per configuration. Median latency columns are medians
+of run percentiles, not percentiles of a combined latency histogram.
 
 Device counters count physical requests after kernel merging/splitting, not
 engine submissions. Derive read/write byte amplification by dividing physical
