@@ -14,10 +14,9 @@
 
 use std::{io, ops::Range, os::fd::BorrowedFd, sync::Arc};
 
-use moat_common::{HugePages, PoolOptions};
 use moat_engine::{
-    Device, Error, FileDevice, FormatOptions, IoQueue, Options, PutOptions, PutOutcome, QueueBackend, QueueOptions,
-    ReadOutcome, Reader, Writer, blocking,
+    Device, Error, FileDevice, FormatOptions, IoQueue, Options, PutOptions, PutOutcome, QueueOptions, ReadOutcome,
+    Reader, Writer, blocking,
 };
 
 use crate::{Backend, CAPACITY, Config, DEPTH, MAX_VALUE, Record, SEGMENT, key};
@@ -48,6 +47,7 @@ impl Device for Window {
 
 pub(super) struct Legacy {
     queue: Box<dyn IoQueue>,
+    deferred: bool,
     writer: Writer,
     reader: Reader,
     writes: Vec<moat_engine::Completion>,
@@ -83,21 +83,19 @@ impl Legacy {
             },
         )
         .unwrap();
-        let mut queue = QueueOptions {
+        let queue = moat_engine::uring::UringQueue::new(&QueueOptions {
             depth: DEPTH as u32,
-            pool: PoolOptions {
-                bytes: 1 << 30,
-                max_class: 8 << 20,
-                huge_pages: HugePages::Disabled,
-            },
+            pool: config.pool_options(),
             descriptors: 4,
-        }
-        .build(QueueBackend::Uring)
+        })
         .unwrap();
+        let deferred = queue.deferred_taskrun();
+        let mut queue: Box<dyn IoQueue> = Box::new(queue);
         let writer = engine.writer(&mut *queue).unwrap();
         let reader = engine.reader(&mut *queue).unwrap();
         Self {
             queue,
+            deferred,
             writer,
             reader,
             writes: Vec::with_capacity(DEPTH * 64),
@@ -118,6 +116,10 @@ impl Legacy {
 }
 
 impl Backend for Legacy {
+    fn memory(&self) -> serde_json::Value {
+        crate::memory::snapshot(self.queue.pool(), self.deferred)
+    }
+
     fn write_batch(&mut self, records: &[Record]) {
         for record in records {
             loop {

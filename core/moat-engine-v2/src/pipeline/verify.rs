@@ -14,7 +14,8 @@
 
 use std::ops::Range;
 
-use moat_common::{AlignedBuf, ChunkId, PAGE_SIZE, align_up};
+use crate::io::Buffer;
+use moat_common::{ChunkId, PAGE_SIZE, align_up};
 
 use super::{
     Error, Pending, Pipeline, ReadBuffers, ReadExtent, ReadRange, ReadRequirements, Rejected, Result, Ticket,
@@ -31,8 +32,8 @@ pub(super) struct VerifiedRead {
     pub io_offset: u64,
     pub io_len: usize,
     pub prefix: usize,
-    pub metadata: Option<AlignedBuf>,
-    pub value: Option<AlignedBuf>,
+    pub metadata: Option<Buffer>,
+    pub value: Option<Buffer>,
     validated_header: Option<FrameHeader>,
 }
 

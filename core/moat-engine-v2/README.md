@@ -164,7 +164,32 @@ The [pipeline document](../../docs/design/engine-io-pipeline.md) describes owner
 - `flush()` waits for preceding writes and a data-sync operation. Write completion alone does not imply durability. A write or sync failure blocks further writes to the assigned allocation.
 - `read_only` and `restore` accept recovered storage and scanner/footer metadata without authorizing new writes to the recovered tail.
 
-`io::FileQueue` is a blocking functional backend. `io::UringQueue` is asynchronous on Linux; it currently uses ordinary aligned READ/WRITE rather than fixed registered buffers. The index, operation slots, and write publication queue have a single mutable owner. Upper-layer segment selection and future reclamation safety remain separate work.
+`io::FileQueue` is a blocking functional backend. On Linux, `io::UringQueue::with_pool(file, depth, pool)` registers the shared `moat-common::BufferPool` arenas and uses fixed-buffer reads/writes for their buffers. `UringQueue::new(file, depth)` supports ordinary aligned buffers. Both constructors register the file, batch submissions, and request `SINGLE_ISSUER` with `DEFER_TASKRUN`; unsupported kernels fall back to a basic ring, observable through `deferred_taskrun()`. Registration failures remain errors. The index, operation slots, and write publication queue have a single mutable owner. Upper-layer segment selection and future reclamation safety remain separate work.
+
+`io::Buffer` owns either an `AlignedBuf` or a `PooledBuf`. Write methods and `ReadBuffers::new` accept either through `Into<Buffer>`; explicit `ReadBuffers` fields take `.into()`. Completion and rejection return the same allocation without copying its contents or cloning its pool owner. A registered queue rejects buffers from another pool before I/O, while heap buffers use ordinary reads/writes. Registered storage stays alive until the ring is closed, and accepted requests are drained before their memory is released.
+
+Create the pool and queue on the thread that drives I/O. `UringQueue` is neither `Send` nor `Sync`, enforcing the kernel's issuer constraint even when a particular kernel falls back to a basic ring. Allocate buffers during setup and recycle completions in the hot path. The queue adds no locks; pool allocation and release retain the shared allocator's existing accounting.
+
+```no_run
+# #[cfg(target_os = "linux")]
+# fn registered_queue(file: std::fs::File) -> std::io::Result<()> {
+use moat_common::{BufferPool, HugePages, PoolOptions};
+use moat_engine_v2::io::UringQueue;
+
+let pool = BufferPool::new(PoolOptions {
+    bytes: 64 << 20,
+    max_class: 8 << 20,
+    huge_pages: HugePages::Preferred,
+})?;
+let queue = UringQueue::with_pool(file, 64, pool.clone())?;
+let buffer = pool.alloc(4096).expect("reserved pool capacity");
+// Pass queue to Pipeline and buffer to write/read; recycle completion buffers.
+# let _ = (queue, buffer);
+# Ok(())
+# }
+```
+
+Huge-page policy belongs to `PoolOptions`: `Disabled` uses ordinary pages, `Preferred` tries explicit huge pages and then transparent huge pages, and `Required` requires explicit huge pages. `Arena::backing() == Transparent` records a successful `MADV_HUGEPAGE` request, not proof that the kernel promoted the memory. Buffer registration works with each backing and requires sufficient locked-memory allowance. No global kernel settings are changed by the queue.
 
 `examples/segment_io.rs` demonstrates the small file-backed write, verified-read, flush, and read-only recovery path. It creates a new file and never overwrites an existing path. This is a functional example, not a device formatter or performance workload.
 

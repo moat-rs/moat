@@ -30,7 +30,7 @@ It does not reopen an active tail for new writes or overwrite a segment header.
 
 The `Queue` contract bounds all accepted requests, including completed requests
 not yet popped. Queue fullness returns the original `Request`. Requests own
-`AlignedBuf` storage; completion returns the same allocation. Callers can reuse
+`io::Buffer` storage (`AlignedBuf` or shared `moat-common::PooledBuf`); completion returns the same allocation. Callers can reuse
 buffers without allocating on each admission. Buffers need not be shared across
 threads or routed through a synchronized pool.
 
@@ -40,11 +40,26 @@ delivery. It is the portable functional backend, not an asynchronous backend.
 poll time. Both expose actual transfer counts. A short transfer becomes an
 explicit pipeline failure; no partial write is reported as a full frame.
 
-The first io_uring implementation uses ordinary READ/WRITE with aligned buffers.
-It does not yet use registered fixed buffers/files or specialized setup flags.
-Those optimizations require separate evaluation; ordinary I/O can still incur
-kernel buffer pinning costs. Queue creation errors are returned instead of
-silently switching to blocking I/O. No background polling thread is created.
+`UringQueue::with_pool` registers the common pool's arenas once. Requests using
+that pool use `READ_FIXED`/`WRITE_FIXED`; heap buffers use ordinary `READ`/`WRITE`.
+A buffer from another pool is rejected before I/O, even if its arena index
+matches. Both queue constructors register the file and use a completion ring
+with twice the submission capacity.
+
+The queue requests `SINGLE_ISSUER` with `DEFER_TASKRUN`, falling back to a basic
+ring only when those options are unsupported. `deferred_taskrun()` exposes the
+actual result. Deferred nonblocking polls enter with `GETEVENTS` to drive kernel
+completion work. No background polling thread or queue mutex is introduced.
+Create and drive the queue on the same thread; its type is neither `Send` nor
+`Sync`. Queue creation and registration errors are returned to the caller.
+
+Huge-page policy is configured through the shared `PoolOptions`, independently
+of frame geometry and CRC policy. The queue retains the registered pool until
+after the ring closes. Completion moves the buffer back without copying payload
+bytes or cloning its pool owner. Arena allocation and pool accounting reuse
+`moat-common`; v2 does not depend on the legacy engine. `Preferred` permits THP
+or ordinary-page fallback, while `Required` fails without explicit huge pages.
+An arena's `Transparent` backing indicates a hint, not guaranteed promotion.
 
 Dropping the io_uring queue drains outstanding operations before freeing their
 buffers. If the ring fails, synchronous cancellation is attempted. If cancellation

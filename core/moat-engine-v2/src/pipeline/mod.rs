@@ -29,9 +29,10 @@ mod write;
 
 use std::collections::VecDeque;
 
+use crate::io::Buffer;
 pub use error::{Error, Rejected, Result};
 use index::{Index, Location};
-use moat_common::{AlignedBuf, ChunkId, PAGE_SIZE, is_aligned};
+use moat_common::{ChunkId, PAGE_SIZE, is_aligned};
 use read::{Read, ReadExtent};
 pub use read::{ReadBuffers, ReadRange, ReadRequirements};
 use verify::VerifiedRead;
@@ -63,7 +64,7 @@ pub enum Completion {
         /// Publication outcome. Success does not imply persistence.
         result: Result<()>,
         /// Original frame buffer.
-        buffer: AlignedBuf,
+        buffer: Buffer,
     },
     /// Read of the version visible at admission, with the requested verification policy.
     Read {
@@ -95,7 +96,7 @@ impl Completion {
 struct Write {
     ticket: Ticket,
     entries: Vec<(ChunkId, Location)>,
-    completed: Option<(Result<()>, AlignedBuf)>,
+    completed: Option<(Result<()>, Buffer)>,
 }
 
 enum Pending {
@@ -245,7 +246,7 @@ impl<Q: Queue> Pipeline<Q> {
         slot
     }
 
-    fn submit(&mut self, slot: usize, operation: Operation, offset: u64, len: usize, buffer: Option<AlignedBuf>) {
+    fn submit(&mut self, slot: usize, operation: Operation, offset: u64, len: usize, buffer: Option<Buffer>) {
         // An exclusively owned queue must accept while capacity is available.
         self.queue
             .try_submit(Request {

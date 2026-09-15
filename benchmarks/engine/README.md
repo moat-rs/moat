@@ -7,7 +7,9 @@ a comparison of complete storage services.
 
 The [2026-09-15 report](reports/2026-09-15/REPORT.md) includes three repetitions,
 fresh fio baselines, numeric samples and independent CPU profiles. That report
-used `--verify true`; use the same flag to reproduce its read policy.
+used `--verify true`; use the same flag to reproduce its read policy. Historical
+reports identify their source revision; the current harness adds registered
+buffers to v2 and defaults to `--huge-pages preferred`.
 
 The [direct-read follow-up](reports/2026-09-15-direct/REPORT.md) remeasures both
 engines with `--verify false`, adds partial ranges, and separates user/system CPU
@@ -61,6 +63,11 @@ target/engine-compare/x86_64-unknown-linux-gnu/release/moat-engine-compare \
 ## Matched workload
 
 - One thread, fixed CPU, io_uring depth 64, direct I/O. No SQPOLL or IOPOLL.
+- Both engines register their pool arenas and files and request `SINGLE_ISSUER`
+  with `DEFER_TASKRUN`. Both use a 1-GiB common pool with an 8-MiB maximum class.
+  `--huge-pages disabled|preferred|required` selects the same policy for both;
+  the default is `preferred`. Keep policies in separate output directories.
+  Registration errors stop the run. No system huge-page reservation is changed.
 - Uniform records: 100 B, 1 KiB, 4 KiB, 64 KiB and 4 MiB. Mixed records cycle
   through 100 B, 4 KiB, 64 KiB and 300 B in that order, at equal record counts.
 - Writes generate consecutive distinct keys. Groups contain 64 records for
@@ -104,7 +111,7 @@ separate. Store raw files outside the repository; publish only sanitized data.
 python3 benchmarks/engine/analyze.py /path/to/results /path/to/summary
 ```
 
-The analyzer groups by verification mode and range as well as workload, engine
+The analyzer groups by huge-page policy, verification mode and range as well as workload, engine
 and concurrency. It retains each numeric sample and reports medians and the minimum
 and maximum throughput per configuration. Median latency columns are medians
 of run percentiles, not percentiles of a combined latency histogram.
@@ -114,12 +121,17 @@ engine submissions. Derive read/write byte amplification by dividing physical
 bytes by completed payload bytes. Compare logical operation counts separately
 from fio physical IOPS. A 4-MiB operation may split into many device requests.
 
-The two implementations have intentionally retained differences: legacy uses
-registered buffers and a preallocated concurrent index; v2 uses ordinary
-io_uring buffers and a growing single-owner index. Initial legacy index
+Each sample records requested huge-page policy, arena backing, fixed-buffer/file
+registration and actual deferred-taskrun status. `/proc/self/smaps` supplies
+observed anonymous huge-page and hugetlb bytes outside the measured interval.
+If a pool mapping merges with unrelated memory, these observations are `null`
+rather than attributing unrelated huge pages to the pool. `Transparent` alone
+means a successful hint, not guaranteed promotion.
+
+The two implementations retain differences: legacy uses a preallocated
+concurrent index; v2 uses a growing single-owner index. Initial legacy index
 allocation is outside the timer; v2 index growth is inside it. The v2 builder
-and completion metadata allocate in the measured write path. No huge-page
-policy is requested for either side. These results compare the current code,
+and completion metadata allocate in the measured write path. These results compare the current code,
 and do not isolate only the on-disk format or the benefit of removing locks.
 
 The data window is small and repeatedly accessed. Direct I/O bypasses the OS

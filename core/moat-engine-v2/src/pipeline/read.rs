@@ -14,7 +14,8 @@
 
 use std::ops::Range;
 
-use moat_common::{AlignedBuf, ChunkId, PAGE_SIZE, align_down, align_up};
+use crate::io::Buffer;
+use moat_common::{ChunkId, PAGE_SIZE, align_down, align_up};
 
 use super::{Pending, Pipeline, Rejected, Result, Ticket};
 use crate::{
@@ -26,9 +27,9 @@ use crate::{
 #[derive(Debug)]
 pub struct ReadBuffers {
     /// Space for front metadata when verification is enabled; otherwise optional.
-    pub metadata: Option<AlignedBuf>,
+    pub metadata: Option<Buffer>,
     /// Space for requested pages, expanded to checksum blocks when verifying.
-    pub value: AlignedBuf,
+    pub value: Buffer,
 }
 
 /// Minimum buffer capacities for a read of the currently indexed version.
@@ -62,8 +63,11 @@ impl ReadRange {
 
 impl ReadBuffers {
     /// Creates buffers for ordinary reads without allocating metadata storage.
-    pub fn new(value: AlignedBuf) -> Self {
-        Self { metadata: None, value }
+    pub fn new(value: impl Into<Buffer>) -> Self {
+        Self {
+            metadata: None,
+            value: value.into(),
+        }
     }
 
     /// Borrows returned bytes without copying them.
@@ -78,7 +82,7 @@ impl ReadBuffers {
 pub(super) struct Read {
     pub ticket: Ticket,
     pub range: Range<usize>,
-    pub metadata: Option<AlignedBuf>,
+    pub metadata: Option<Buffer>,
 }
 
 // The caller validates the range and supplies a value address inside the

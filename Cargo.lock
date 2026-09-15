@@ -367,6 +367,7 @@ name = "moat-engine-v2"
 version = "0.0.0"
 dependencies = [
  "io-uring",
+ "libc",
  "moat-common",
  "tempfile",
  "thiserror",

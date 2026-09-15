@@ -43,6 +43,7 @@ def main():
     parser.add_argument("--verify", choices=["true", "false"], default="false")
     parser.add_argument("--range", default="full", help="full or START:END in logical value bytes")
     parser.add_argument("--sizes", nargs="+", default=["100", "1024", "4096", "65536", "4194304", "mixed"])
+    parser.add_argument("--huge-pages", choices=["disabled", "preferred", "required"], default="preferred")
     parser.add_argument("--overwrite-first-4g", action="store_true", required=True)
     args = parser.parse_args()
     if args.repeats < 1 or args.seconds < 1 or not 1 <= args.payload_mib <= 512:
@@ -77,7 +78,7 @@ def main():
                     qds = "1,16,64" if size == "4194304" and args.range == "full" else "1,64"
                     command = ["taskset", "-c", str(args.cpu), str(binary), str(device), engine, size,
                                str(args.payload_mib), str(args.seconds), qds, "--overwrite-first-4g",
-                               "--verify", args.verify, "--range", args.range]
+                               "--verify", args.verify, "--range", args.range, "--huge-pages", args.huge_pages]
                     print("START", name, flush=True)
                     # Never silently overwrite an earlier measurement.
                     with output.open("x") as out, errors.open("x") as err:

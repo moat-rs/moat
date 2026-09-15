@@ -15,6 +15,7 @@
 //! Destructive, bounded comparison of the legacy engine and the v2 pipeline.
 
 mod legacy;
+mod memory;
 mod unified;
 
 use std::{
@@ -25,7 +26,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use moat_common::ChunkId;
+use moat_common::{ChunkId, HugePages, PoolOptions};
 use serde_json::json;
 
 const SEGMENT: u64 = 2 << 30;
@@ -42,6 +43,7 @@ struct Config {
     qds: Vec<usize>,
     disk_stat: Option<PathBuf>,
     verify: bool,
+    huge_pages: HugePages,
     range: Option<Range<u32>>,
 }
 
@@ -50,7 +52,7 @@ impl Config {
         let args: Vec<_> = std::env::args().collect();
         assert!(
             args.len() >= 8 && (args.len() - 8).is_multiple_of(2),
-            "usage: moat-engine-compare PATH legacy|v2 SIZE|mixed PAYLOAD_MIB SECONDS QDS --overwrite-first-4g [--verify true|false] [--range full|START:END]"
+            "usage: moat-engine-compare PATH legacy|v2 SIZE|mixed PAYLOAD_MIB SECONDS QDS --overwrite-first-4g [--verify true|false] [--range full|START:END] [--huge-pages disabled|preferred|required]"
         );
         assert_eq!(args[7], "--overwrite-first-4g");
         assert!(matches!(args[2].as_str(), "legacy" | "v2"));
@@ -67,10 +69,19 @@ impl Config {
             qds: args[6].split(',').map(|s| s.parse().unwrap()).collect(),
             disk_stat: stat.exists().then_some(stat),
             verify: false,
+            huge_pages: HugePages::Preferred,
             range: None,
         };
         for option in args[8..].as_chunks::<2>().0 {
             match option[0].as_str() {
+                "--huge-pages" => {
+                    config.huge_pages = match option[1].as_str() {
+                        "disabled" => HugePages::Disabled,
+                        "preferred" => HugePages::Preferred,
+                        "required" => HugePages::Required,
+                        _ => panic!("huge-pages must be disabled, preferred, or required"),
+                    }
+                }
                 "--verify" => config.verify = option[1].parse().expect("verify must be true or false"),
                 "--range" if option[1] == "full" => config.range = None,
                 "--range" => {
@@ -90,6 +101,14 @@ impl Config {
         assert!((1..=512 << 20).contains(&config.bytes));
         assert!(config.seconds > 0 && config.qds.iter().all(|&qd| (1..=DEPTH).contains(&qd)));
         config
+    }
+
+    fn pool_options(&self) -> PoolOptions {
+        PoolOptions {
+            bytes: 1 << 30,
+            max_class: 8 << 20,
+            huge_pages: self.huge_pages,
+        }
     }
 
     fn read_range(&self, len: usize) -> Range<u32> {
@@ -127,6 +146,7 @@ fn fresh_identity() -> [u8; 16] {
 }
 
 trait Backend {
+    fn memory(&self) -> serde_json::Value;
     fn write_batch(&mut self, records: &[Record]);
     fn flush(&mut self, records: u64);
     fn prepare_reads(&mut self, config: &Config, sizes: &[usize], qd: usize);
@@ -191,7 +211,7 @@ impl Measurement {
         }
     }
 
-    fn report(mut self, config: &Config, phase: &str, qd: usize) {
+    fn report(mut self, config: &Config, phase: &str, qd: usize, backend: &impl Backend) {
         let elapsed = self.start.elapsed().as_secs_f64();
         let after = Counters::sample(config);
         self.latencies.sort_unstable();
@@ -214,6 +234,7 @@ impl Measurement {
                 "device_write_bytes": after.write_bytes - self.before.write_bytes,
                 "device_read_ios": after.read_ios - self.before.read_ios,
                 "device_write_ios": after.write_ios - self.before.write_ios,
+                "memory": backend.memory(), "huge_pages": format!("{:?}", config.huge_pages),
                 "verified_reads": config.verify, "durable_flush": true,
                 "read_range": config.range.as_ref().map_or_else(|| "full".to_owned(), |r| format!("{}:{}", r.start, r.end)),
             })
@@ -269,7 +290,7 @@ fn read_phase(backend: &mut impl Backend, config: &Config, sizes: &[usize], coun
     }
     assert_eq!(measurement.completed, issued);
     if !warmup {
-        measurement.report(config, "read", qd);
+        measurement.report(config, "read", qd, backend);
     }
 }
 
@@ -297,7 +318,7 @@ fn run(mut backend: impl Backend, config: &Config) {
     backend.flush(count);
     measurement.completed = count;
     measurement.bytes = groups * group_bytes;
-    measurement.report(config, "write", DEPTH);
+    measurement.report(config, "write", DEPTH, &backend);
     for &qd in &config.qds {
         backend.prepare_reads(config, &sizes, qd);
         read_phase(&mut backend, config, &sizes, count, qd, true);

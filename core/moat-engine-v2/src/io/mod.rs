@@ -17,6 +17,7 @@
 //! No queue-internal mutex or background worker is required. A caller must poll
 //! the queue to submit/reap work. Queue fullness returns the original request.
 
+mod buffer;
 #[cfg(unix)]
 mod file;
 #[cfg(target_os = "linux")]
@@ -24,9 +25,10 @@ mod uring;
 
 use std::io;
 
+pub use buffer::Buffer;
 #[cfg(unix)]
 pub use file::FileQueue;
-use moat_common::{AlignedBuf, PAGE_SIZE, is_aligned};
+use moat_common::{PAGE_SIZE, is_aligned};
 #[cfg(target_os = "linux")]
 pub use uring::UringQueue;
 
@@ -53,7 +55,7 @@ pub struct Request {
     /// Prefix length to transfer; zero for sync.
     pub len: usize,
     /// Exclusively owned storage, absent for sync.
-    pub buffer: Option<AlignedBuf>,
+    pub buffer: Option<Buffer>,
 }
 
 impl Request {

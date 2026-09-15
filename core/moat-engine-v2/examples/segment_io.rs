@@ -88,8 +88,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     let buffers = ReadBuffers {
-        metadata: Some(AlignedBuf::zeroed(PAGE_SIZE as usize)),
-        value: AlignedBuf::zeroed(PAGE_SIZE as usize),
+        metadata: Some(AlignedBuf::zeroed(PAGE_SIZE as usize).into()),
+        value: AlignedBuf::zeroed(PAGE_SIZE as usize).into(),
     };
     reader
         .read(key, 0..5, true, buffers)

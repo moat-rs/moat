@@ -12,7 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use moat_common::{AlignedBuf, ChunkId};
+use crate::io::Buffer;
+use moat_common::ChunkId;
 
 use super::{Pending, Pipeline, Rejected, Result, Ticket, Write, index};
 use crate::{
@@ -30,9 +31,9 @@ impl<Q: Queue> Pipeline<Q> {
     pub fn write(
         &mut self,
         frame: &FrameBuilder<'_>,
-        buffer: AlignedBuf,
-    ) -> std::result::Result<Ticket, Rejected<AlignedBuf>> {
-        self.submit_frame(buffer, |segment, _, buffer| {
+        buffer: impl Into<Buffer>,
+    ) -> std::result::Result<Ticket, Rejected<Buffer>> {
+        self.submit_frame(buffer.into(), |segment, _, buffer| {
             let position = segment.position(frame.encoded_len(), frame.metadata_len())?;
             frame.encode_into(position, buffer)?;
             Ok(position)
@@ -50,9 +51,9 @@ impl<Q: Queue> Pipeline<Q> {
         key: ChunkId,
         lsn: u64,
         value_len: u32,
-        buffer: AlignedBuf,
-    ) -> std::result::Result<Ticket, Rejected<AlignedBuf>> {
-        self.submit_frame(buffer, |segment, limits, buffer| {
+        buffer: impl Into<Buffer>,
+    ) -> std::result::Result<Ticket, Rejected<Buffer>> {
+        self.submit_frame(buffer.into(), |segment, limits, buffer| {
             let len = PreparedFrame::required_len(limits, value_len)?;
             let frame = PreparedFrame::new(limits, value_len, buffer)?;
             let position = segment.position(len, frame.metadata_len())?;
@@ -63,10 +64,10 @@ impl<Q: Queue> Pipeline<Q> {
 
     fn submit_frame(
         &mut self,
-        mut buffer: AlignedBuf,
-        encode: impl FnOnce(&SegmentBuilder, FrameLimits, &mut AlignedBuf) -> Result<FramePosition>,
-    ) -> std::result::Result<Ticket, Rejected<AlignedBuf>> {
-        let prepare = |this: &mut Self, buffer: &mut AlignedBuf| -> Result<(Write, u64, usize)> {
+        mut buffer: Buffer,
+        encode: impl FnOnce(&SegmentBuilder, FrameLimits, &mut Buffer) -> Result<FramePosition>,
+    ) -> std::result::Result<Ticket, Rejected<Buffer>> {
+        let prepare = |this: &mut Self, buffer: &mut Buffer| -> Result<(Write, u64, usize)> {
             let ticket = this.admission(true)?;
             let segment = this.segment.as_mut().expect("writable pipeline");
             let position = encode(segment, this.limits, buffer)?;

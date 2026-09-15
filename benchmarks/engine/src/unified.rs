@@ -17,12 +17,13 @@ use std::{
     io::{Seek, SeekFrom},
     ops::Range,
     os::unix::fs::{FileExt, OpenOptionsExt},
+    sync::Arc,
 };
 
-use moat_common::{AlignedBuf, PAGE_SIZE, align_up};
+use moat_common::{AlignedBuf, BufferPool, PAGE_SIZE, align_up};
 use moat_engine_v2::{
     frame::{FrameBuilder, FrameLimits, PreparedFrame},
-    io::UringQueue,
+    io::{Buffer, UringQueue},
     pipeline::{Completion, Error, Pipeline, ReadBuffers},
     segment::{SegmentHeader, SegmentId},
 };
@@ -32,7 +33,9 @@ use crate::{Backend, CAPACITY, Config, DEPTH, MAX_VALUE, Record, SEGMENT, key};
 pub(super) struct Unified {
     pipeline: Pipeline<UringQueue>,
     limits: FrameLimits,
-    buffers: Vec<AlignedBuf>,
+    pool: Arc<BufferPool>,
+    deferred: bool,
+    buffers: Vec<Buffer>,
     reads: Vec<ReadBuffers>,
     out: Vec<Completion>,
     acked: u64,
@@ -60,7 +63,10 @@ impl Unified {
         file.write_all_at(&page, SEGMENT).unwrap();
         file.sync_data().unwrap();
         let limits = FrameLimits::new(8 << 20, MAX_VALUE).unwrap();
-        let pipeline = Pipeline::new(UringQueue::new(file, DEPTH).unwrap(), header, limits, SEGMENT).unwrap();
+        let pool = BufferPool::new(config.pool_options()).unwrap();
+        let queue = UringQueue::with_pool(file, DEPTH, pool.clone()).unwrap();
+        let deferred = queue.deferred_taskrun();
+        let pipeline = Pipeline::new(queue, header, limits, SEGMENT).unwrap();
         let sizes = config.sizes();
         let capacity = if sizes.len() == 1 && sizes[0] >= 65536 {
             PreparedFrame::required_len(limits, sizes[0] as u32).unwrap()
@@ -71,9 +77,11 @@ impl Unified {
                 PAGE_SIZE,
             ) as usize
         };
-        let buffers = (0..DEPTH).map(|_| AlignedBuf::zeroed(capacity)).collect();
+        let buffers = (0..DEPTH).map(|_| pool.alloc(capacity).unwrap().into()).collect();
         Self {
             pipeline,
+            pool,
+            deferred,
             limits,
             buffers,
             reads: Vec::new(),
@@ -101,7 +109,7 @@ impl Unified {
         }
     }
 
-    fn buffer(&mut self) -> AlignedBuf {
+    fn buffer(&mut self) -> Buffer {
         while self.buffers.is_empty() {
             self.reap(true);
         }
@@ -110,6 +118,10 @@ impl Unified {
 }
 
 impl Backend for Unified {
+    fn memory(&self) -> serde_json::Value {
+        crate::memory::snapshot(&self.pool, self.deferred)
+    }
+
     fn write_batch(&mut self, records: &[Record]) {
         if records.iter().all(|record| record.value.len() >= 65536) {
             for record in records {
@@ -188,10 +200,13 @@ impl Backend for Unified {
             metadata = metadata.max(requirements.metadata_len);
             value = value.max(requirements.value_len);
         }
+        // Writes are complete; return their buffers before allocating read slots.
+        self.buffers.clear();
+        self.reads.clear();
         self.reads = (0..qd)
             .map(|_| ReadBuffers {
-                metadata: self.verify.then(|| AlignedBuf::zeroed(metadata)),
-                value: AlignedBuf::zeroed(value),
+                metadata: self.verify.then(|| self.pool.alloc(metadata).unwrap().into()),
+                value: self.pool.alloc(value).unwrap().into(),
             })
             .collect();
     }

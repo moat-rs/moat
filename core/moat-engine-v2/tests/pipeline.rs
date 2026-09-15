@@ -68,8 +68,8 @@ fn write<Q: Queue>(pipeline: &mut Pipeline<Q>, id: u128, lsn: u64, value: &[u8])
 }
 fn buffers() -> ReadBuffers {
     ReadBuffers {
-        metadata: Some(AlignedBuf::zeroed(PAGE)),
-        value: AlignedBuf::zeroed(128 * 1024),
+        metadata: Some(AlignedBuf::zeroed(PAGE).into()),
+        value: AlignedBuf::zeroed(128 * 1024).into(),
     }
 }
 fn drain<Q: Queue>(pipeline: &mut Pipeline<Q>) -> Vec<Completion> {
@@ -529,7 +529,7 @@ fn queue_rejects_invalid_lengths_before_touching_file() {
             operation: Operation::Write,
             offset: 0,
             len: PAGE + 1,
-            buffer: Some(buffer),
+            buffer: Some(buffer.into()),
         })
         .unwrap();
     let completion = queue.pop().unwrap();
@@ -574,7 +574,7 @@ fn dropping_uring_with_accepted_writes_keeps_buffers_live_until_completion() {
             operation: Operation::Write,
             offset: PAGE as u64,
             len: PAGE,
-            buffer: Some(buffer),
+            buffer: Some(buffer.into()),
         })
         .unwrap();
     drop(queue);
@@ -644,8 +644,8 @@ fn invalid_read_ranges_and_short_buffers_never_submit_io() {
         assert!(pipeline.read(key(1), range, true, buffers()).is_err());
     }
     let small = ReadBuffers {
-        metadata: Some(AlignedBuf::zeroed(PAGE)),
-        value: AlignedBuf::zeroed(PAGE),
+        metadata: Some(AlignedBuf::zeroed(PAGE).into()),
+        value: AlignedBuf::zeroed(PAGE).into(),
     };
     let address = small.value.as_ptr();
     let rejected = pipeline.read(key(1), 1..2, true, small).unwrap_err();
@@ -1007,7 +1007,7 @@ fn verification_requires_metadata_and_direct_reads_return_it_untouched() {
     let mut metadata = AlignedBuf::zeroed(PAGE);
     metadata.fill(0x55);
     let address = metadata.as_ptr();
-    input.metadata = Some(metadata);
+    input.metadata = Some(metadata.into());
     pipeline.read(key(1), 0..5, false, input).unwrap();
     finish(&state, &file, 0, None);
     match drain(&mut pipeline).pop().unwrap() {
@@ -1042,4 +1042,59 @@ fn empty_read_completion_does_not_wait_for_unrelated_io() {
         &drain(&mut pipeline)[0],
         Completion::Write { result: Ok(()), .. }
     ));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn pooled_pipeline_preserves_prepared_payload_and_verifies_reused_storage() {
+    use moat_common::{BufferPool, HugePages, PoolOptions};
+    let pool = BufferPool::new(PoolOptions {
+        bytes: 512 * 1024,
+        max_class: 128 * 1024,
+        huge_pages: HugePages::Preferred,
+    })
+    .unwrap();
+    let queue = io::UringQueue::with_pool(file(), 2, pool.clone()).unwrap();
+    let mut pipeline = Pipeline::new(queue, header(), limits(), 0).unwrap();
+    let len = 70000;
+    let mut buffer = pool.alloc(PreparedFrame::required_len(limits(), len).unwrap()).unwrap();
+    let address = buffer.as_ptr();
+    buffer.fill(0xcc);
+    PreparedFrame::new(limits(), len, &mut buffer)
+        .unwrap()
+        .value_mut()
+        .fill(0x31);
+    pipeline.write_prepared(key(1), 1, len, buffer).unwrap();
+    match drain(&mut pipeline).pop().unwrap() {
+        Completion::Write { result, buffer, .. } => {
+            result.unwrap();
+            assert_eq!(buffer.as_ptr(), address);
+        }
+        _ => panic!("write"),
+    }
+    for verify in [false, true] {
+        let requirements = pipeline.read_requirements(key(1), 65530..65540, verify).unwrap();
+        let mut value = pool.alloc(requirements.value_len).unwrap();
+        value.fill(0xef);
+        let address = value.as_ptr();
+        let buffers = ReadBuffers {
+            metadata: verify.then(|| pool.alloc(requirements.metadata_len).unwrap().into()),
+            value: value.into(),
+        };
+        pipeline.read(key(1), 65530..65540, verify, buffers).unwrap();
+        match drain(&mut pipeline).pop().unwrap() {
+            Completion::Read { result, buffers, .. } => {
+                assert_eq!(buffers.view(result.unwrap()), &[0x31; 10]);
+                assert_eq!(buffers.value.as_ptr(), address);
+            }
+            _ => panic!("read"),
+        }
+    }
+    pipeline.flush().unwrap();
+    assert!(matches!(
+        &drain(&mut pipeline)[0],
+        Completion::Flush { result: Ok(()), .. }
+    ));
+    drop(pipeline);
+    assert_eq!(pool.in_use(), 0);
 }
