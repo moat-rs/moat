@@ -244,8 +244,15 @@ No checksum bytes are interleaved with payload blocks, preserving continuous
 range reads and prepared large buffers. Caller-supplied block checksum APIs
 must retain their explicit validation contract.
 
-Placement starts after the actual metadata end. Packed values use 8-byte
-alignment. A value may move to a page boundary when that reduces its whole-value
+Placement starts after the actual metadata end. Nonempty value starts have a
+fixed 8-byte alignment, enforced by both the builder and decoder without a
+configuration switch. Value lengths need not be multiples of eight. The current
+`crc-fast` small-value path can process aligned `u64` words without a bytewise
+prefix, providing a concrete reason for this baseline. Basic alignment adds
+0–7 padding bytes per nonempty value; its benefit depends on value sizes and
+the checksum implementation.
+
+A value may move to a page boundary when that reduces its whole-value
 read page count; prepared large buffers and large range-readable values use
 page alignment. Whole-value page minimization is not necessarily optimal for
 every partial-read distribution.

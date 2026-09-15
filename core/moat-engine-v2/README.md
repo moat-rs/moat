@@ -65,6 +65,8 @@ Checksums follow the complete directory, consecutively in directory order. Each 
 
 Metadata is variable-length: `64 + 64 * records + 4 * checksum_count`. It is not padded to a dedicated page. Nonempty values start outside metadata at an 8-byte boundary and occupy non-overlapping contiguous ranges within the frame. The decoder supports arbitrary physical value order and arbitrary LSN order. It validates flags, reserved bytes, bounds, sentinels, and the complete checksum-area coverage.
 
+Eight-byte value-start alignment is a fixed format invariant enforced by both construction and validation, with no configuration switch. The current CRC backend's small-value path can benefit from aligned `u64` processing without a bytewise prefix. Basic alignment adds 0–7 padding bytes before each nonempty value; value lengths are unchanged. Page-placement rules may introduce larger gaps. This choice does not imply a performance improvement for every value size or workload.
+
 `FrameHeader::decode` checks the fixed header before callers allocate or read the declared extent. Geometry calculations use 64-bit arithmetic and are bounded before conversion to slice indices. `FrameLimits` must eventually be persisted in the device superblock, independently of runtime batching options. `FramePosition` checks segment incarnation and physical offset; the segment allocator must separately reserve footer space.
 
 ## Construction and ownership

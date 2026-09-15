@@ -40,6 +40,8 @@ pub const FORMAT_VERSION: u32 = 2;
 pub const MAGIC: [u8; 8] = *b"MOATFRM2";
 
 const PAGE: usize = moat_common::PAGE_SIZE as usize;
+// Fixed format invariant. The small-value CRC path can consume aligned u64
+// words without first processing an unaligned bytewise prefix.
 const VALUE_ALIGN: usize = 8;
 
 /// Errors from frame construction or validation.
