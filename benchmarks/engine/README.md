@@ -16,6 +16,11 @@ engines with `--verify false`, adds partial ranges, and separates user/system CP
 cost. It includes 168 engine samples and records the large boundary-range
 variation rather than treating its median as a stable throughput advantage.
 
+The [registered-buffer follow-up](reports/2026-09-15-registered/REPORT.md) uses
+fixed buffers/files and deferred completion work on both sides. It compares
+matching `Disabled` and `Preferred` huge-page policies, records observed memory
+backing, and retains 228 measured phases across two three-repetition matrices.
+
 ## Build and run
 
 Build for GNU/Linux with glibc. `x86-64-v3` requires a compatible destination CPU;

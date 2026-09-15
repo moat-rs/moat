@@ -1,5 +1,9 @@
 # Random reads with optional CRC verification
 
+A later [registered-buffer comparison](../2026-09-15-registered/REPORT.md)
+remeasures both engines after v2 gains fixed buffers/files and deferred ring
+completion work. The figures below describe the earlier implementation.
+
 The pipeline now exposes `read(key, range, verify, buffers)`. With `verify = false`,
 it uses the published index to read only requested pages. With `verify = true`,
 it retains metadata validation and complete checksum-block verification. Writing
