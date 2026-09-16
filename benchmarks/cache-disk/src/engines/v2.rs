@@ -19,7 +19,7 @@ use moat_common::{BufferPool, ChunkId, HugePages, PoolOptions};
 use moat_engine_v2::{
     engine::{self, Device, Engine, Error},
     frame::{FrameBuilder, FrameLimits, PreparedFrame},
-    io::UringQueue,
+    io::{Buffer, UringQueue},
     pipeline::{self, Completion, ReadBuffers},
 };
 use std::{
@@ -61,6 +61,7 @@ pub(super) struct V2 {
     len: u32,
     verify: bool,
     batch_large: bool,
+    prepared: Option<Buffer>,
     lsn: u64,
     out: Vec<Completion>,
 }
@@ -103,6 +104,7 @@ impl V2 {
             len: (c.key_bytes + c.value_bytes) as u32,
             verify: c.moat_verify_reads,
             batch_large: c.v2_batch_large_records,
+            prepared: None,
             lsn: 1,
             out: Vec::with_capacity(256),
         })
@@ -111,13 +113,19 @@ impl V2 {
 impl Backend for V2 {
     fn put(&mut self, batch: &VecDeque<Put>) -> Result<Option<(u64, usize)>> {
         let first = &batch[0];
-        let (result, count) = if first.value.len() >= 65536 && !self.batch_large {
-            let Some(mut buffer) = self.pool.alloc(PreparedFrame::required_len(self.limits, self.len)?) else {
-                return Ok(None);
+        let prepared = first.value.len() >= 65536 && !self.batch_large;
+        let (result, count) = if prepared {
+            let buffer = if let Some(buffer) = self.prepared.take() {
+                buffer
+            } else {
+                let Some(mut buffer) = self.pool.alloc(PreparedFrame::required_len(self.limits, self.len)?) else {
+                    return Ok(None);
+                };
+                first
+                    .value
+                    .copy_into(PreparedFrame::new(self.limits, self.len, &mut buffer)?.value_mut());
+                buffer.into()
             };
-            first
-                .value
-                .copy_into(PreparedFrame::new(self.limits, self.len, &mut buffer)?.value_mut());
             (self.engine.write_prepared(first.id, self.lsn, self.len, buffer), 1)
         } else {
             let mut frame = FrameBuilder::new(self.limits);
@@ -138,7 +146,14 @@ impl Backend for V2 {
                 self.lsn += count as u64;
                 Ok(Some((ticket.number(), count)))
             }
-            Err(r) if matches!(r.error, Error::Pipeline(pipeline::Error::Backpressure)) => Ok(None),
+            Err(r) if matches!(r.error, Error::Pipeline(pipeline::Error::Backpressure)) => {
+                // The front request remains queued until accepted. Retain its
+                // filled payload while rollover waits for earlier completions.
+                if prepared {
+                    self.prepared = Some(r.input);
+                }
+                Ok(None)
+            }
             Err(r) => Err(r.error.into()),
         }
     }

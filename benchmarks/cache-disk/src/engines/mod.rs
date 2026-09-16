@@ -15,11 +15,13 @@
 //! Matched benchmark-only request routing for the two engine implementations.
 //! This is an append/read adapter, not a replacement for moat-cache policies.
 
+mod delivery;
 mod v1;
 mod v2;
 
 use super::Config;
 use anyhow::{Context, Result, ensure};
+use delivery::{Delivery, Ready};
 use moat_cache::{
     Bytes,
     identity::{DEFAULT_IDENTITY_VERSION, Fingerprint, Xxh3},
@@ -57,18 +59,25 @@ struct Put {
 }
 enum Value {
     Bytes(Vec<u8>),
+    Parts { key: Bytes, value: Vec<u8> },
     Generated { key: Bytes, len: usize, number: usize },
 }
 impl Value {
     fn len(&self) -> usize {
         match self {
             Self::Bytes(bytes) => bytes.len(),
+            Self::Parts { key, value } => key.len() + value.len(),
             Self::Generated { key, len, .. } => key.len() + len,
         }
     }
     fn copy_into(&self, output: &mut [u8]) {
         match self {
             Self::Bytes(bytes) => output.copy_from_slice(bytes),
+            Self::Parts { key, value } => {
+                let (prefix, payload) = output.split_at_mut(key.len());
+                prefix.copy_from_slice(key);
+                payload.copy_from_slice(value);
+            }
             Self::Generated { key, len, number } => {
                 assert_eq!(output.len(), key.len() + len);
                 output[..key.len()].copy_from_slice(key);
@@ -80,7 +89,7 @@ impl Value {
     fn bytes(&self) -> &[u8] {
         match self {
             Self::Bytes(bytes) => bytes,
-            Self::Generated { .. } => unreachable!("generated input requires prepared writes"),
+            Self::Generated { .. } | Self::Parts { .. } => unreachable!("split input requires prepared writes"),
         }
     }
 }
@@ -105,6 +114,7 @@ pub(super) struct Engines {
     placement: Placement,
     senders: Vec<mpsc::Sender<Command>>,
     workers: Vec<thread::JoinHandle<Result<()>>>,
+    prepared_values: bool,
 }
 impl Engines {
     pub fn open(c: &Config, targets: Vec<Target>) -> Result<Self> {
@@ -112,20 +122,22 @@ impl Engines {
             placement: Placement::new(targets),
             senders: Vec::new(),
             workers: Vec::new(),
+            prepared_values: c.key_bytes + c.value_bytes >= 65536 && !c.v2_batch_large_records,
         };
         for disk in 0..c.disks.len() {
             let (sender, receiver) = mpsc::channel();
             let (ready, started) = mpsc::sync_channel(1);
             let config = c.clone();
+            let delivery = Delivery::new(c.moat_batched_completions);
             let worker = thread::Builder::new()
                 .name(format!("engine-bench-{disk}"))
                 .spawn(move || {
                     moat_server::worker::pin_to_core(config.io_cpus[disk])?;
                     // Pools and rings are created and driven on their home thread.
                     if config.engine == "v1" {
-                        start(v1::V1::new(&config, disk), receiver, ready)
+                        start(v1::V1::new(&config, disk), receiver, ready, delivery)
                     } else {
-                        start(v2::V2::new(&config, disk), receiver, ready)
+                        start(v2::V2::new(&config, disk), receiver, ready, delivery)
                     }
                 })?;
             store.senders.push(sender);
@@ -141,15 +153,20 @@ impl Engines {
     pub async fn put(&self, key: Bytes, value: Vec<u8>, preassembled: bool) -> Result<()> {
         // Both engines store exactly the same full-key envelope. Field lengths
         // are fixed by this workload; no production cache policy is benchmarked.
-        let bytes = if preassembled {
-            value
+        let value = if preassembled {
+            Value::Bytes(value)
+        } else if self.prepared_values {
+            Value::Parts {
+                key: key.clone(),
+                value,
+            }
         } else {
             let mut bytes = Vec::with_capacity(key.len() + value.len());
             bytes.extend_from_slice(&key);
             bytes.extend_from_slice(&value);
-            bytes
+            Value::Bytes(bytes)
         };
-        self.put_value(&key, Value::Bytes(bytes)).await
+        self.put_value(&key, value).await
     }
     pub async fn put_generated(&self, key: Bytes, len: usize, number: usize) -> Result<()> {
         self.put_value(
@@ -207,11 +224,12 @@ fn start<B: Backend>(
     backend: Result<B>,
     receiver: mpsc::Receiver<Command>,
     ready: mpsc::SyncSender<Result<()>>,
+    delivery: Delivery,
 ) -> Result<()> {
     match backend {
         Ok(backend) => {
             let _ = ready.send(Ok(()));
-            drive(backend, receiver)
+            drive(backend, receiver, delivery)
         }
         Err(error) => {
             let _ = ready.send(Err(error));
@@ -219,7 +237,7 @@ fn start<B: Backend>(
         }
     }
 }
-fn drive(mut backend: impl Backend, receiver: mpsc::Receiver<Command>) -> Result<()> {
+fn drive(mut backend: impl Backend, receiver: mpsc::Receiver<Command>, mut delivery: Delivery) -> Result<()> {
     let mut puts = VecDeque::new();
     let mut reads = VecDeque::new();
     let mut writing: HashMap<u64, Vec<Reply<()>>> = HashMap::new();
@@ -247,12 +265,24 @@ fn drive(mut backend: impl Backend, receiver: mpsc::Receiver<Command>) -> Result
                 Command::Close(reply) => close = Some(reply),
             }
         }
+        let mut encoded_bytes = 0;
         while !puts.is_empty() {
             let Some((ticket, count)) = backend.put(&puts)? else {
                 break;
             };
-            let replies = puts.drain(..count).map(|p| p.reply).collect();
+            let replies = puts
+                .drain(..count)
+                .map(|p| {
+                    encoded_bytes += p.value.len();
+                    p.reply
+                })
+                .collect();
             assert!(writing.insert(ticket, replies).is_none());
+            // Start device work before encoding another large payload. Small
+            // records still amortize submission over the received batch.
+            if encoded_bytes >= 1 << 20 {
+                break;
+            }
         }
         while let Some((id, _)) = reads.front() {
             let Some(ticket) = backend.read(*id)? else { break };
@@ -264,16 +294,15 @@ fn drive(mut backend: impl Backend, receiver: mpsc::Receiver<Command>) -> Result
             match completion {
                 Done::Write(ticket, result) => {
                     result?;
-                    for reply in writing.remove(&ticket).context("unknown write ticket")? {
-                        let _ = reply.send(Ok(()));
-                    }
+                    delivery.push(Ready::Write(writing.remove(&ticket).context("unknown write ticket")?));
                 }
                 Done::Read(ticket, result) => {
                     let reply = reading.remove(&ticket).context("unknown read ticket")?;
-                    let _ = reply.send(result);
+                    delivery.push(Ready::Read(reply, result));
                 }
             }
         }
+        delivery.flush();
         if puts.is_empty()
             && reads.is_empty()
             && writing.is_empty()
@@ -282,7 +311,7 @@ fn drive(mut backend: impl Backend, receiver: mpsc::Receiver<Command>) -> Result
         {
             let result = backend.close();
             if let Some(reply) = close {
-                let _ = reply.send(result);
+                delivery.push(Ready::Close(reply, result));
                 return Ok(());
             }
             return result;

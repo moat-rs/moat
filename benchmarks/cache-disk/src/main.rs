@@ -72,7 +72,7 @@ struct Config {
     pool_bytes_per_disk: usize,
     #[serde(default)]
     moat_verify_reads: bool,
-    #[serde(default)]
+    #[serde(default = "batched_completions")]
     moat_batched_completions: bool,
     #[serde(default)]
     moat_huge_pages: bool,
@@ -725,4 +725,8 @@ fn engine_segment_bytes() -> u64 {
 }
 fn prefill_batch() -> usize {
     256
+}
+
+fn batched_completions() -> bool {
+    true
 }

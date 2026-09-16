@@ -13,6 +13,20 @@ into a new value vector. No production cache policy or eviction is added to
 v2. The historical `engine: "moat"` mode still benchmarks the full `moat-cache`
 API; do not equate it with the new v1 adapter.
 
+Prepared writes keep an owned value and its full key separate until the I/O
+worker copies them directly into the registered buffer. They do not allocate
+an intermediate envelope vector. Workers poll after at most 1 MiB of admitted
+payloads (or one larger record), overlapping device work with later encoding.
+V2 retains rejected prepared buffers across backpressure instead of copying
+their payloads again.
+
+`moat_batched_completions` defaults to true. Each disk forwards a poll's
+completions together to one asynchronous driver on the existing application
+runtime. The driver wakes request tasks through local scheduling, reducing
+contention on Tokio's shared injection queue. No additional OS worker or
+custom synchronization primitive is added. Set the option to false for
+direct-completion control runs. Engine indexes and I/O ownership are unchanged.
+
 Foyer uses its normal disk-only HybridCache path, including serialization,
 XXHash64 verification, and owned value decoding. The pinned file builder
 couples `O_DIRECT` with `O_NOATIME`, which fails for non-owner raw-device users.
@@ -36,7 +50,8 @@ They are bounded-dataset prefill throughput, not steady-state cache churn.
 
 Opt-in diagnostics isolate adapter costs without changing either engine:
 `engine_preassembled_input` generates the full key/value envelope in one
-allocation for v1/v2, removing the intermediate value-to-envelope copy. It
+allocation for v1/v2. The default prepared path already avoids the intermediate
+envelope; the option remains useful for small frames and historical controls. It
 still initializes every value, copies into the registered I/O buffer, and
 computes all write checksums. `v2_batch_large_records` uses `FrameBuilder`
 for queued large values too, admitting up to 64 records within the unchanged
