@@ -12,13 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{collections::VecDeque, fs::File, io, marker::PhantomData, os::fd::AsRawFd, rc::Rc, sync::Arc};
+use std::{
+    collections::VecDeque,
+    fs::File,
+    io,
+    marker::PhantomData,
+    os::{fd::AsRawFd, unix::fs::FileTypeExt},
+    rc::Rc,
+    sync::Arc,
+};
 
-use io_uring::{IoUring, opcode, types};
+use io_uring::{IoUring, types};
 
-use moat_common::BufferPool;
+use moat_common::{BufferPool, PAGE_SIZE, align_down, is_aligned};
 
-use super::{Buffer, Completion, Operation, Queue, Request, check_depth};
+use super::{Buffer, Completion, Queue, Request, check_depth};
+
+mod transfer;
+use transfer::Transfer;
 
 // Linux UAPI: IORING_ENTER_GETEVENTS.
 const ENTER_GETEVENTS: u32 = 1;
@@ -27,8 +38,11 @@ const ENTER_GETEVENTS: u32 = 1;
 ///
 /// Requests own aligned buffers until their CQEs arrive. Buffers can be reused
 /// by the caller after completion. Pool arenas and the file are registered once;
-/// heap buffers still use ordinary READ/WRITE. Create and drive the queue on the
-/// same thread, as required by deferred task execution and the pool allocator.
+/// heap buffers still use ordinary READ/WRITE. Block-device requests are split at
+/// the device byte limit. Subrequests share the original buffer and produce one
+/// logical completion; both accepted requests and in-flight SQEs are bounded by
+/// `depth`. Create and drive the queue on the same thread, as required by
+/// deferred task execution and the pool allocator.
 pub struct UringQueue {
     ring: IoUring,
     // The ring must be destroyed before registered storage and the file.
@@ -37,9 +51,10 @@ pub struct UringQueue {
     deferred: bool,
     _owner: PhantomData<Rc<()>>,
     pending: usize,
-    slots: Vec<Option<Request>>,
+    max_io_len: usize,
+    slots: Vec<Option<Transfer>>,
     free: Vec<usize>,
-    staged: Vec<io_uring::squeue::Entry>,
+    ready: VecDeque<usize>,
     completed: VecDeque<(usize, Completion)>,
 }
 
@@ -68,8 +83,29 @@ impl UringQueue {
         self.deferred
     }
 
+    /// Maximum bytes per read/write SQE. Block devices supply their queue limit;
+    /// regular files use the maximum aligned request length unless capped below.
+    pub fn max_io_len(&self) -> usize {
+        self.max_io_len
+    }
+
+    /// Caps individual SQEs without changing logical request sizes. Call before
+    /// submitting work. The cap must be a nonzero multiple of 4 KiB and cannot
+    /// raise a previously established limit. Filesystem I/O may still offload.
+    pub fn with_max_io_len(mut self, bytes: usize) -> io::Result<Self> {
+        if bytes == 0 || !is_aligned(bytes as u64, PAGE_SIZE) || self.vacant() != self.depth() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid I/O limit or nonempty queue",
+            ));
+        }
+        self.max_io_len = self.max_io_len.min(bytes);
+        Ok(self)
+    }
+
     fn build(file: File, depth: usize, pool: Option<Arc<BufferPool>>) -> io::Result<Self> {
         check_depth(depth)?;
+        let max_io_len = device_io_len(&file)?;
         let entries = depth.next_power_of_two() as u32;
         let (ring, deferred) = match IoUring::builder()
             .setup_cqsize(entries * 2)
@@ -110,9 +146,10 @@ impl UringQueue {
             deferred,
             _owner: PhantomData,
             pending: 0,
+            max_io_len,
             slots: (0..depth).map(|_| None).collect(),
             free: (0..depth).rev().collect(),
-            staged: Vec::with_capacity(depth),
+            ready: VecDeque::with_capacity(depth),
             completed: VecDeque::with_capacity(depth),
         })
     }
@@ -132,17 +169,35 @@ impl UringQueue {
         }
     }
 
+    fn stage(&mut self) {
+        let mut sq = self.ring.submission();
+        while self.pending < self.slots.len() {
+            let Some(slot) = self.ready.pop_front() else { break };
+            let transfer = self.slots[slot].as_mut().expect("queued transfer");
+            let entry = transfer.next(self.max_io_len).user_data(slot as u64);
+            // SAFETY: the transfer retains the original allocation until every
+            // subrequest completes. Subranges are disjoint and bounds-checked at
+            // admission. Staged and submitted SQEs together cannot exceed depth.
+            unsafe {
+                sq.push(&entry).expect("ring capacity covers in-flight SQEs");
+            }
+            self.pending += 1;
+            if transfer.has_remaining() {
+                // Round-robin scheduling keeps large requests from monopolizing SQEs.
+                self.ready.push_back(slot);
+            }
+        }
+    }
+
     fn reap(&mut self) {
         for cqe in &mut self.ring.completion() {
             let slot = cqe.user_data() as usize;
             self.pending -= 1;
-            let request = self.slots[slot].take().expect("CQE for an owned request");
-            let result = if cqe.result() < 0 {
-                Err(io::Error::from_raw_os_error(-cqe.result()))
-            } else {
-                Ok(cqe.result() as usize)
-            };
-            self.completed.push_back((slot, Completion { request, result }));
+            let transfer = self.slots[slot].as_mut().expect("CQE for an owned transfer");
+            if transfer.complete(cqe.result()) {
+                let transfer = self.slots[slot].take().expect("completed transfer");
+                self.completed.push_back((slot, transfer.finish()));
+            }
         }
     }
 }
@@ -155,7 +210,7 @@ impl Queue for UringQueue {
         self.free.len()
     }
 
-    fn try_submit(&mut self, mut request: Request) -> Result<(), Request> {
+    fn try_submit(&mut self, request: Request) -> Result<(), Request> {
         let Some(slot) = self.free.pop() else {
             return Err(request);
         };
@@ -172,60 +227,14 @@ impl Queue for UringQueue {
                 return Ok(());
             }
         };
-        let fd = types::Fixed(0);
-        let entry = match (request.operation, fixed) {
-            (Operation::Read, Some(index)) => opcode::ReadFixed::new(
-                fd,
-                request.buffer.as_mut().expect("validated buffer").as_mut_ptr(),
-                request.len as u32,
-                index,
-            )
-            .offset(request.offset)
-            .build(),
-            (Operation::Write, Some(index)) => opcode::WriteFixed::new(
-                fd,
-                request.buffer.as_ref().expect("validated buffer").as_ptr(),
-                request.len as u32,
-                index,
-            )
-            .offset(request.offset)
-            .build(),
-            (Operation::Read, None) => opcode::Read::new(
-                fd,
-                request.buffer.as_mut().expect("validated buffer").as_mut_ptr(),
-                request.len as u32,
-            )
-            .offset(request.offset)
-            .build(),
-            (Operation::Write, None) => opcode::Write::new(
-                fd,
-                request.buffer.as_ref().expect("validated buffer").as_ptr(),
-                request.len as u32,
-            )
-            .offset(request.offset)
-            .build(),
-            (Operation::Sync, _) => opcode::Fsync::new(fd).flags(types::FsyncFlags::DATASYNC).build(),
-        }
-        .user_data(slot as u64);
-        self.pending += 1;
-        self.slots[slot] = Some(request);
-        self.staged.push(entry);
+        self.slots[slot] = Some(Transfer::new(request, fixed));
+        self.ready.push_back(slot);
         Ok(())
     }
 
     fn poll(&mut self, wait: bool) -> io::Result<()> {
-        {
-            let mut sq = self.ring.submission();
-            for entry in self.staged.drain(..) {
-                // SAFETY: the request owns the referenced allocation in `slots`
-                // until its CQE. Bounds and alignment were validated at admission.
-                // At most `depth` slots exist, including entries still in the SQ.
-                unsafe {
-                    sq.push(&entry).expect("ring capacity covers accepted slots");
-                }
-            }
-        }
         self.reap();
+        self.stage();
         if self.pending == 0 {
             return Ok(());
         }
@@ -264,7 +273,7 @@ impl Drop for UringQueue {
         // A ring fd closing is not a substitute for retaining userspace buffers.
         // Drain accepted work before allocations can be freed, even if the owner
         // drops the pipeline without polling its final completions.
-        while self.pending != 0 {
+        while self.pending != 0 || !self.ready.is_empty() {
             if self.poll(true).is_err() {
                 let cancelled = self
                     .ring
@@ -275,8 +284,8 @@ impl Drop for UringQueue {
                     // On a broken ring or a kernel without synchronous cancellation,
                     // retain only possibly-live allocations rather than risk UAF.
                     // This exceptional leak is bounded by queue depth and buffers.
-                    for request in self.slots.iter_mut().filter_map(Option::take) {
-                        if let Some(buffer) = request.buffer {
+                    for transfer in self.slots.iter_mut().filter_map(Option::take) {
+                        if let Some(buffer) = transfer.finish().request.buffer {
                             std::mem::forget(buffer);
                         }
                     }
@@ -285,4 +294,24 @@ impl Drop for UringQueue {
             }
         }
     }
+}
+
+fn device_io_len(file: &File) -> io::Result<usize> {
+    if !file.metadata()?.file_type().is_block_device() {
+        return Ok(align_down(i32::MAX as u64, PAGE_SIZE) as usize);
+    }
+    let mut sectors: libc::c_ushort = 0;
+    // SAFETY: BLKSECTGET writes one unsigned short to the live output variable.
+    // It reports the queue's byte limit in 512-byte sectors, including partitions.
+    if unsafe { libc::ioctl(file.as_raw_fd(), libc::_IO(0x12, 103), &mut sectors) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let bytes = align_down(u64::from(sectors) * 512, PAGE_SIZE) as usize;
+    if bytes == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "device I/O limit is below 4 KiB",
+        ));
+    }
+    Ok(bytes)
 }

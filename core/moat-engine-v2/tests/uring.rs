@@ -174,3 +174,150 @@ fn registration_requires_the_pool_owner_thread() {
     .join()
     .unwrap();
 }
+
+const CHUNK: usize = 128 << 10;
+const LARGE: usize = (4 << 20) + PAGE;
+
+fn large_pool() -> Arc<BufferPool> {
+    BufferPool::new(PoolOptions {
+        bytes: 16 << 20,
+        max_class: 8 << 20,
+        huge_pages: HugePages::Disabled,
+    })
+    .unwrap()
+}
+
+fn large_request(operation: Operation, buffer: impl Into<Buffer>) -> Request {
+    Request {
+        len: LARGE,
+        ..request(operation, buffer)
+    }
+}
+
+#[test]
+fn split_io_round_trips_with_fewer_ring_slots_than_parts() {
+    for depth in [1, 2, 7] {
+        let pool = large_pool();
+        let file = tempfile::tempfile().unwrap();
+        let mut queue = UringQueue::with_pool(file, depth, pool.clone())
+            .unwrap()
+            .with_max_io_len(CHUNK)
+            .unwrap();
+        let mut buffer = pool.alloc(LARGE).unwrap();
+        let address = buffer.as_ptr();
+        for (index, page) in buffer[..LARGE].chunks_mut(PAGE).enumerate() {
+            page.fill((index % 251) as u8);
+        }
+        queue.try_submit(large_request(Operation::Write, buffer)).unwrap();
+        let done = complete(&mut queue);
+        assert_eq!(done.result.unwrap(), LARGE);
+        assert_eq!(done.request.offset, PAGE as u64);
+        let mut buffer = done.request.buffer.unwrap();
+        buffer.fill(0xff);
+        queue.try_submit(large_request(Operation::Read, buffer)).unwrap();
+        let done = complete(&mut queue);
+        assert_eq!(done.result.unwrap(), LARGE);
+        assert_eq!(done.request.len, LARGE);
+        assert_eq!(done.request.token, 37);
+        let buffer = done.request.buffer.unwrap();
+        assert_eq!(buffer.as_ptr(), address);
+        for (index, page) in buffer[..LARGE].chunks(PAGE).enumerate() {
+            assert!(page.iter().all(|b| *b == (index % 251) as u8));
+        }
+        assert!(queue.pop().is_none(), "one completion per logical request");
+        assert_eq!(queue.vacant(), depth);
+    }
+}
+
+#[test]
+fn split_queue_preserves_logical_backpressure_and_interleaves_requests() {
+    let file = tempfile::tempfile().unwrap();
+    file.set_len((2 * LARGE + PAGE) as u64).unwrap();
+    let mut queue = UringQueue::new(file, 2).unwrap().with_max_io_len(CHUNK).unwrap();
+    queue
+        .try_submit(large_request(Operation::Read, AlignedBuf::zeroed(LARGE)))
+        .unwrap();
+    let small = Request {
+        token: 91,
+        offset: (LARGE + PAGE) as u64,
+        ..request(Operation::Read, AlignedBuf::zeroed(PAGE))
+    };
+    queue.try_submit(small).unwrap();
+    assert_eq!(queue.vacant(), 0);
+    let extra = request(Operation::Read, AlignedBuf::zeroed(PAGE));
+    let address = extra.buffer.as_ref().unwrap().as_ptr();
+    let extra = queue.try_submit(extra).unwrap_err();
+    assert_eq!(extra.buffer.as_ref().unwrap().as_ptr(), address);
+    let a = complete(&mut queue);
+    let b = complete(&mut queue);
+    let mut done = [a, b];
+    done.sort_by_key(|c| c.request.token);
+    assert_eq!(done[0].request.token, 37);
+    assert_eq!(*done[0].result.as_ref().unwrap(), LARGE);
+    assert_eq!(done[1].request.token, 91);
+    assert_eq!(*done[1].result.as_ref().unwrap(), PAGE);
+    assert!(queue.pop().is_none());
+    assert_eq!(queue.vacant(), 2);
+}
+
+#[test]
+fn split_short_reads_and_write_errors_return_the_original_buffer() {
+    let file = tempfile::NamedTempFile::new().unwrap();
+    file.as_file().set_len((PAGE + CHUNK + PAGE) as u64).unwrap();
+    let pool = large_pool();
+    let mut queue = UringQueue::with_pool(std::fs::File::open(file.path()).unwrap(), 2, pool.clone())
+        .unwrap()
+        .with_max_io_len(CHUNK)
+        .unwrap();
+    let buffer = pool.alloc(LARGE).unwrap();
+    let address = buffer.as_ptr();
+    queue.try_submit(large_request(Operation::Read, buffer)).unwrap();
+    let done = complete(&mut queue);
+    assert_eq!(done.result.unwrap(), CHUNK + PAGE);
+    let buffer = done.request.buffer.unwrap();
+    assert_eq!(buffer.as_ptr(), address);
+    queue.try_submit(large_request(Operation::Write, buffer)).unwrap();
+    let done = complete(&mut queue);
+    assert!(done.result.is_err());
+    assert_eq!(done.request.buffer.as_ref().unwrap().as_ptr(), address);
+    drop(done);
+    assert_eq!(pool.in_use(), 0);
+    assert!(queue.pop().is_none());
+}
+
+#[test]
+fn drop_drains_split_writes_that_have_not_been_submitted_yet() {
+    let file = tempfile::tempfile().unwrap();
+    let pool = large_pool();
+    let mut queue = UringQueue::with_pool(file.try_clone().unwrap(), 1, pool.clone())
+        .unwrap()
+        .with_max_io_len(CHUNK)
+        .unwrap();
+    let mut buffer = pool.alloc(LARGE).unwrap();
+    buffer[..LARGE].fill(0x63);
+    queue.try_submit(large_request(Operation::Write, buffer)).unwrap();
+    drop(queue);
+    assert_eq!(pool.in_use(), 0);
+    let mut bytes = vec![0; LARGE];
+    file.read_exact_at(&mut bytes, PAGE as u64).unwrap();
+    assert!(bytes.iter().all(|b| *b == 0x63));
+}
+
+#[test]
+fn io_limit_is_aligned_and_cannot_be_raised() {
+    for invalid in [0, 1, PAGE + 1] {
+        assert!(
+            UringQueue::new(tempfile::tempfile().unwrap(), 1)
+                .unwrap()
+                .with_max_io_len(invalid)
+                .is_err()
+        );
+    }
+    let queue = UringQueue::new(tempfile::tempfile().unwrap(), 1)
+        .unwrap()
+        .with_max_io_len(CHUNK)
+        .unwrap()
+        .with_max_io_len(2 * CHUNK)
+        .unwrap();
+    assert_eq!(queue.max_io_len(), CHUNK);
+}

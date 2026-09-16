@@ -78,10 +78,29 @@ read size, and idle helpers can remain after the operation that created them.
 Consequently, process-wide worker observations from small-record cases cannot
 be attributed to their timed reads without phase-specific evidence.
 
-The candidate optimization belongs in the I/O queue: split requests according
-to device limits, retain the parent buffer until every accepted subrequest
-finishes, and expose one logical completion. This avoids changing the frame
-format, but adds SQE/CQE work and needs correct backpressure and error handling.
-A controlled throughput/latency and CPU comparison is needed before adopting
-it. Simply enabling `RWF_NOWAIT` would instead fail oversized requests, and
-limiting worker counts would not remove the cause of the offload.
+V2 queue implementation
+-----------------------
+
+V2 now obtains the block-device byte limit through `BLKSECTGET` and splits
+larger operations inside `UringQueue`. SQEs reference disjoint subranges of the
+original allocation, with no payload copies or per-subrequest allocations.
+Round-robin submission bounds both logical requests and physical SQEs by the
+configured depth. Completion aggregation retains the buffer until every part
+finishes, preserves short transfers and I/O errors, and emits one logical
+completion. The frame format is unchanged. Tests cover depth-one progress,
+mixed request sizes, short/error completions, and draining accepted work on drop.
+
+A further single-device read-only check exercises the actual v2 queue with
+automatic limit detection, a depth of 256, and 16 concurrent logical reads.
+It reads 64 extents of 4,100 KiB per process and verifies every returned byte
+against an independent positional read. Both huge-page settings produce
+2,112 device reads, 268,697,600 device bytes, and no observed io-wq workers.
+The [native queue observations](io-wq-engine-queue.csv) are functional checks,
+not throughput measurements. They use a GNU/glibc release build.
+
+The earlier throughput tables still describe their recorded executable and
+do not include this implementation. More SQEs/CQEs change CPU work and the
+effective device concurrency; a new controlled comparison is needed to quantify
+the performance effect. Simply enabling `RWF_NOWAIT` would instead fail
+oversized requests, and limiting worker counts would not remove the cause of
+the offload. Filesystem work, segment-count limits, and sync may still offload.
