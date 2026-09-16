@@ -7,9 +7,9 @@ Foyer dependencies are confined to the comparison workspace.
 
 The common workload driver uses a synchronous `Backend` interface: submit
 writes or reads, poll completions, drain a write batch, and close. It runs one
-persistent owner thread per device. Request generation, engine calls, read
-validation, and buffer recycling all happen on that thread. Phase commands
-cross threads only when starting or finishing a benchmark phase.
+persistent caller thread per device. For v1/v2, request generation, engine calls,
+read validation, and buffer recycling all happen on that thread. Their phase
+commands cross threads only when starting or finishing a benchmark phase.
 
 `engine: "v1"` and `engine: "v2"` **do not create or enter a Tokio runtime**.
 They use registered io_uring buffers and return pooled read buffers without
@@ -18,9 +18,12 @@ or per-record channels surround either engine. The v2 crate remains independent
 of Tokio; this comparison executable links Tokio for foyer only.
 
 The foyer adapter is the sole runtime boundary. It creates a shared Tokio
-runtime for foyer's internal work and polls returned read futures through
-`FuturesUnordered`; it does not spawn another task for each submitted read.
-Owner loops run on `runtime_cpus`, sharing those CPUs with foyer's runtime,
+runtime and one async driver per disk. Requests and completions cross that
+boundary in batches; read futures are polled with `FuturesUnordered`, without
+an additional task per request. Calls to foyer originate on runtime workers,
+so its internal tasks can use local scheduling. Synchronous callers wait for
+completion batches instead of occupying CPUs in a polling loop. They run on
+`runtime_cpus`, sharing those CPUs with foyer's runtime,
 and its io_uring workers use `io_cpus`. Engine owner loops run on `io_cpus`.
 Report actual process CPU use as well as throughput: foyer uses more software
 threads and available application CPUs than the two native engine paths.

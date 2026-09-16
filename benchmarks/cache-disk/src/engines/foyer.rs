@@ -16,16 +16,64 @@ use super::{Backend, Data, Done, Put, Record, Value};
 use crate::{Config, Hasher, SEGMENT};
 use anyhow::{Context, Result, ensure};
 use foyer::{DeviceBuilder, HybridCache, HybridCacheBuilder, HybridCachePolicy};
-use futures_util::{StreamExt, future::BoxFuture, stream::FuturesUnordered};
+use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use std::{
     collections::VecDeque,
     io,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
+        mpsc,
     },
-    task::{Context as TaskContext, Poll, Waker},
 };
+
+type Cache = HybridCache<Vec<u8>, Vec<u8>, Hasher>;
+
+enum Request {
+    Write { ticket: u64, key: Vec<u8>, value: Vec<u8> },
+    Read { ticket: u64, key: moat_cache::Bytes },
+}
+
+async fn drive(
+    cache: Cache,
+    mut requests: tokio::sync::mpsc::UnboundedReceiver<Vec<Request>>,
+    replies: mpsc::Sender<Vec<Done>>,
+) {
+    let mut reads = FuturesUnordered::<BoxFuture<'static, Done>>::new();
+    let mut closed = false;
+    while !closed || !reads.is_empty() {
+        let mut ready = Vec::new();
+        tokio::select! {
+            batch = requests.recv(), if !closed => {
+                if let Some(batch) = batch {
+                    for request in batch {
+                        match request {
+                            Request::Write { ticket, key, value } => {
+                                cache.insert(key, value);
+                                ready.push(Done::Write(ticket, Ok(())));
+                            }
+                            Request::Read { ticket, key } => {
+                                let future = cache.get(key.as_ref());
+                                reads.push(Box::pin(async move {
+                                    Done::Read(ticket, async {
+                                        Ok(Data::Foyer(future.await?.context("unexpected foyer disk miss")?))
+                                    }.await)
+                                }));
+                            }
+                        }
+                    }
+                } else { closed = true; }
+            }
+            Some(done) = reads.next(), if !reads.is_empty() => ready.push(done),
+        }
+        while let Some(Some(done)) = reads.next().now_or_never() {
+            ready.push(done);
+        }
+        if !ready.is_empty() && replies.send(ready).is_err() {
+            break;
+        }
+    }
+}
 
 pub(crate) struct Runtime(tokio::runtime::Runtime);
 impl Runtime {
@@ -46,10 +94,13 @@ impl Runtime {
 }
 
 pub(crate) struct Foyer {
-    cache: HybridCache<Vec<u8>, Vec<u8>, Hasher>,
+    cache: Cache,
     runtime: Arc<Runtime>,
-    reads: FuturesUnordered<BoxFuture<'static, Done>>,
-    writes: Vec<Done>,
+    requests: tokio::sync::mpsc::UnboundedSender<Vec<Request>>,
+    replies: mpsc::Receiver<Vec<Done>>,
+    batch: Vec<Request>,
+    pending: usize,
+    driver: tokio::task::JoinHandle<()>,
     next: u64,
 }
 impl Foyer {
@@ -101,11 +152,18 @@ impl Foyer {
                     .await?,
             )
         })?;
+        let (requests, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let (sender, replies) = mpsc::channel();
+        // One driver per disk initiates foyer's tasks on runtime workers.
+        let driver = runtime.0.spawn(drive(cache.clone(), receiver, sender));
         Ok(Self {
             cache,
             runtime,
-            reads: FuturesUnordered::new(),
-            writes: Vec::new(),
+            requests,
+            replies,
+            batch: Vec::new(),
+            pending: 0,
+            driver,
             next: 1,
         })
     }
@@ -115,36 +173,42 @@ impl Backend for Foyer {
         let Value::Parts { key, value } = &mut batch[0].value else {
             unreachable!("foyer accepts an owned key and value")
         };
-        let _guard = self.runtime.0.enter();
-        self.cache.insert(key.to_vec(), std::mem::take(value));
         let ticket = self.next;
         self.next += 1;
-        self.writes.push(Done::Write(ticket, Ok(())));
+        self.pending += 1;
+        self.batch.push(Request::Write {
+            ticket,
+            key: key.to_vec(),
+            value: std::mem::take(value),
+        });
         Ok(Some((ticket, 1)))
     }
     fn read(&mut self, record: &Record) -> Result<Option<u64>> {
-        let _guard = self.runtime.0.enter();
-        let future = self.cache.get(record.key.as_ref());
         let ticket = self.next;
         self.next += 1;
-        // Poll foyer's returned future directly; do not spawn another request
-        // task or add a oneshot bridge around its internal Tokio scheduling.
-        self.reads.push(Box::pin(async move {
-            Done::Read(
-                ticket,
-                async { Ok(Data::Foyer(future.await?.context("unexpected foyer disk miss")?)) }.await,
-            )
-        }));
+        self.pending += 1;
+        self.batch.push(Request::Read {
+            ticket,
+            key: record.key.clone(),
+        });
         Ok(Some(ticket))
     }
     fn poll(&mut self, out: &mut Vec<Done>) -> Result<()> {
-        let _guard = self.runtime.0.enter();
-        out.append(&mut self.writes);
-        // The owner actively polls. FuturesUnordered retains readiness and
-        // uses its own wake queue; no thread notification is needed here.
-        let mut context = TaskContext::from_waker(Waker::noop());
-        while let Poll::Ready(Some(done)) = self.reads.poll_next_unpin(&mut context) {
-            out.push(done);
+        if !self.batch.is_empty() {
+            self.requests
+                .send(std::mem::take(&mut self.batch))
+                .map_err(|_| anyhow::anyhow!("foyer driver stopped"))?;
+        }
+        if self.pending > 0 {
+            // Yield the application CPU while Tokio and the I/O worker run.
+            // Drain all ready replies per wake, not one wake per record.
+            let mut batch = self.replies.recv().context("foyer driver stopped")?;
+            self.pending -= batch.len();
+            out.append(&mut batch);
+            while let Ok(mut batch) = self.replies.try_recv() {
+                self.pending -= batch.len();
+                out.append(&mut batch);
+            }
         }
         Ok(())
     }
@@ -155,10 +219,12 @@ impl Backend for Foyer {
     }
     fn close(self) -> Result<()> {
         ensure!(
-            self.reads.is_empty() && self.writes.is_empty(),
+            self.pending == 0 && self.batch.is_empty(),
             "undelivered foyer operations"
         );
         ensure!(self.cache.memory().usage() == 0, "foyer memory residency changed");
+        drop(self.requests);
+        self.runtime.0.block_on(self.driver)?;
         Ok(self.runtime.0.block_on(self.cache.close())?)
     }
 }
