@@ -115,15 +115,15 @@ impl Backend for V2 {
             let Some(mut buffer) = self.pool.alloc(PreparedFrame::required_len(self.limits, self.len)?) else {
                 return Ok(None);
             };
-            PreparedFrame::new(self.limits, self.len, &mut buffer)?
-                .value_mut()
-                .copy_from_slice(&first.value);
+            first
+                .value
+                .copy_into(PreparedFrame::new(self.limits, self.len, &mut buffer)?.value_mut());
             (self.engine.write_prepared(first.id, self.lsn, self.len, buffer), 1)
         } else {
             let mut frame = FrameBuilder::new(self.limits);
             let mut count = 0;
             for p in batch.iter().take(64) {
-                if frame.push(p.id, self.lsn + count as u64, &p.value).is_err() {
+                if frame.push(p.id, self.lsn + count as u64, p.value.bytes()).is_err() {
                     break;
                 }
                 count += 1;

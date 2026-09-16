@@ -33,6 +33,7 @@ parser.add_argument("--repeats", type=int, default=3)
 parser.add_argument("--records", type=int, default=256)
 parser.add_argument("--engine-preassembled-input", action="store_true")
 parser.add_argument("--v2-batch-large-records", action="store_true")
+parser.add_argument("--engine-in-place-input", action="store_true")
 args = parser.parse_args()
 cpus = sorted(os.sched_getaffinity(0))
 if len(cpus) < 3:
@@ -65,6 +66,7 @@ for engine in args.engines:
         "moat_batched_completions": True,
         "engine_preassembled_input": args.engine_preassembled_input and engine in ("v1", "v2"),
         "v2_batch_large_records": args.v2_batch_large_records and engine == "v2",
+        "engine_in_place_input": args.engine_in_place_input and engine in ("v1", "v2"),
     }
     name = f"{engine}-d1-k{args.key_bytes}-v{args.value_bytes}"
     path = root / (name + ".json")

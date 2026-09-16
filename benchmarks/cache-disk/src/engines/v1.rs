@@ -80,7 +80,7 @@ impl Backend for V1 {
         let result = if record.value.len() >= 65536 {
             match self.writer.prepare_large(&mut *self.queue, record.value.len() as u32) {
                 Ok(mut value) => {
-                    value.value_mut().copy_from_slice(&record.value);
+                    record.value.copy_into(value.value_mut());
                     self.writer
                         .put_large(&mut *self.queue, record.id, value, None, Default::default())
                 }
@@ -88,7 +88,7 @@ impl Backend for V1 {
             }
         } else {
             self.writer
-                .put(&mut *self.queue, record.id, &record.value, Default::default())
+                .put(&mut *self.queue, record.id, record.value.bytes(), Default::default())
         };
         match result {
             Ok(PutOutcome::Written { ticket, .. }) => Ok(Some((ticket, 1))),

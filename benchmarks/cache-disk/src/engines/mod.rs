@@ -52,8 +52,37 @@ impl Data {
 }
 struct Put {
     id: ChunkId,
-    value: Vec<u8>,
+    value: Value,
     reply: Reply<()>,
+}
+enum Value {
+    Bytes(Vec<u8>),
+    Generated { key: Bytes, len: usize, number: usize },
+}
+impl Value {
+    fn len(&self) -> usize {
+        match self {
+            Self::Bytes(bytes) => bytes.len(),
+            Self::Generated { key, len, .. } => key.len() + len,
+        }
+    }
+    fn copy_into(&self, output: &mut [u8]) {
+        match self {
+            Self::Bytes(bytes) => output.copy_from_slice(bytes),
+            Self::Generated { key, len, number } => {
+                assert_eq!(output.len(), key.len() + len);
+                output[..key.len()].copy_from_slice(key);
+                output[key.len()..].fill(0x7c);
+                crate::stamp_value(&mut output[key.len()..], *number);
+            }
+        }
+    }
+    fn bytes(&self) -> &[u8] {
+        match self {
+            Self::Bytes(bytes) => bytes,
+            Self::Generated { .. } => unreachable!("generated input requires prepared writes"),
+        }
+    }
 }
 enum Command {
     Put(Put),
@@ -110,7 +139,6 @@ impl Engines {
         (id, &self.senders[self.placement.disk_of(&id).unwrap()])
     }
     pub async fn put(&self, key: Bytes, value: Vec<u8>, preassembled: bool) -> Result<()> {
-        let (id, sender) = self.route(&key);
         // Both engines store exactly the same full-key envelope. Field lengths
         // are fixed by this workload; no production cache policy is benchmarked.
         let bytes = if preassembled {
@@ -121,13 +149,24 @@ impl Engines {
             bytes.extend_from_slice(&value);
             bytes
         };
+        self.put_value(&key, Value::Bytes(bytes)).await
+    }
+    pub async fn put_generated(&self, key: Bytes, len: usize, number: usize) -> Result<()> {
+        self.put_value(
+            &key,
+            Value::Generated {
+                key: key.clone(),
+                len,
+                number,
+            },
+        )
+        .await
+    }
+    async fn put_value(&self, key: &Bytes, value: Value) -> Result<()> {
+        let (id, sender) = self.route(key);
         let (reply, wait) = oneshot::channel();
         sender
-            .send(Command::Put(Put {
-                id,
-                value: bytes,
-                reply,
-            }))
+            .send(Command::Put(Put { id, value, reply }))
             .map_err(|_| anyhow::anyhow!("engine worker closed"))?;
         wait.await.context("engine write completion")?
     }

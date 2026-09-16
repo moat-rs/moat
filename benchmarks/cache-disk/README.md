@@ -34,7 +34,7 @@ key is read and checked before timed random reads. Write measurements include
 value generation, routing, allocation, copies, checksums, and batch barriers.
 They are bounded-dataset prefill throughput, not steady-state cache churn.
 
-Two opt-in diagnostics isolate adapter costs without changing either engine:
+Opt-in diagnostics isolate adapter costs without changing either engine:
 `engine_preassembled_input` generates the full key/value envelope in one
 allocation for v1/v2, removing the intermediate value-to-envelope copy. It
 still initializes every value, copies into the registered I/O buffer, and
@@ -44,6 +44,14 @@ for queued large values too, admitting up to 64 records within the unchanged
 of at least 64 KiB. Neither option changes the stored logical contents, format,
 read validation, or sync boundary. Report these modes separately from defaults;
 the file runner accepts the corresponding hyphenated command-line flags.
+
+`engine_in_place_input` instead sends a generation request to the v1/v2
+worker, which fills the final prepared I/O buffer directly. This removes both
+heap payload allocations and copies and moves value generation from application
+workers to I/O workers. Every byte is still initialized, all write checksums
+are computed, and every key is read back. It measures an in-place producer's
+potential, not the cost of accepting an already owned vector. It requires
+values of at least 64 KiB and cannot be combined with the other diagnostics.
 
 The file smoke runner uses 16-MiB engine segments to exercise rollover. For
 4-MiB values, pass `--records 32` to stay within its 1-GiB file window.

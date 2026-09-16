@@ -86,6 +86,9 @@ struct Config {
     // Diagnostic: pack queued large values into v2 frames as well.
     #[serde(default)]
     v2_batch_large_records: bool,
+    // Diagnostic: generate large values directly in the prepared I/O buffer.
+    #[serde(default)]
+    engine_in_place_input: bool,
 }
 
 #[derive(Debug)]
@@ -122,6 +125,14 @@ fn validate(config: &Config) -> Result<()> {
     ensure!(
         !config.v2_batch_large_records || config.engine == "v2",
         "large-frame batching requires v2"
+    );
+    ensure!(
+        !config.engine_in_place_input
+            || (matches!(config.engine.as_str(), "v1" | "v2")
+                && config.value_bytes >= 65536
+                && !config.engine_preassembled_input
+                && !config.v2_batch_large_records),
+        "in-place input requires large prepared engine writes without other input diagnostics"
     );
     ensure!(
         config.engine_segment_bytes >= 16 << 20
@@ -593,19 +604,25 @@ async fn run(c: Config) -> Result<()> {
             let keys = keys.clone();
             let len = c.value_bytes;
             let preassembled = c.engine_preassembled_input;
+            let in_place = c.engine_in_place_input;
             let stop = (start + width).min(end);
             jobs.push(tokio::spawn(async move {
                 let writes = (start..stop).map(|i| {
                     let cache = &cache;
                     let key = keys[i].clone();
                     async move {
+                        if in_place {
+                            let Cache::Engines(store) = cache.as_ref() else {
+                                unreachable!("validated in-place input engine")
+                            };
+                            return store.put_generated(key, len, i).await;
+                        }
                         let prefix = if preassembled { key.len() } else { 0 };
                         let mut value = vec![0x7c; prefix + len];
                         if preassembled {
                             value[..prefix].copy_from_slice(&key);
                         }
-                        value[prefix..prefix + 8].copy_from_slice(&(i as u64).to_le_bytes());
-                        value[prefix + len - 8..].copy_from_slice(&(!(i as u64)).to_le_bytes());
+                        stamp_value(&mut value[prefix..], i);
                         cache.put(key, value, preassembled).await
                     }
                 });
@@ -695,6 +712,12 @@ fn fresh_identity() -> Result<[u8; 16]> {
     let mut bytes = [0; 16];
     fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
     Ok(bytes)
+}
+
+fn stamp_value(value: &mut [u8], number: usize) {
+    value[..8].copy_from_slice(&(number as u64).to_le_bytes());
+    let len = value.len();
+    value[len - 8..].copy_from_slice(&(!(number as u64)).to_le_bytes());
 }
 
 fn engine_segment_bytes() -> u64 {
