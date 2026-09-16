@@ -14,7 +14,11 @@ v2. The historical `engine: "moat"` mode still benchmarks the full `moat-cache`
 API; do not equate it with the new v1 adapter.
 
 Foyer uses its normal disk-only HybridCache path, including serialization,
-XXHash64 verification, and owned value decoding. Its memory admission filter
+XXHash64 verification, and owned value decoding. The pinned file builder
+couples `O_DIRECT` with `O_NOATIME`, which fails for non-owner raw-device users.
+The harness opens without those flags, obtains the shared file descriptor
+through a zero-length partition, and enables `O_DIRECT` with `fcntl` before
+cache initialization. This reserves no bytes and changes no data-path code. Its memory admission filter
 rejects all entries. Engine reads use `moat_verify_reads` (default false).
 These are application-visible path measurements with different integrity and
 ownership semantics, not isolated device or checksum-normalized comparisons.

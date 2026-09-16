@@ -298,8 +298,18 @@ impl Cache {
             for (i, disk) in c.disks.iter().enumerate() {
                 let device = foyer::FileDeviceBuilder::new(&disk.path)
                     .with_capacity(c.bytes_per_disk as usize)
-                    .with_direct(true)
                     .build()?;
+                // The pinned builder couples O_DIRECT to O_NOATIME, which
+                // requires ownership of the device node. Enable direct I/O
+                // through its shared fd instead, before any cache I/O starts.
+                // A zero-length partition exposes the fd without consuming space.
+                let probe = device.create_partition(0)?;
+                let (fd, _) = probe.translate(0);
+                // SAFETY: probe keeps the device fd alive throughout both calls.
+                let flags = unsafe { libc::fcntl(fd.0, libc::F_GETFL) };
+                if flags < 0 || unsafe { libc::fcntl(fd.0, libc::F_SETFL, flags | libc::O_DIRECT) } < 0 {
+                    return Err(io::Error::last_os_error().into());
+                }
                 let cache = HybridCacheBuilder::new()
                     .with_name(format!("foyer-disk-{i}"))
                     .with_policy(HybridCachePolicy::WriteOnInsertion)
