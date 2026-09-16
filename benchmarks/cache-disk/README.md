@@ -78,7 +78,11 @@ The file smoke runner uses 16-MiB engine segments to exercise rollover. Use
 `--disks 2 --verify-reads` to check multiple devices with engine CRC verification;
 for 4-MiB values, pass `--records 32` to fit its 1-GiB files.
 
-The [native twenty-device comparison](reports/2026-09-16-native/REPORT.md)
+The [twenty-device comparison after request splitting](reports/2026-09-16-split/REPORT.md)
+reruns all three engines with v2's device-limit splitting enabled. It retains
+45 prefills, 75 measured read phases, and phase-level io-wq observations.
+
+The [previous native twenty-device comparison](reports/2026-09-16-native/REPORT.md)
 uses the current polling adapters, with 45 prefills, 75 measured read phases,
 and separate CPU profiles. Its CSVs retain run identifiers, exact operation
 counts and durations, CPU costs, and physical I/O totals.
