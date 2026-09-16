@@ -645,6 +645,9 @@ fn main() -> Result<()> {
     let config: Config = serde_json::from_slice(&fs::read(path)?)?;
     validate(&config)?;
     let cpus = config.runtime_cpus.clone();
+    // The coordinator generates keys. Fix its first-touch NUMA placement too;
+    // it shares an application core and mostly waits during timed reads.
+    moat_server::worker::pin_to_core(cpus[0])?;
     let next = AtomicUsize::new(0);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(cpus.len())
