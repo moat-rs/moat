@@ -5,71 +5,75 @@ This standalone workspace compares engine v1, engine v2, and foyer pinned to
 [`dd46245c45071d1036331e4e2c48e15386017b96`](https://github.com/foyer-rs/foyer/tree/dd46245c45071d1036331e4e2c48e15386017b96).
 Foyer dependencies are confined to the comparison workspace.
 
-`engine: "v1"` and `engine: "v2"` use a common benchmark request adapter:
-full-key hashing and disk placement, one owning I/O worker per disk, and the
-same channel/completion path. Both store the full key followed by the value,
-use registered io_uring buffers, and return pooled read buffers without copying
-into a new value vector. No production cache policy or eviction is added to
-v2. The historical `engine: "moat"` mode still benchmarks the full `moat-cache`
-API; do not equate it with the new v1 adapter.
+The common workload driver uses a synchronous `Backend` interface: submit
+writes or reads, poll completions, drain a write batch, and close. It runs one
+persistent owner thread per device. Request generation, engine calls, read
+validation, and buffer recycling all happen on that thread. Phase commands
+cross threads only when starting or finishing a benchmark phase.
 
-Prepared writes keep an owned value and its full key separate until the I/O
-worker copies them directly into the registered buffer. They do not allocate
-an intermediate envelope vector. Workers poll after at most 1 MiB of admitted
-payloads (or one larger record), overlapping device work with later encoding.
-V2 retains rejected prepared buffers across backpressure instead of copying
-their payloads again.
+`engine: "v1"` and `engine: "v2"` **do not create or enter a Tokio runtime**.
+They use registered io_uring buffers and return pooled read buffers without
+copying into new value vectors. No request tasks, oneshots, completion drivers,
+or per-record channels surround either engine. The v2 crate remains independent
+of Tokio; this comparison executable links Tokio for foyer only.
 
-`moat_batched_completions` defaults to true. Each disk forwards a poll's
-completions together to one asynchronous driver on the existing application
-runtime. The driver wakes request tasks through local scheduling, reducing
-contention on Tokio's shared injection queue. No additional OS worker or
-custom synchronization primitive is added. Set the option to false for
-direct-completion control runs. Engine indexes and I/O ownership are unchanged.
+The foyer adapter is the sole runtime boundary. It creates a shared Tokio
+runtime for foyer's internal work and polls returned read futures through
+`FuturesUnordered`; it does not spawn another task for each submitted read.
+Owner loops run on `runtime_cpus`, sharing those CPUs with foyer's runtime,
+and its io_uring workers use `io_cpus`. Engine owner loops run on `io_cpus`.
+Report actual process CPU use as well as throughput: foyer uses more software
+threads and available application CPUs than the two native engine paths.
 
-Foyer uses its normal disk-only HybridCache path, including serialization,
-XXHash64 verification, and owned value decoding. The pinned file builder
-couples `O_DIRECT` with `O_NOATIME`, which fails for non-owner raw-device users.
-The harness opens without those flags, obtains the shared file descriptor
-through a zero-length partition, and enables `O_DIRECT` with `fcntl` before
-cache initialization. This reserves no bytes and changes no data-path code. Its memory admission filter
-rejects all entries. Engine reads use `moat_verify_reads` (default false).
-These are application-visible path measurements with different integrity and
-ownership semantics, not isolated device or checksum-normalized comparisons.
+All three adapters use the same keys, values, device placement, concurrency
+budget, and workload loop. Full-key Xxh3 identity and weighted rendezvous
+placement happen **before timing**, producing one dataset per device. Random
+reads choose uniformly within each device's dataset. The global `clients`
+budget is divided between devices (with at most one extra request per device);
+a completion admits a replacement request without waiting for the other reads.
+Backpressure retains the unsubmitted request. Latency includes time waiting
+for admission, and the timed phase drains every accepted request before reporting.
+
+Prefill divides `prefill_batch` between devices and drains each local batch.
+There is no cross-device barrier between batches. Value allocation and generation,
+encoding, checksums, I/O, and the final device sync are timed. Keys and routing
+are prepared outside timing. Small engine values use a contiguous key/value
+envelope; large prepared writes copy the separately owned key and value directly
+into the registered buffer. Generation and encoding are bounded to 64 records
+or about 4 MiB between polls (one record can exceed the byte budget). V2 retains
+rejected prepared buffers across backpressure. Every inserted key is read and
+checked before timed random reads.
+
+Foyer uses its disk-only HybridCache path, including serialization, XXHash64
+verification, and owned value decoding. Its memory filter rejects all entries;
+its adapter waits for storage flushes after each prefill batch. The pinned file
+builder couples `O_DIRECT` with `O_NOATIME`, which requires device-node ownership.
+The adapter enables `O_DIRECT` through the shared file descriptor before cache
+initialization instead. This reserves no bytes and changes no foyer data-path code.
+Engine reads use `moat_verify_reads` (default false); all writes retain checksums.
+These integrity and ownership semantics differ and are reported explicitly.
 
 `engine_segment_bytes` defaults to 2 GiB for v1/v2; foyer retains 16-MiB blocks.
-`moat_huge_pages: true` requests preferred huge pages for both engine pools;
-it does not change foyer's allocator. Foyer's configured pool budget covers
-flush buffers; its read buffers are allocated separately. Equal configured
-byte counts are not equal total-memory limits. Prefill creates values in application
-workers (at most one task per configured application core per batch), admits up to `prefill_batch` requests (default 256), waits for each
-batch to complete/drain, and finally synchronizes every device. Every inserted
-key is read and checked before timed random reads. Write measurements include
-value generation, routing, allocation, copies, checksums, and batch barriers.
-They are bounded-dataset prefill throughput, not steady-state cache churn.
+`moat_huge_pages: true` requests preferred huge pages for both engine pools.
+Foyer's configured pool budget covers flush buffers and excludes its separate
+read allocations, so equal pool settings are not equal total-memory limits.
 
-Opt-in diagnostics isolate adapter costs without changing either engine:
-`engine_preassembled_input` generates the full key/value envelope in one
-allocation for v1/v2. The default prepared path already avoids the intermediate
-envelope; the option remains useful for small frames and historical controls. It
-still initializes every value, copies into the registered I/O buffer, and
-computes all write checksums. `v2_batch_large_records` uses `FrameBuilder`
-for queued large values too, admitting up to 64 records within the unchanged
-8-MiB frame bound. The default uses a separate prepared frame for each value
-of at least 64 KiB. Neither option changes the stored logical contents, format,
-read validation, or sync boundary. Report these modes separately from defaults;
-the file runner accepts the corresponding hyphenated command-line flags.
+Optional engine diagnostics remain separate from the default comparison:
+`engine_preassembled_input` creates one contiguous owned envelope for large
+values; `v2_batch_large_records` packs queued large values with `FrameBuilder`;
+`engine_in_place_input` generates large values directly in prepared I/O buffers.
+The last option changes producer semantics and cannot be combined with the
+others. The file runner exposes the corresponding hyphenated flags.
 
-`engine_in_place_input` instead sends a generation request to the v1/v2
-worker, which fills the final prepared I/O buffer directly. This removes both
-heap payload allocations and copies and moves value generation from application
-workers to I/O workers. Every byte is still initialized, all write checksums
-are computed, and every key is read back. It measures an in-place producer's
-potential, not the cost of accepting an already owned vector. It requires
-values of at least 64 KiB and cannot be combined with the other diagnostics.
+This driver replaces the historical Tokio application workload, including its
+`moat` mode and `moat_batched_completions` setting. Old reports retain their
+source revisions for reproduction. Native results are a separate comparison:
+they also change routing scope, per-device queue depths, generation placement,
+and batch barriers, so a historical-to-native speedup is not a pure engine gain.
 
-The file smoke runner uses 16-MiB engine segments to exercise rollover. For
-4-MiB values, pass `--records 32` to stay within its 1-GiB file window.
+The file smoke runner uses 16-MiB engine segments to exercise rollover. Use
+`--disks 2 --verify-reads` to check multiple devices with engine CRC verification;
+for 4-MiB values, pass `--records 32` to fit its 1-GiB files.
 
 The [current twenty-device comparison](reports/2026-09-16-20disk/REPORT.md)
 compares foyer, v1, and v2 with independent write repetitions and numeric
@@ -96,8 +100,8 @@ CARGO_TARGET_DIR=target/cache-disk-compare cargo clippy --locked --manifest-path
 python3 benchmarks/cache-disk/run_files.py --binary target/cache-disk-compare/release/moat-cache-disk-compare --seconds 1 --repeats 1
 ```
 
-The runner creates three new disposable 1-GiB files and uses the same three
-available CPUs for all implementations. It rejects an existing output
+The runner creates new disposable 1-GiB files for each implementation and
+uses the same configured I/O and application CPU sets. It rejects an existing output
 directory. By default, configurations, files and logs stay in ignored `local/`.
 It never selects a raw device. File-backed smoke results validate API paths;
 they do not reproduce raw-NVMe performance. Hostname and paths in generated

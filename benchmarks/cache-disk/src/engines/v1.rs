@@ -12,14 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::{Backend, Data, Done, Put};
+use super::{Backend, Data, Done, Put, Record};
 use crate::{Config, Window};
 use anyhow::{Result, ensure};
-use moat_common::{ChunkId, HugePages, PoolOptions};
+use moat_common::{HugePages, PoolOptions};
 use moat_engine::{FileDevice, IoQueue, PutOutcome, ReadOutcome};
 use std::{collections::VecDeque, sync::Arc};
 
-pub(super) struct V1 {
+pub(crate) struct V1 {
     queue: Box<dyn IoQueue>,
     writer: moat_engine::Writer,
     reader: moat_engine::Reader,
@@ -75,7 +75,7 @@ impl V1 {
     }
 }
 impl Backend for V1 {
-    fn put(&mut self, batch: &VecDeque<Put>) -> Result<Option<(u64, usize)>> {
+    fn put(&mut self, batch: &mut VecDeque<Put>) -> Result<Option<(u64, usize)>> {
         let record = &batch[0];
         let result = if record.value.len() >= 65536 {
             match self.writer.prepare_large(&mut *self.queue, record.value.len() as u32) {
@@ -96,8 +96,8 @@ impl Backend for V1 {
             other => anyhow::bail!("v1 put failed: {other:?}"),
         }
     }
-    fn read(&mut self, id: ChunkId) -> Result<Option<u64>> {
-        match self.reader.get(&mut *self.queue, &id, None, self.next) {
+    fn read(&mut self, record: &Record) -> Result<Option<u64>> {
+        match self.reader.get(&mut *self.queue, &record.id, None, self.next) {
             Ok(ReadOutcome::Submitted) => {
                 let ticket = self.next;
                 self.next += 1;
@@ -107,8 +107,8 @@ impl Backend for V1 {
             other => anyhow::bail!("v1 read failed: {other:?}"),
         }
     }
-    fn poll(&mut self, wait: bool, out: &mut Vec<Done>) -> Result<()> {
-        self.queue.poll(wait)?;
+    fn poll(&mut self, out: &mut Vec<Done>) -> Result<()> {
+        self.queue.poll(false)?;
         self.writer.poll(&mut *self.queue, &mut self.writes)?;
         self.reader.poll(&mut *self.queue, &mut self.reads)?;
         out.extend(

@@ -605,8 +605,6 @@ dependencies = [
  "hdrhistogram",
  "libc",
  "moat-cache",
- "moat-cache-memory",
- "moat-cache-store",
  "moat-common",
  "moat-engine",
  "moat-engine-v2",

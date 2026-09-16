@@ -31,44 +31,48 @@ parser.add_argument("--seconds", type=int, default=5)
 parser.add_argument("--engines", nargs="+", default=["foyer", "v1", "v2"])
 parser.add_argument("--repeats", type=int, default=3)
 parser.add_argument("--records", type=int, default=256)
+parser.add_argument("--disks", type=int, default=1)
+parser.add_argument("--verify-reads", action="store_true")
 parser.add_argument("--engine-preassembled-input", action="store_true")
 parser.add_argument("--v2-batch-large-records", action="store_true")
 parser.add_argument("--engine-in-place-input", action="store_true")
 args = parser.parse_args()
 cpus = sorted(os.sched_getaffinity(0))
-if len(cpus) < 3:
-    parser.error("at least three allowed CPUs are required")
+if args.disks < 1 or len(cpus) < args.disks + 2:
+    parser.error("one I/O CPU per disk and two runtime CPUs are required")
 root = args.output or Path(__file__).resolve().parent / "local" / str(time.time_ns())
 root.mkdir(parents=True, exist_ok=False)
 binary = args.binary.resolve(strict=True)
 for engine in args.engines:
-    disk = root / (engine + ".img")
-    with disk.open("xb") as output:
-        output.truncate(1 << 30)
+    disks = []
+    for index in range(args.disks):
+        disk = root / f"{engine}-{index}.img"
+        with disk.open("xb") as output:
+            output.truncate(1 << 30)
+        disks.append({"path": str(disk.resolve()), "serial": ""})
     config = {
         "host": socket.gethostname(),
         "engine": engine,
-        "disks": [{"path": str(disk.resolve()), "serial": ""}],
+        "disks": disks,
         "bytes_per_disk": 1 << 30,
         "records_per_disk": args.records,
         "key_bytes": args.key_bytes,
         "value_bytes": args.value_bytes,
-        "clients": 128,
-        "client_levels": [8, 32, 128],
-        "runtime_cpus": cpus[1:3],
-        "io_cpus": cpus[:1],
+        "clients": max(128, args.disks),
+        "client_levels": [max(n, args.disks) for n in (8, 32, 128)],
+        "runtime_cpus": cpus[args.disks:args.disks+2],
+        "io_cpus": cpus[:args.disks],
         "seconds": args.seconds,
         "repeats": args.repeats,
         "pool_bytes_per_disk": 64 << 20,
-        "prefill_batch": max(1, min(256, (64 << 20) // (args.key_bytes + args.value_bytes) // 4)),
-        "moat_verify_reads": False,
+        "prefill_batch": max(args.disks, min(256, (64 << 20) // (args.key_bytes + args.value_bytes) // 4)),
+        "moat_verify_reads": args.verify_reads,
         "engine_segment_bytes": 16 << 20,
-        "moat_batched_completions": True,
         "engine_preassembled_input": args.engine_preassembled_input and engine in ("v1", "v2"),
         "v2_batch_large_records": args.v2_batch_large_records and engine == "v2",
         "engine_in_place_input": args.engine_in_place_input and engine in ("v1", "v2"),
     }
-    name = f"{engine}-d1-k{args.key_bytes}-v{args.value_bytes}"
+    name = f"{engine}-d{args.disks}-k{args.key_bytes}-v{args.value_bytes}"
     path = root / (name + ".json")
     path.write_text(json.dumps(config, indent=2) + "\n")
     log_path = root / (name + ".log")
@@ -77,6 +81,6 @@ for engine in args.engines:
             [str(binary), str(path)], stdout=log, stderr=subprocess.STDOUT, check=True
         )
     lines = log_path.read_text().splitlines()
-    assert f"VERIFIED {args.records}" in lines
+    assert f"VERIFIED {args.records * args.disks}" in lines
     assert sum(line.startswith("RESULT ") for line in lines) == args.repeats * 3
 print(root)

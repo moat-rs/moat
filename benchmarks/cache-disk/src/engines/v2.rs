@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::{Backend, Data, Done, Put};
+use super::{Backend, Data, Done, Put, Record};
 use crate::Config;
 use anyhow::Result;
-use moat_common::{BufferPool, ChunkId, HugePages, PoolOptions};
+use moat_common::{BufferPool, HugePages, PoolOptions};
 use moat_engine_v2::{
     engine::{self, Device, Engine, Error},
     frame::{FrameBuilder, FrameLimits, PreparedFrame},
@@ -54,7 +54,7 @@ impl Device for Window {
         self.file.sync_data()
     }
 }
-pub(super) struct V2 {
+pub(crate) struct V2 {
     engine: Engine<Window, UringQueue>,
     pool: Arc<BufferPool>,
     limits: FrameLimits,
@@ -111,7 +111,7 @@ impl V2 {
     }
 }
 impl Backend for V2 {
-    fn put(&mut self, batch: &VecDeque<Put>) -> Result<Option<(u64, usize)>> {
+    fn put(&mut self, batch: &mut VecDeque<Put>) -> Result<Option<(u64, usize)>> {
         let first = &batch[0];
         let prepared = first.value.len() >= 65536 && !self.batch_large;
         let (result, count) = if prepared {
@@ -157,8 +157,8 @@ impl Backend for V2 {
             Err(r) => Err(r.error.into()),
         }
     }
-    fn read(&mut self, id: ChunkId) -> Result<Option<u64>> {
-        let r = self.engine.read_requirements(id, 0..self.len, self.verify)?;
+    fn read(&mut self, record: &Record) -> Result<Option<u64>> {
+        let r = self.engine.read_requirements(record.id, 0..self.len, self.verify)?;
         let Some(value) = self.pool.alloc(r.value_len.max(4096)) else {
             return Ok(None);
         };
@@ -171,7 +171,7 @@ impl Backend for V2 {
             None
         };
         match self.engine.read(
-            id,
+            record.id,
             0..self.len,
             self.verify,
             ReadBuffers {
@@ -184,8 +184,8 @@ impl Backend for V2 {
             Err(r) => Err(r.error.into()),
         }
     }
-    fn poll(&mut self, wait: bool, out: &mut Vec<Done>) -> Result<()> {
-        self.engine.poll(wait, &mut self.out)?;
+    fn poll(&mut self, out: &mut Vec<Done>) -> Result<()> {
+        self.engine.poll(false, &mut self.out)?;
         for c in self.out.drain(..) {
             out.push(match c {
                 Completion::Write { ticket, result, .. } => Done::Write(ticket.number(), result.map_err(Into::into)),

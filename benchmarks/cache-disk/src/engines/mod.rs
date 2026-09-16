@@ -12,30 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Matched benchmark-only request routing for the two engine implementations.
-//! This is an append/read adapter, not a replacement for moat-cache policies.
+//! Polling adapters. Engine operations stay on the calling thread; only foyer
+//! creates a Tokio runtime. No per-request channel or task wraps engine I/O.
 
-mod delivery;
-mod v1;
-mod v2;
+pub(super) mod foyer;
+pub(super) mod v1;
+pub(super) mod v2;
 
-use super::Config;
-use anyhow::{Context, Result, ensure};
-use delivery::{Delivery, Ready};
-use moat_cache::{
-    Bytes,
-    identity::{DEFAULT_IDENTITY_VERSION, Fingerprint, Xxh3},
-};
+use crate::{Config, Hasher};
+use anyhow::{Result, ensure};
+use moat_cache::Bytes;
 use moat_common::ChunkId;
-use moat_server::{Placement, Target};
-use std::{
-    collections::{HashMap, VecDeque},
-    sync::mpsc,
-    thread,
-};
-use tokio::sync::oneshot;
+use std::collections::VecDeque;
 
-type Reply<T> = oneshot::Sender<Result<T>>;
+pub(super) struct Record {
+    pub id: ChunkId,
+    pub key: Bytes,
+    pub number: usize,
+}
 
 pub(super) enum Data {
     V1(moat_engine::ChunkData),
@@ -43,21 +37,76 @@ pub(super) enum Data {
         buffers: moat_engine_v2::pipeline::ReadBuffers,
         range: moat_engine_v2::pipeline::ReadRange,
     },
+    Foyer(::foyer::HybridCacheEntry<Vec<u8>, Vec<u8>, Hasher>),
+    #[cfg(test)]
+    Test(Vec<u8>),
 }
 impl Data {
-    pub fn bytes(&self) -> &[u8] {
-        match self {
-            Self::V1(data) => data,
+    pub fn check(&self, record: &Record, len: usize) -> Result<()> {
+        let bytes = match self {
+            Self::V1(data) => &data[..],
             Self::V2 { buffers, range } => buffers.view(range.clone()),
-        }
+            Self::Foyer(entry) => {
+                ensure!(entry.key().as_slice() == record.key.as_ref(), "full key mismatch");
+                return check_value(entry.value(), record.number, len);
+            }
+            #[cfg(test)]
+            Self::Test(bytes) => bytes,
+        };
+        ensure!(
+            bytes.get(..record.key.len()) == Some(record.key.as_ref()),
+            "full key mismatch"
+        );
+        check_value(&bytes[record.key.len()..], record.number, len)
     }
 }
-struct Put {
+fn check_value(value: &[u8], number: usize, len: usize) -> Result<()> {
+    ensure!(value.len() == len, "wrong value length");
+    ensure!(value[..8] == (number as u64).to_le_bytes(), "wrong value prefix");
+    ensure!(
+        value[len - 8..] == (!(number as u64)).to_le_bytes(),
+        "wrong value suffix"
+    );
+    Ok(())
+}
+
+pub(super) struct Put {
     id: ChunkId,
     value: Value,
-    reply: Reply<()>,
 }
-enum Value {
+impl Put {
+    pub fn new(c: &Config, record: &Record) -> Self {
+        let value = if c.engine_in_place_input {
+            Value::Generated {
+                key: record.key.clone(),
+                len: c.value_bytes,
+                number: record.number,
+            }
+        } else {
+            let split = c.engine == "foyer"
+                || (!c.engine_preassembled_input && !c.v2_batch_large_records && c.key_bytes + c.value_bytes >= 65536);
+            let prefix = if split { 0 } else { c.key_bytes };
+            let mut value = vec![0x7c; prefix + c.value_bytes];
+            if prefix > 0 {
+                value[..prefix].copy_from_slice(&record.key);
+            }
+            crate::stamp_value(&mut value[prefix..], record.number);
+            if split {
+                Value::Parts {
+                    key: record.key.clone(),
+                    value,
+                }
+            } else {
+                Value::Bytes(value)
+            }
+        };
+        Self { id: record.id, value }
+    }
+    pub fn len(&self) -> usize {
+        self.value.len()
+    }
+}
+pub(super) enum Value {
     Bytes(Vec<u8>),
     Parts { key: Bytes, value: Vec<u8> },
     Generated { key: Bytes, len: usize, number: usize },
@@ -93,228 +142,21 @@ impl Value {
         }
     }
 }
-enum Command {
-    Put(Put),
-    Read { id: ChunkId, reply: Reply<Data> },
-    Close(Reply<()>),
-}
-enum Done {
+
+pub(super) enum Done {
     Write(u64, Result<()>),
     Read(u64, Result<Data>),
 }
-trait Backend {
-    // None means no operation was accepted; poll before retrying.
-    fn put(&mut self, batch: &VecDeque<Put>) -> Result<Option<(u64, usize)>>;
-    fn read(&mut self, id: ChunkId) -> Result<Option<u64>>;
-    fn poll(&mut self, wait: bool, out: &mut Vec<Done>) -> Result<()>;
-    fn close(self) -> Result<()>;
-}
 
-pub(super) struct Engines {
-    placement: Placement,
-    senders: Vec<mpsc::Sender<Command>>,
-    workers: Vec<thread::JoinHandle<Result<()>>>,
-    prepared_values: bool,
-}
-impl Engines {
-    pub fn open(c: &Config, targets: Vec<Target>) -> Result<Self> {
-        let mut store = Self {
-            placement: Placement::new(targets),
-            senders: Vec::new(),
-            workers: Vec::new(),
-            prepared_values: c.key_bytes + c.value_bytes >= 65536 && !c.v2_batch_large_records,
-        };
-        for disk in 0..c.disks.len() {
-            let (sender, receiver) = mpsc::channel();
-            let (ready, started) = mpsc::sync_channel(1);
-            let config = c.clone();
-            let delivery = Delivery::new(c.moat_batched_completions);
-            let worker = thread::Builder::new()
-                .name(format!("engine-bench-{disk}"))
-                .spawn(move || {
-                    moat_server::worker::pin_to_core(config.io_cpus[disk])?;
-                    // Pools and rings are created and driven on their home thread.
-                    if config.engine == "v1" {
-                        start(v1::V1::new(&config, disk), receiver, ready, delivery)
-                    } else {
-                        start(v2::V2::new(&config, disk), receiver, ready, delivery)
-                    }
-                })?;
-            store.senders.push(sender);
-            store.workers.push(worker);
-            started.recv().context("engine worker startup")??;
-        }
-        Ok(store)
-    }
-    fn route(&self, key: &[u8]) -> (ChunkId, &mpsc::Sender<Command>) {
-        let id = Xxh3.identify(&[0; 16], DEFAULT_IDENTITY_VERSION, key);
-        (id, &self.senders[self.placement.disk_of(&id).unwrap()])
-    }
-    pub async fn put(&self, key: Bytes, value: Vec<u8>, preassembled: bool) -> Result<()> {
-        // Both engines store exactly the same full-key envelope. Field lengths
-        // are fixed by this workload; no production cache policy is benchmarked.
-        let value = if preassembled {
-            Value::Bytes(value)
-        } else if self.prepared_values {
-            Value::Parts {
-                key: key.clone(),
-                value,
-            }
-        } else {
-            let mut bytes = Vec::with_capacity(key.len() + value.len());
-            bytes.extend_from_slice(&key);
-            bytes.extend_from_slice(&value);
-            Value::Bytes(bytes)
-        };
-        self.put_value(&key, value).await
-    }
-    pub async fn put_generated(&self, key: Bytes, len: usize, number: usize) -> Result<()> {
-        self.put_value(
-            &key,
-            Value::Generated {
-                key: key.clone(),
-                len,
-                number,
-            },
-        )
-        .await
-    }
-    async fn put_value(&self, key: &Bytes, value: Value) -> Result<()> {
-        let (id, sender) = self.route(key);
-        let (reply, wait) = oneshot::channel();
-        sender
-            .send(Command::Put(Put { id, value, reply }))
-            .map_err(|_| anyhow::anyhow!("engine worker closed"))?;
-        wait.await.context("engine write completion")?
-    }
-    pub async fn get(&self, key: &Bytes) -> Result<Data> {
-        let (id, sender) = self.route(key);
-        let (reply, wait) = oneshot::channel();
-        sender
-            .send(Command::Read { id, reply })
-            .map_err(|_| anyhow::anyhow!("engine worker closed"))?;
-        let data = wait.await.context("engine read completion")??;
-        ensure!(data.bytes().get(..key.len()) == Some(key.as_ref()), "full key mismatch");
-        Ok(data)
-    }
-    pub async fn close(&self) -> Result<()> {
-        let mut waits = Vec::new();
-        for sender in &self.senders {
-            let (reply, wait) = oneshot::channel();
-            sender
-                .send(Command::Close(reply))
-                .map_err(|_| anyhow::anyhow!("engine worker closed"))?;
-            waits.push(wait);
-        }
-        for wait in waits {
-            wait.await.context("engine shutdown")??;
-        }
+pub(super) trait Backend {
+    // None leaves the front request intact: poll, then retry the same request.
+    // On success the caller removes exactly the reported number of requests.
+    fn put(&mut self, batch: &mut VecDeque<Put>) -> Result<Option<(u64, usize)>>;
+    fn read(&mut self, record: &Record) -> Result<Option<u64>>;
+    fn poll(&mut self, out: &mut Vec<Done>) -> Result<()>;
+    // Complete a write batch, including asynchronous admission in foyer.
+    fn drain(&mut self) -> Result<()> {
         Ok(())
     }
-}
-impl Drop for Engines {
-    fn drop(&mut self) {
-        self.senders.clear();
-        for worker in self.workers.drain(..) {
-            let _ = worker.join();
-        }
-    }
-}
-fn start<B: Backend>(
-    backend: Result<B>,
-    receiver: mpsc::Receiver<Command>,
-    ready: mpsc::SyncSender<Result<()>>,
-    delivery: Delivery,
-) -> Result<()> {
-    match backend {
-        Ok(backend) => {
-            let _ = ready.send(Ok(()));
-            drive(backend, receiver, delivery)
-        }
-        Err(error) => {
-            let _ = ready.send(Err(error));
-            Ok(())
-        }
-    }
-}
-fn drive(mut backend: impl Backend, receiver: mpsc::Receiver<Command>, mut delivery: Delivery) -> Result<()> {
-    let mut puts = VecDeque::new();
-    let mut reads = VecDeque::new();
-    let mut writing: HashMap<u64, Vec<Reply<()>>> = HashMap::new();
-    let mut reading: HashMap<u64, Reply<Data>> = HashMap::new();
-    let mut out = Vec::with_capacity(256);
-    let mut close = None;
-    let mut disconnected = false;
-    loop {
-        let idle = puts.is_empty() && reads.is_empty() && writing.is_empty() && reading.is_empty();
-        let first = if idle && close.is_none() && !disconnected {
-            match receiver.recv() {
-                Ok(cmd) => Some(cmd),
-                Err(_) => {
-                    disconnected = true;
-                    None
-                }
-            }
-        } else {
-            None
-        };
-        for cmd in first.into_iter().chain(receiver.try_iter().take(64)) {
-            match cmd {
-                Command::Put(put) => puts.push_back(put),
-                Command::Read { id, reply } => reads.push_back((id, reply)),
-                Command::Close(reply) => close = Some(reply),
-            }
-        }
-        let mut encoded_bytes = 0;
-        while !puts.is_empty() {
-            let Some((ticket, count)) = backend.put(&puts)? else {
-                break;
-            };
-            let replies = puts
-                .drain(..count)
-                .map(|p| {
-                    encoded_bytes += p.value.len();
-                    p.reply
-                })
-                .collect();
-            assert!(writing.insert(ticket, replies).is_none());
-            // Start device work before encoding another large payload. Small
-            // records still amortize submission over the received batch.
-            if encoded_bytes >= 1 << 20 {
-                break;
-            }
-        }
-        while let Some((id, _)) = reads.front() {
-            let Some(ticket) = backend.read(*id)? else { break };
-            let (_, reply) = reads.pop_front().unwrap();
-            assert!(reading.insert(ticket, reply).is_none());
-        }
-        backend.poll(false, &mut out)?;
-        for completion in out.drain(..) {
-            match completion {
-                Done::Write(ticket, result) => {
-                    result?;
-                    delivery.push(Ready::Write(writing.remove(&ticket).context("unknown write ticket")?));
-                }
-                Done::Read(ticket, result) => {
-                    let reply = reading.remove(&ticket).context("unknown read ticket")?;
-                    delivery.push(Ready::Read(reply, result));
-                }
-            }
-        }
-        delivery.flush();
-        if puts.is_empty()
-            && reads.is_empty()
-            && writing.is_empty()
-            && reading.is_empty()
-            && (close.is_some() || disconnected)
-        {
-            let result = backend.close();
-            if let Some(reply) = close {
-                delivery.push(Ready::Close(reply, result));
-                return Ok(());
-            }
-            return result;
-        }
-    }
+    fn close(self) -> Result<()>;
 }
