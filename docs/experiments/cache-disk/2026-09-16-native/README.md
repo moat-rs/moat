@@ -17,7 +17,6 @@ Source and execution
   `276b3af8bb2939b63febf7d00bf843fa5f519429b1e04e05acbe2777d83170c3`.
 - Same 20 devices, CPU sets, NUMA placement, queue depths, pool budgets, and
   bounded datasets as the [previous run](../2026-09-16-20disk/README.md).
-  The machine provides 96 physical cores on one socket and two NUMA nodes.
   The test reserves 20 I/O cores and 40 application cores. No global kernel
   tuning, discard, or full-device preconditioning is performed.
 - Exact host, serial/capacity, system-device exclusion, partition, mount,
@@ -104,7 +103,7 @@ retained. Ranges are observed run spread, not confidence intervals.
 Reproduction and interpretation
 -------------------------------
 
-Use the [harness instructions](../../README.md) and an operator-provided
+Use the [harness instructions](../../../../benchmarks/cache-disk/README.md) and an operator-provided
 configuration. Source and executable identities above fix the measured code.
 The generic analyzer emits per-run CSVs and read summaries; prefill summaries
 are medians grouped by engine and size. Run identifiers connect write and read

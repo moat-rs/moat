@@ -141,7 +141,7 @@ cooperative locks released after all measurements and profiling runs.
 - [Prefill samples](prefill.csv): all 45 independent fill timings and physical I/O costs.
 - [Prefill summary](prefill-summary.csv): three-run medians and ranges.
 
-The separate [single-device complete-fill report](../../../engine/reports/2026-09-16-full/REPORT.md)
+The separate [single-device complete-fill report](../../engine/2026-09-16-full/REPORT.md)
 does not measure 20-disk throughput. Its -6.39% fill result must not be used
 as the scaling result for this matrix.
 

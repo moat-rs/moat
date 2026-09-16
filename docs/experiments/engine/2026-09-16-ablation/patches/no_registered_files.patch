@@ -1,0 +1,73 @@
+diff --git a/core/moat-engine-v2/src/io/uring.rs b/core/moat-engine-v2/src/io/uring.rs
+index 4fbdb51..61342af 100644
+--- a/core/moat-engine-v2/src/io/uring.rs
++++ b/core/moat-engine-v2/src/io/uring.rs
+@@ -124,7 +124,6 @@ impl UringQueue {
+             }
+             Err(error) => return Err(error),
+         };
+-        ring.submitter().register_files(&[file.as_raw_fd()])?;
+         if let Some(pool) = &pool {
+             let iovecs: Vec<_> = pool
+                 .arenas()
+@@ -174,7 +173,9 @@ impl UringQueue {
+         while self.pending < self.slots.len() {
+             let Some(slot) = self.ready.pop_front() else { break };
+             let transfer = self.slots[slot].as_mut().expect("queued transfer");
+-            let entry = transfer.next(self.max_io_len).user_data(slot as u64);
++            let entry = transfer
++                .next(self.max_io_len, self._file.as_raw_fd())
++                .user_data(slot as u64);
+             // SAFETY: the transfer retains the original allocation until every
+             // subrequest completes. Subranges are disjoint and bounds-checked at
+             // admission. Staged and submitted SQEs together cannot exceed depth.
+diff --git a/core/moat-engine-v2/src/io/uring/transfer.rs b/core/moat-engine-v2/src/io/uring/transfer.rs
+index d399752..97028b7 100644
+--- a/core/moat-engine-v2/src/io/uring/transfer.rs
++++ b/core/moat-engine-v2/src/io/uring/transfer.rs
+@@ -47,11 +47,11 @@ impl Transfer {
+         self.submitted < self.request.len
+     }
+ 
+-    pub(super) fn next(&mut self, limit: usize) -> squeue::Entry {
++    pub(super) fn next(&mut self, limit: usize, fd: i32) -> squeue::Entry {
+         let len = limit.min(self.request.len - self.submitted) as u32;
+         let offset = self.request.offset + self.submitted as u64;
+         let ptr = self.ptr.wrapping_add(self.submitted);
+-        let fd = types::Fixed(0);
++        let fd = types::Fd(fd);
+         let entry = match (self.request.operation, self.fixed) {
+             (Operation::Read, Some(index)) => opcode::ReadFixed::new(fd, ptr, len, index).offset(offset).build(),
+             (Operation::Write, Some(index)) => opcode::WriteFixed::new(fd, ptr, len, index).offset(offset).build(),
+@@ -107,10 +107,10 @@ mod tests {
+     #[test]
+     fn completion_waits_for_unscheduled_and_in_flight_parts() {
+         let mut transfer = transfer();
+-        transfer.next(4096);
++        transfer.next(4096, 0);
+         assert!(!transfer.complete(4096), "unscheduled parts still own the buffer");
+-        transfer.next(4096);
+-        transfer.next(4096);
++        transfer.next(4096, 0);
++        transfer.next(4096, 0);
+         assert!(!transfer.complete(4096));
+         assert!(transfer.complete(4096));
+         let done = transfer.finish();
+@@ -122,7 +122,7 @@ mod tests {
+     fn error_waits_for_every_completion_and_cannot_be_overwritten() {
+         let mut transfer = transfer();
+         for _ in 0..3 {
+-            transfer.next(4096);
++            transfer.next(4096, 0);
+         }
+         assert!(!transfer.complete(-libc::EIO));
+         assert!(!transfer.complete(4096));
+@@ -134,7 +134,7 @@ mod tests {
+     fn out_of_order_short_completion_is_not_full_success() {
+         let mut transfer = transfer();
+         for _ in 0..3 {
+-            transfer.next(4096);
++            transfer.next(4096, 0);
+         }
+         // A short middle part can arrive before either full part.
+         assert!(!transfer.complete(512));

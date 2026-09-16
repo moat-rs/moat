@@ -1,0 +1,17 @@
+diff --git a/benchmarks/cache-disk/src/workload.rs b/benchmarks/cache-disk/src/workload.rs
+index fc59bba..04419df 100644
+--- a/benchmarks/cache-disk/src/workload.rs
++++ b/benchmarks/cache-disk/src/workload.rs
+@@ -188,7 +188,11 @@ fn worker(
+     for phase in commands {
+         let stats = match phase {
+             Phase::Write => {
+-                let stats = prefill(&mut backend, c, records, share(c.prefill_batch, c.disks.len(), disk))?;
++                let mut stats = Stats::default();
++                for _ in 0..32 {
++                    stats.operations +=
++                        prefill(&mut backend, c, records, share(c.prefill_batch, c.disks.len(), disk))?.operations;
++                }
+                 FileDevice::open(&c.disks[disk].path, true)?.sync()?;
+                 stats
+             }

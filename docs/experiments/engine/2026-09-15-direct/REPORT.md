@@ -21,7 +21,7 @@ policy and are not the baseline for the percentages below.
 ## Method and scope
 
 - Date: 2026-09-15. Same enterprise NVMe, NUMA-local application CPU and bounded
-  data window as the earlier report. Linux 6.8.0, glibc 2.39, AMD EPYC x86-64.
+  data window as the earlier report, on Linux/glibc x86-64.
   No fio run overlaps these measurements. The earlier same-day fio results
   remain a reference; both engine baselines were remeasured here.
 - Engine and harness commit: `48398b57f641db75cf656886a93e868512cd6fa5`.
@@ -45,7 +45,7 @@ policy and are not the baseline for the percentages below.
   reads without observed I/O or sampled-content errors. Warmup operations are
   excluded. [114 full-value samples](full/samples.csv) and
   [38 summaries](full/summary.csv) retain per-run variation and device counters.
-- Dataset and batching remain as described in the [methodology](../../README.md):
+- Dataset and batching remain as described in the [methodology](../../../../benchmarks/engine/README.md):
   approximately 512 MiB of payload, groups of 64 small/mixed or 16 uniform large
   records. Mixed records cycle through 100 B, 4 KiB, 64 KiB and 300 B.
 

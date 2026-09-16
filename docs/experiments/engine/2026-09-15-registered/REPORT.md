@@ -18,8 +18,8 @@ Historical figures are retained at their original revision.
 
 ## Method and observed memory
 
-- Date: 2026-09-15. Same enterprise NVMe, NUMA-local application CPU, Linux 6.8.0,
-  glibc 2.39, and AMD EPYC x86-64 as the earlier same-day reports. No fio or
+- Date: 2026-09-15. Same NVMe device and NUMA-local application placement as the earlier
+  same-day reports, on Linux/glibc x86-64. No fio or
   profiling run overlaps this comparison. The earlier fio results remain a
   device reference; both engine baselines are fresh here.
 - Engine and harness commit: `5c327ed188c3ed290043006307cbc89b4c958bc5`.
@@ -42,7 +42,7 @@ Historical figures are retained at their original revision.
   smoke tests ran separately on both engines for small, mixed, and 4-MiB values.
 - Each process writes approximately 512 MiB of payload to a fresh 2-GiB segment
   at offset 2 GiB in the bounded 4-GiB view. Batching, mixed-record order, and
-  latency sampling follow the [shared methodology](../../README.md).
+  latency sampling follow the [shared methodology](../../../../benchmarks/engine/README.md).
 - `Preferred` selected transparent huge-page backing, with **1 GiB of actual
   anonymous huge pages per pool in every recorded phase**. No explicit hugetlb
   pages were available or used. A successful hint alone is not counted as proof.

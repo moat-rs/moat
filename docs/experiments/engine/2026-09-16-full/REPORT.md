@@ -29,8 +29,8 @@ control for device-history effects; it is not a causal attribution of the gap.
 
 - Source: `f53cfd24063b1a11f692fa2f6fb88e7b698ac927`. GNU/glibc release binary
   SHA-256: `7d9e86a501ee1fb13023b0b8a5b9ce45a0bf4f96c149e1ced860b11442c946a9`.
-- Linux 6.8.0, glibc 2.39, AMD EPYC x86-64, enterprise NVMe with
-  30,725,971,992,576 bytes. Application thread pinned to a NUMA-local CPU.
+- Linux/glibc x86-64; a 30,725,971,992,576-byte full-device test extent.
+  Application thread pinned to a NUMA-local CPU.
   No profiling or other benchmark overlaps the run.
 - One full fill per engine, legacy first. Reads warm for two seconds and measure
   for 60 seconds at each QD. These are individual measurements, not medians or

@@ -6,13 +6,15 @@
 |---|---|
 | `core/moat-common` | Identifiers, checksums, memory alignment, and buffer pools |
 | `core/moat-engine` | Single-disk log storage, indexing, recovery, and reclaim |
+| `core/moat-engine-v2` | Independent unified-frame engine with a single-owner I/O pipeline |
 | `core/moat-server` | Disk discovery, placement, and workers |
 | `core/moat-cache-memory` | Resident cache and eviction policies |
 | `core/moat-cache-store` | Async engine adapter, request budgets, and read coalescing |
 | `core/moat-cache` | Memory and disk cache coordination, key identity, and data views |
-| `benchmarks` | Comparisons with external implementations, scripts, and published reports |
+| `benchmarks` | Active comparison drivers and reproduction instructions |
 | `xtask` | Development checks invoked through `cargo x` |
 | `docs/design` | Designs, API contracts, and implementation audits |
+| `docs/experiments` | Archived optimization decisions, measurements, profiles, and complete numeric samples |
 | `etc/logo` | Project logo assets |
 
 Start with each crate's `src/lib.rs` for its public API. Its `examples` show
@@ -21,6 +23,10 @@ for that crate. Comparison projects under `benchmarks` have separate manifests
 and run instructions; they are not included in the root workspace tests.
 
 ## Reading the storage engine
+
+For the new implementation, start with the [v2 crate guide](../core/moat-engine-v2/README.md)
+and [experiment archive](experiments/README.md). The sequence below describes
+the existing engine used by current consumers.
 
 1. [Engine API](../core/moat-engine/src/lib.rs) and
    [local example](../core/moat-engine/examples/local.rs): how queues, engines,

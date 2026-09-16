@@ -5,24 +5,24 @@ Linux direct-I/O device. Neither engine depends on this harness or on the other
 engine. The v2 side exercises its append-only multi-segment engine. This is not
 a comparison of complete storage services.
 
-The [2026-09-15 report](reports/2026-09-15/REPORT.md) includes three repetitions,
+The [2026-09-15 report](../../docs/experiments/engine/2026-09-15/REPORT.md) includes three repetitions,
 fresh fio baselines, numeric samples and independent CPU profiles. That report
 used `--verify true`; use the same flag to reproduce its read policy. Historical
 reports identify their source revision; the current harness adds registered
 buffers to v2 and defaults to `--huge-pages preferred`.
 
-The [direct-read follow-up](reports/2026-09-15-direct/REPORT.md) remeasures both
+The [direct-read follow-up](../../docs/experiments/engine/2026-09-15-direct/REPORT.md) remeasures both
 engines with `--verify false`, adds partial ranges, and separates user/system CPU
 cost. It includes 168 engine samples and records the large boundary-range
 variation rather than treating its median as a stable throughput advantage.
 
-The [registered-buffer follow-up](reports/2026-09-15-registered/REPORT.md) uses
+The [registered-buffer follow-up](../../docs/experiments/engine/2026-09-15-registered/REPORT.md) uses
 fixed buffers/files and deferred completion work on both sides. It compares
 matching `Disabled` and `Preferred` huge-page policies, records observed memory
 backing, and retains 228 measured phases across two three-repetition matrices.
 
-The [full-device comparison](reports/2026-09-16-full/REPORT.md) fills the complete
-30.7-TB device with distinct 4-MiB records under both engines, then measures
+The [full-device comparison](../../docs/experiments/engine/2026-09-16-full/REPORT.md) fills one data device
+with distinct 4-MiB records under both engines, then measures
 random reads across the entire written key range. It includes rollover and
 sealing, preserves fill-progress samples, and states the limits of one fill per
 engine. Tiny-record full fills are not part of that report.

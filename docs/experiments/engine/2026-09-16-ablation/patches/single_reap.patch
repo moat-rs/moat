@@ -1,0 +1,12 @@
+diff --git a/core/moat-engine-v2/src/io/uring.rs b/core/moat-engine-v2/src/io/uring.rs
+index 4fbdb51..6a17491 100644
+--- a/core/moat-engine-v2/src/io/uring.rs
++++ b/core/moat-engine-v2/src/io/uring.rs
+@@ -233,7 +233,6 @@ impl Queue for UringQueue {
+     }
+ 
+     fn poll(&mut self, wait: bool) -> io::Result<()> {
+-        self.reap();
+         self.stage();
+         if self.pending == 0 {
+             return Ok(());

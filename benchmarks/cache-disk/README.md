@@ -61,12 +61,17 @@ These integrity and ownership semantics differ and are reported explicitly.
 Foyer's configured pool budget covers flush buffers and excludes its separate
 read allocations, so equal pool settings are not equal total-memory limits.
 
-Optional engine diagnostics remain separate from the default comparison:
-`engine_preassembled_input` creates one contiguous owned envelope for large
-values; `v2_batch_large_records` packs queued large values with `FrameBuilder`;
-`engine_in_place_input` generates large values directly in prepared I/O buffers.
-The last option changes producer semantics and cannot be combined with the
-others. The file runner exposes the corresponding hyphenated flags.
+Historical input-copy, in-place producer, and large-frame batching diagnostics
+are archived with their measured source revisions in the
+[experiment record](../../docs/experiments/README.md). The current driver keeps
+one owned-input comparison path. Retired or misspelled configuration fields
+are rejected instead of silently selecting a different workload.
+
+The `CONFIG` output contains an explicit allowlist of workload parameters and
+anonymous device ordinals. Hostnames, paths, serials, exclusion lists, physical
+capacities, and CPU identifiers remain in the operator's private input file.
+Worker counts in this summary are configured CPU budgets. The separate `DRIVER`
+record reports the actual owner count, driver mode, and whether Tokio is used.
 
 This driver replaces the historical Tokio application workload, including its
 `moat` mode and `moat_batched_completions` setting. Old reports retain their
@@ -78,28 +83,33 @@ The file smoke runner uses 16-MiB engine segments to exercise rollover. Use
 `--disks 2 --verify-reads` to check multiple devices with engine CRC verification;
 for 4-MiB values, pass `--records 32` to fit its 1-GiB files.
 
-The [twenty-device comparison after request splitting](reports/2026-09-16-split/REPORT.md)
+The [v2 ablation and cleanup](../../docs/experiments/engine/2026-09-16-ablation/REPORT.md)
+compares individual feature removals with bracketing controls, then checks the
+final implementation. It retains exact patches, repeated-write follow-ups,
+the buffer-registration counterexample, and rejected optimizations.
+
+The [twenty-device comparison after request splitting](../../docs/experiments/cache-disk/2026-09-16-split/REPORT.md)
 reruns all three engines with v2's device-limit splitting enabled. It retains
 45 prefills, 75 measured read phases, and phase-level io-wq observations.
 
-The [previous native twenty-device comparison](reports/2026-09-16-native/REPORT.md)
+The [previous native twenty-device comparison](../../docs/experiments/cache-disk/2026-09-16-native/REPORT.md)
 uses the current polling adapters, with 45 prefills, 75 measured read phases,
 and separate CPU profiles. Its CSVs retain run identifiers, exact operation
 counts and durations, CPU costs, and physical I/O totals.
 
-The [historical application/Tokio comparison](reports/2026-09-16-20disk/REPORT.md)
+The [historical application/Tokio comparison](../../docs/experiments/cache-disk/2026-09-16-20disk/REPORT.md)
 retains its original source, workload, and all three implementations.
 
-The [bottleneck investigation](reports/2026-09-16-bottlenecks/REPORT.md)
+The [bottleneck investigation](../../docs/experiments/cache-disk/2026-09-16-bottlenecks/REPORT.md)
 separates admission batching, envelope copying, large-frame packing, and
 in-place producers with controlled twenty-device experiments. It preserves
 the default comparison and labels changes in producer semantics explicitly.
 
-The [historical matrix](reports/2026-09-10/REPORT.md) contains single-disk and
+The [historical matrix](../../docs/experiments/cache-disk/2026-09-10/REPORT.md) contains single-disk and
 20-disk results for four key/value sizes and three matched concurrency levels.
-[Methodology and limitations](reports/2026-09-10/README.md) describe the run.
-[Identity costs](reports/2026-09-10/IDENTITY.md) and
-[the variable-workload follow-up](reports/2026-09-10/RECHECK.md) retain the
+[Methodology and limitations](../../docs/experiments/cache-disk/2026-09-10/README.md) describe the run.
+[Identity costs](../../docs/experiments/cache-disk/2026-09-10/IDENTITY.md) and
+[the variable-workload follow-up](../../docs/experiments/cache-disk/2026-09-10/RECHECK.md) retain the
 negative cases as well as improvements.
 
 Build and validate on Linux

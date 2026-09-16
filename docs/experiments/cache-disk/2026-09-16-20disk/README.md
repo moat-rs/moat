@@ -13,12 +13,11 @@ Source and execution
 - Foyer: pinned `dd46245c45071d1036331e4e2c48e15386017b96`.
 - Release build: `x86_64-unknown-linux-gnu`, glibc, `-C target-cpu=x86-64-v3`.
 - Executable SHA-256: `3e54d638c074e807124afd41a501f79143e15e7b512fdbde407c6c8f2752fc26`.
-- One AMD EPYC 9A85 socket, 96 physical cores / 192 hardware threads, two NUMA
-  nodes; Linux 6.8. The test assigns 40 physical application cores and 20
+- The test assigns 40 physical application cores and 20
   separate physical I/O cores, one per device. I/O workers are placed on the
   device's NUMA node. The coordinator shares the first application core, fixing
   first-touch placement of the generated keys. Application work may cross NUMA nodes.
-- Twenty 30.7-TB NVMe devices, each restricted to its first 64 GiB. System
+- Twenty NVMe devices, each restricted to a 64-GiB test extent. System
   devices are excluded. The run uses no discard, full-device preconditioning,
   filesystem cache, or global kernel tuning.
 - Exact host, capacity and serial checks, mount/partition/holder/signature

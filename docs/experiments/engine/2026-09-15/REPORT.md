@@ -12,13 +12,13 @@ read scheduling and metadata validation before replacing the existing engine.
 
 ## Scope and reproducibility
 
-- Date: 2026-09-15. One enterprise NVMe namespace on an AMD EPYC x86-64 host;
+- Date: 2026-09-15. One NVMe namespace on a Linux/glibc x86-64 system;
   one NUMA-local CPU, one application thread. The fio, comparison and profiling
   phases ran sequentially.
-- Linux 6.8.0, glibc 2.39; Rust 1.98.0 release, GNU target
+- Rust 1.98.0 release, GNU target
   `x86_64-unknown-linux-gnu`, `-C target-cpu=x86-64-v3`. No musl build.
 - Engine implementation: `5d54bf135066c1e03a9c79d88125106e3623e365`.
-  The standalone harness is documented in [the methodology](../../README.md).
+  The standalone harness is documented in [the methodology](../../../../benchmarks/engine/README.md).
 - Measured executable SHA-256:
   `7ebe0089bde8852ec2cd369b980abef90f1ce506ce50737634ef4b4a79b20abe`.
 - A bounded 4-GiB device view, with the same 2-GiB data segment at offset 2 GiB.
