@@ -1,0 +1,197 @@
+diff --git a/core/moat-engine-v2/src/frame/builder.rs b/core/moat-engine-v2/src/frame/builder.rs
+index 92e7ef7..d54619e 100644
+--- a/core/moat-engine-v2/src/frame/builder.rs
++++ b/core/moat-engine-v2/src/frame/builder.rs
+@@ -142,10 +142,38 @@ impl<'a> FrameBuilder<'a> {
+     /// are checked before modification; an error preserves inputs for retry.
+     /// Buffer address alignment is the submitting I/O layer's responsibility.
+     pub fn encode_into(&self, position: FramePosition, bytes: &mut [u8]) -> Result<FrameHeader> {
++        self.encode_with_limits(self.limits, position, bytes)
++    }
++
++    // A pipeline may impose tighter persisted bounds than the caller's builder.
++    // Check the actual records before encoding, without decoding our own output.
++    pub(crate) fn encode_with_limits(
++        &self,
++        limits: FrameLimits,
++        position: FramePosition,
++        bytes: &mut [u8],
++    ) -> Result<FrameHeader> {
+         if self.is_empty() {
+             return Err(Error::InvalidArgument("cannot encode an empty frame"));
+         }
+         let frame_len = self.encoded_len();
++        if frame_len > limits.max_frame_len() as usize {
++            return Err(Error::FrameFull {
++                required: frame_len as u64,
++                limit: limits.max_frame_len(),
++            });
++        }
++        if self.limits.max_value_len() > limits.max_value_len()
++            && let Some(record) = self
++                .records
++                .iter()
++                .find(|record| record.value.len() > limits.max_value_len() as usize)
++        {
++            return Err(Error::ValueTooLarge {
++                len: record.value.len() as u64,
++                max: limits.max_value_len(),
++            });
++        }
+         position.check_len(frame_len)?;
+         if bytes.len() < frame_len {
+             return Err(Error::BufferTooSmall {
+@@ -301,6 +329,15 @@ impl<'a> PreparedFrame<'a> {
+     /// Writes metadata and padding and relinquishes mutable access to the frame.
+     /// An error leaves the caller's underlying buffer intact.
+     pub fn finish(self, position: FramePosition, key: ChunkId, lsn: u64) -> Result<&'a [u8]> {
++        self.finish_with_header(position, key, lsn).map(|(bytes, _)| bytes)
++    }
++
++    pub(crate) fn finish_with_header(
++        self,
++        position: FramePosition,
++        key: ChunkId,
++        lsn: u64,
++    ) -> Result<(&'a [u8], FrameHeader)> {
+         position.check_len(self.bytes.len())?;
+         let count = block_count(self.value_len as u64);
+         let checksum_at = HEADER_LEN + DESCRIPTOR_LEN;
+@@ -330,6 +367,6 @@ impl<'a> PreparedFrame<'a> {
+             metadata_crc: crc32c(&self.bytes[HEADER_LEN..metadata_len]),
+         };
+         header.encode(self.bytes);
+-        Ok(self.bytes)
++        Ok((self.bytes, header))
+     }
+ }
+diff --git a/core/moat-engine-v2/src/frame/decode.rs b/core/moat-engine-v2/src/frame/decode.rs
+index 84ea09d..94644d3 100644
+--- a/core/moat-engine-v2/src/frame/decode.rs
++++ b/core/moat-engine-v2/src/frame/decode.rs
+@@ -103,7 +103,7 @@ impl<'a> Metadata<'a> {
+         Ok(metadata)
+     }
+ 
+-    // Used when iterating an immutable footer that already validated each frame.
++    // Used for immutable footer entries and output from the checked encoders.
+     // The slice must be exactly the validated metadata for this header.
+     pub(crate) fn from_validated(bytes: &'a [u8], header: FrameHeader) -> Self {
+         Self { bytes, header }
+diff --git a/core/moat-engine-v2/src/pipeline/write.rs b/core/moat-engine-v2/src/pipeline/write.rs
+index 3bade99..7b6300e 100644
+--- a/core/moat-engine-v2/src/pipeline/write.rs
++++ b/core/moat-engine-v2/src/pipeline/write.rs
+@@ -17,7 +17,7 @@ use moat_common::ChunkId;
+ 
+ use super::{Pending, Pipeline, Rejected, Result, Ticket, Write, index};
+ use crate::{
+-    frame::{FrameBuilder, FrameLimits, FramePosition, Metadata, PreparedFrame},
++    frame::{FrameBuilder, FrameHeader, FrameLimits, Metadata, PreparedFrame},
+     io::{Operation, Queue},
+     segment::SegmentBuilder,
+ };
+@@ -33,10 +33,9 @@ impl<Q: Queue> Pipeline<Q> {
+         frame: &FrameBuilder<'_>,
+         buffer: impl Into<Buffer>,
+     ) -> std::result::Result<Ticket, Rejected<Buffer>> {
+-        self.submit_frame(buffer.into(), |segment, _, buffer| {
++        self.submit_frame(buffer.into(), |segment, limits, buffer| {
+             let position = segment.position(frame.encoded_len(), frame.metadata_len())?;
+-            frame.encode_into(position, buffer)?;
+-            Ok(position)
++            Ok(frame.encode_with_limits(limits, position, buffer)?)
+         })
+     }
+ 
+@@ -57,22 +56,22 @@ impl<Q: Queue> Pipeline<Q> {
+             let len = PreparedFrame::required_len(limits, value_len)?;
+             let frame = PreparedFrame::new(limits, value_len, buffer)?;
+             let position = segment.position(len, frame.metadata_len())?;
+-            frame.finish(position, key, lsn)?;
+-            Ok(position)
++            let (_, header) = frame.finish_with_header(position, key, lsn)?;
++            Ok(header)
+         })
+     }
+ 
+     fn submit_frame(
+         &mut self,
+         mut buffer: Buffer,
+-        encode: impl FnOnce(&SegmentBuilder, FrameLimits, &mut Buffer) -> Result<FramePosition>,
++        encode: impl FnOnce(&SegmentBuilder, FrameLimits, &mut Buffer) -> Result<FrameHeader>,
+     ) -> std::result::Result<Ticket, Rejected<Buffer>> {
+         let prepare = |this: &mut Self, buffer: &mut Buffer| -> Result<(Write, u64, usize)> {
+             let ticket = this.admission(true)?;
+             let segment = this.segment.as_mut().expect("writable pipeline");
+-            let position = encode(segment, this.limits, buffer)?;
+-            let metadata = Metadata::decode(buffer, this.limits, position)?;
+-            let len = metadata.header().frame_len();
++            let header = encode(segment, this.limits, buffer)?;
++            let len = header.frame_len();
++            let metadata = Metadata::from_validated(&buffer[..header.metadata_len()], header);
+             let entries = index::entries(metadata, this.current as u32).collect();
+             segment.append(metadata)?;
+             Ok((
+@@ -81,7 +80,7 @@ impl<Q: Queue> Pipeline<Q> {
+                     entries,
+                     completed: None,
+                 },
+-                this.extents[this.current].base + position.offset() as u64,
++                this.extents[this.current].base + header.position().offset() as u64,
+                 len,
+             ))
+         };
+diff --git a/core/moat-engine-v2/tests/pipeline.rs b/core/moat-engine-v2/tests/pipeline.rs
+index 157a9d9..8f8e024 100644
+--- a/core/moat-engine-v2/tests/pipeline.rs
++++ b/core/moat-engine-v2/tests/pipeline.rs
+@@ -143,6 +143,48 @@ fn finish(state: &Rc<RefCell<State>>, file: &File, index: usize, forced: Option<
+     state.borrow_mut().done.push_back(io::Completion { request, result });
+ }
+ 
++#[test]
++fn writes_enforce_pipeline_limits_with_a_more_permissive_builder() {
++    let file = file();
++    let strict = FrameLimits::new(PAGE as u32, 16).unwrap();
++    let queue = FileQueue::new(file, 2).unwrap();
++    let mut pipeline = Pipeline::new(queue, header(), strict, 0).unwrap();
++    for len in [17, PAGE] {
++        let value = vec![0x37; len];
++        let input = frame(1, 1, &value);
++        let mut buffer = AlignedBuf::zeroed(input.encoded_len());
++        buffer.fill(0xa5);
++        let address = buffer.as_ptr();
++        let rejected = pipeline.write(&input, buffer).unwrap_err();
++        if len == 17 {
++            assert!(matches!(
++                rejected.error,
++                Error::Frame(moat_engine_v2::frame::Error::ValueTooLarge { len: 17, max: 16 })
++            ));
++        } else {
++            assert!(matches!(
++                rejected.error,
++                Error::Frame(moat_engine_v2::frame::Error::FrameFull { .. })
++            ));
++        }
++        assert_eq!(rejected.input.as_ptr(), address);
++        assert!(rejected.input.iter().all(|&byte| byte == 0xa5));
++        assert!(drain(&mut pipeline).is_empty());
++    }
++
++    // The builder's configured limit can be larger when its actual data fits.
++    write(&mut pipeline, 1, 2, b"accepted");
++    assert!(matches!(
++        drain(&mut pipeline).pop(),
++        Some(Completion::Write { result: Ok(()), .. })
++    ));
++    pipeline.read(key(1), 0..8, true, buffers()).unwrap();
++    match drain(&mut pipeline).pop().unwrap() {
++        Completion::Read { result, buffers, .. } => assert_eq!(buffers.view(result.unwrap()), b"accepted"),
++        _ => panic!("read"),
++    }
++}
++
+ #[test]
+ fn real_file_write_verified_read_flush_and_reopen() {
+     let file = file();

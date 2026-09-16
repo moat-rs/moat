@@ -1,0 +1,13 @@
+diff --git a/benchmarks/cache-disk/src/engines/v2.rs b/benchmarks/cache-disk/src/engines/v2.rs
+index 359f978..edc1637 100644
+--- a/benchmarks/cache-disk/src/engines/v2.rs
++++ b/benchmarks/cache-disk/src/engines/v2.rs
+@@ -94,7 +94,7 @@ impl V2 {
+                 HugePages::Disabled
+             },
+         })?;
+-        let queue = UringQueue::with_pool(file, 256, pool.clone())?;
++        let queue = UringQueue::new(file, 256)?;
+         let mut engine = Engine::open(device, queue)?;
+         engine.reserve_index(c.records_per_disk * 2)?;
+         Ok(Self {

@@ -1,0 +1,13 @@
+diff --git a/core/moat-engine-v2/src/io/uring.rs b/core/moat-engine-v2/src/io/uring.rs
+index 4fbdb51..d1c2dc6 100644
+--- a/core/moat-engine-v2/src/io/uring.rs
++++ b/core/moat-engine-v2/src/io/uring.rs
+@@ -105,7 +105,7 @@ impl UringQueue {
+ 
+     fn build(file: File, depth: usize, pool: Option<Arc<BufferPool>>) -> io::Result<Self> {
+         check_depth(depth)?;
+-        let max_io_len = device_io_len(&file)?;
++        let max_io_len = device_io_len(&file)?.max(align_down(i32::MAX as u64, PAGE_SIZE) as usize);
+         let entries = depth.next_power_of_two() as u32;
+         let (ring, deferred) = match IoUring::builder()
+             .setup_cqsize(entries * 2)

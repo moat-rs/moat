@@ -6,13 +6,15 @@
 |---|---|
 | `core/moat-common` | Identifiers, checksums, memory alignment, and buffer pools |
 | `core/moat-engine` | Single-disk log storage, indexing, recovery, and reclaim |
+| `core/moat-engine-v2` | Independent unified-frame engine with a single-owner I/O pipeline |
 | `core/moat-server` | Disk discovery, placement, and workers |
 | `core/moat-cache-memory` | Resident cache and eviction policies |
 | `core/moat-cache-store` | Async engine adapter, request budgets, and read coalescing |
 | `core/moat-cache` | Memory and disk cache coordination, key identity, and data views |
-| `benchmarks` | Comparisons with external implementations, scripts, and published reports |
+| `benchmarks` | Active comparison drivers and reproduction instructions |
 | `xtask` | Development checks invoked through `cargo x` |
 | `docs/design` | Designs, API contracts, and implementation audits |
+| `docs/experiments` | Archived optimization decisions, measurements, profiles, and complete numeric samples |
 | `etc/logo` | Project logo assets |
 
 Start with each crate's `src/lib.rs` for its public API. Its `examples` show
@@ -21,6 +23,10 @@ for that crate. Comparison projects under `benchmarks` have separate manifests
 and run instructions; they are not included in the root workspace tests.
 
 ## Reading the storage engine
+
+For the new implementation, start with the [v2 crate guide](../core/moat-engine-v2/README.md)
+and [experiment archive](experiments/README.md). The sequence below describes
+the existing engine used by current consumers.
 
 1. [Engine API](../core/moat-engine/src/lib.rs) and
    [local example](../core/moat-engine/examples/local.rs): how queues, engines,
@@ -54,7 +60,8 @@ single `Writer`:
 | [Chunkserver design](design/chunkserver.md) | Overall architecture and goals |
 | [Chunkserver audit](design/chunkserver-audit.md) | Design review and constraints |
 | [Engine API](design/engine-api.md) | Queue and read/write pipeline interfaces |
-| [Engine write layout proposal](design/engine-write-layout.md) | Open inline pages, unified value extents, and a recovery validation model |
+| [Unified Frame layout proposal](design/engine-frame-layout.md) | Immutable frames, mixed-value placement, read/write paths, recovery, and tradeoffs |
+| [Earlier engine write layout proposal](design/engine-write-layout.md) | Open inline pages, unified value extents, and a recovery validation model |
 | [Memory cache](design/cache-memory.md) | Resident cache, shared handles, and eviction policies |
 | [Disk cache adapter](design/cache-store.md) | Async requests, budgets, and read coalescing |
 | [Hybrid cache](design/cache-hybrid.md) | Stable key identity, disk catalog, and conditional population |

@@ -28,10 +28,9 @@ futures-util = "0.3"
 hdrhistogram = "7"
 libc = "0.2"
 moat-cache = { path = "../../core/moat-cache" }
-moat-cache-memory = { path = "../../core/moat-cache-memory" }
-moat-cache-store = { path = "../../core/moat-cache-store" }
 moat-common = { path = "../../core/moat-common" }
 moat-engine = { path = "../../core/moat-engine" }
+moat-engine-v2 = { path = "../../core/moat-engine-v2" }
 moat-server = { path = "../../core/moat-server" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -605,10 +605,9 @@ dependencies = [
  "hdrhistogram",
  "libc",
  "moat-cache",
- "moat-cache-memory",
- "moat-cache-store",
  "moat-common",
  "moat-engine",
+ "moat-engine-v2",
  "moat-server",
  "serde",
  "serde_json",
@@ -655,6 +654,16 @@ dependencies = [
  "libc",
  "moat-common",
  "parking_lot",
+ "thiserror",
+]
+
+[[package]]
+name = "moat-engine-v2"
+version = "0.0.0"
+dependencies = [
+ "io-uring",
+ "libc",
+ "moat-common",
  "thiserror",
 ]
 

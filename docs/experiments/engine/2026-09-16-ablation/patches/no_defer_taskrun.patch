@@ -1,0 +1,16 @@
+diff --git a/core/moat-engine-v2/src/io/uring.rs b/core/moat-engine-v2/src/io/uring.rs
+index 4fbdb51..207ecac 100644
+--- a/core/moat-engine-v2/src/io/uring.rs
++++ b/core/moat-engine-v2/src/io/uring.rs
+@@ -110,10 +110,9 @@ impl UringQueue {
+         let (ring, deferred) = match IoUring::builder()
+             .setup_cqsize(entries * 2)
+             .setup_single_issuer()
+-            .setup_defer_taskrun()
+             .build(entries)
+         {
+-            Ok(ring) => (ring, true),
++            Ok(ring) => (ring, false),
+             Err(error)
+                 if matches!(
+                     error.raw_os_error(),

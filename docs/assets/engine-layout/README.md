@@ -2,6 +2,11 @@
 
 These diagrams illustrate the current moat-engine layout for code review. Labels are in English; sizes are schematic. AI-generated and reviewed against the implementation. The [prompt set](PROMPTS.md) includes the batch diagram correction.
 
+The separate [unified Frame proposal](../../design/engine-frame-layout.md)
+includes a [detailed proposed layout](unified-frame-layout.png) and its
+[generation prompt](unified-frame-layout-prompt.md). That image describes a
+candidate format, not the current implementation shown below.
+
 ## Device and segment
 
 ![Device and segment layout](device-and-segment.png)

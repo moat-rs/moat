@@ -39,6 +39,7 @@ for path in sorted(root.glob("*-d*-k*-v*.log")):
             )
             prefills.append(
                 dict(
+                    run=path.stem,
                     engine=c["engine"],
                     disks=len(c["disks"]),
                     key_bytes=c["key_bytes"],
@@ -63,20 +64,26 @@ for path in sorted(root.glob("*-d*-k*-v*.log")):
         assert all(d[0] > 0 for d in row["disk_delta"]), (path, "inactive disk")
         records.append(
             dict(
+                run=path.stem,
                 engine=c["engine"],
                 disks=len(c["disks"]),
                 key_bytes=c["key_bytes"],
                 value_bytes=c["value_bytes"],
                 clients=row["clients"],
                 repeat=row["repeat"],
+                operations=row["operations"],
+                seconds=row["seconds"],
                 ops_per_second=row["ops_per_second"],
                 logical_gib_s=row["logical_bytes_per_second"] / (1 << 30),
                 physical_gib_s=physical_bytes / row["seconds"] / (1 << 30),
                 physical_iops=physical_reads / row["seconds"],
+                physical_reads=physical_reads,
+                physical_read_bytes=physical_bytes,
                 p50_us=row["p50_us"],
                 p99_us=row["p99_us"],
                 p999_us=row["p999_us"],
                 cpu_cores=row["cpu_cores"],
+                cpu_seconds=row["cpu_seconds"],
                 cpu_us_per_op=row["cpu_seconds"] * 1e6 / row["operations"],
                 rss_mib=row["max_rss_kib"] / 1024,
                 read_amplification=physical_bytes
@@ -107,7 +114,7 @@ for group, rows in sorted(groups.items()):
     entry = dict(zip(keys, group))
     entry["samples"] = len(rows)
     for field in records[0]:
-        if field in keys or field == "repeat":
+        if field in keys or field in ("repeat", "run"):
             continue
         entry[field] = statistics.median(r[field] for r in rows)
     entry["min_ops_per_second"] = min(r["ops_per_second"] for r in rows)
@@ -120,22 +127,20 @@ print(
         indent=2,
     )
 )
-for disks in [1, 20]:
-    for key_size, value_size in sorted(
-        {(r["key_bytes"], r["value_bytes"]) for r in summary}
-    ):
-        pair = []
-        for engine in ["moat", "foyer"]:
-            candidates = [
-                r
-                for r in summary
-                if (r["engine"], r["disks"], r["key_bytes"], r["value_bytes"])
-                == (engine, disks, key_size, value_size)
-            ]
-            if candidates:
-                pair.append(max(candidates, key=lambda r: r["ops_per_second"]))
-        if len(pair) == 2:
-            a, b = pair
-            print(
-                f"d={disks} k={key_size} v={value_size}: moat={a['ops_per_second']:.0f} ({a['clients']} clients), foyer={b['ops_per_second']:.0f} ({b['clients']} clients), ratio={a['ops_per_second'] / b['ops_per_second']:.3f}"
+for disks, key_size, value_size in sorted(
+    {(r["disks"], r["key_bytes"], r["value_bytes"]) for r in summary}
+):
+    best = []
+    for engine in sorted({r["engine"] for r in summary}):
+        candidates = [
+            r
+            for r in summary
+            if (r["engine"], r["disks"], r["key_bytes"], r["value_bytes"])
+            == (engine, disks, key_size, value_size)
+        ]
+        if candidates:
+            row = max(candidates, key=lambda r: r["ops_per_second"])
+            best.append(
+                f"{engine}={row['ops_per_second']:.0f} ({row['clients']} clients)"
             )
+    print(f"d={disks} k={key_size} v={value_size}: " + ", ".join(best))

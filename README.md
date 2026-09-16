@@ -117,11 +117,11 @@ NVMe discovery remains Linux-only; macOS callers supply file devices explicitly.
 
 ## Benchmarking
 
-The [disk cache comparison](benchmarks/cache-disk/README.md) reports the bytes-only
-moat cache and pinned foyer on one and twenty data disks with matched application
-and I/O worker counts. The [published results](benchmarks/cache-disk/reports/2026-09-10/REPORT.md)
-include all concurrency levels and known limitations. Raw host inventories,
-device identities and local profiling artifacts are not part of the repository.
+The [disk cache comparison](benchmarks/cache-disk/README.md) compares engine v1,
+engine v2, and pinned foyer. The [experiment archive](docs/experiments/README.md)
+retains the original application tests, native polling comparisons, profiles,
+and ablations, with their measured revisions and workload limits. Raw host
+inventories, device identities, and local profiling artifacts are not published.
 The [memory comparison](benchmarks/cache-memory/README.md) covers resident hit
 cost across replacement policies and key sizes.
 Run the engine benchmark without additional configuration to use a temporary
