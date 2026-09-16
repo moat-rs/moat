@@ -25,7 +25,9 @@ ownership semantics, not isolated device or checksum-normalized comparisons.
 
 `engine_segment_bytes` defaults to 2 GiB for v1/v2; foyer retains 16-MiB blocks.
 `moat_huge_pages: true` requests preferred huge pages for both engine pools;
-it does not change foyer's allocator. Prefill creates values in application
+it does not change foyer's allocator. Foyer's configured pool budget covers
+flush buffers; its read buffers are allocated separately. Equal configured
+byte counts are not equal total-memory limits. Prefill creates values in application
 workers (at most one task per configured application core per batch), admits up to `prefill_batch` requests (default 256), waits for each
 batch to complete/drain, and finally synchronizes every device. Every inserted
 key is read and checked before timed random reads. Write measurements include
@@ -35,7 +37,11 @@ They are bounded-dataset prefill throughput, not steady-state cache churn.
 The file smoke runner uses 16-MiB engine segments to exercise rollover. For
 4-MiB values, pass `--records 32` to stay within its 1-GiB file window.
 
-The [published matrix](reports/2026-09-10/REPORT.md) contains single-disk and
+The [current twenty-device comparison](reports/2026-09-16-20disk/REPORT.md)
+compares foyer, v1, and v2 with independent write repetitions and numeric
+read/CPU/I/O results.
+
+The [historical matrix](reports/2026-09-10/REPORT.md) contains single-disk and
 20-disk results for four key/value sizes and three matched concurrency levels.
 [Methodology and limitations](reports/2026-09-10/README.md) describe the run.
 [Identity costs](reports/2026-09-10/IDENTITY.md) and
@@ -75,9 +81,9 @@ formats and overwrites the configured `bytes_per_disk` window.
 Provision and audit raw devices outside this repository. No machine-specific
 allowlist, device names, serials, SSH automation or host inventory is shipped.
 The published measurements used additional before/after array and SMART checks;
-the generic harness does not replace those operator checks. Its publication
-cleanup replaces fixed host-specific guards with explicit configuration;
-the measured cache code and workload loop remain unchanged.
+the generic harness does not replace those operator checks. Historical reports
+retain their original source revisions and settings; the current adapter and
+workload changes are described above.
 
 For completed raw-device logs, `python3 benchmarks/cache-disk/analyze.py DIRECTORY`
 generates numeric sample, summary and prefill CSVs. It retains every concurrency

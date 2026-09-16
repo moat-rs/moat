@@ -1,0 +1,66 @@
+engine,value_bytes,phase,site,sampled_cycles_percent
+foyer,4194304,read,foyer Checksummer::checksum64,40.96
+foyer,4194304,read,foyer I/O request queue try_recv,12.29
+foyer,4194304,read,memory copy (copy_nonoverlapping call chains),42.46
+foyer,4194304,write,foyer Checksummer::checksum64,9.83
+foyer,4194304,write,foyer I/O request queue try_recv,43.46
+foyer,4194304,write,memory copy (copy_nonoverlapping call chains),22.6
+foyer,4194304,write,memory fill (write_bytes call chains),20.11
+v1,100,read,Tokio push_remote_task,3.49
+v1,100,read,memory copy (copy_nonoverlapping call chains),1.69
+v1,100,read,std futex mutex lock_contended,22.66
+v1,100,write,AtomicWaker::wake,2.92
+v1,100,write,FuturesUnordered task wake_by_ref,6.63
+v1,100,write,Tokio push_remote_task,0.75
+v1,100,write,malloc,7.86
+v1,100,write,memory copy (copy_nonoverlapping call chains),1.14
+v1,100,write,std futex mutex lock_contended,2.57
+v1,4096,read,Tokio push_remote_task,3.35
+v1,4096,read,memory copy (copy_nonoverlapping call chains),1.75
+v1,4096,read,std futex mutex lock_contended,23.55
+v1,4096,write,AtomicWaker::wake,2.2
+v1,4096,write,CRC32C SIMD,6.37
+v1,4096,write,FuturesUnordered task wake_by_ref,5.7
+v1,4096,write,Tokio push_remote_task,0.75
+v1,4096,write,malloc,9.77
+v1,4096,write,memory copy (copy_nonoverlapping call chains),2.52
+v1,4096,write,memory fill (write_bytes call chains),2.03
+v1,4096,write,std futex mutex lock_contended,2.62
+v1,65536,read,Tokio push_remote_task,3.64
+v1,65536,read,std futex mutex lock_contended,23.96
+v1,65536,write,CRC32C SIMD,0.93
+v1,65536,write,FuturesUnordered task wake_by_ref,0.77
+v1,65536,write,malloc,3.17
+v1,65536,write,memory copy (copy_nonoverlapping call chains),60.81
+v1,65536,write,memory fill (write_bytes call chains),15.37
+v1,4194304,write,CRC32C SIMD,13.0
+v1,4194304,write,memory copy (copy_nonoverlapping call chains),63.85
+v1,4194304,write,memory fill (write_bytes call chains),17.44
+v2,100,read,Tokio push_remote_task,3.58
+v2,100,read,memory copy (copy_nonoverlapping call chains),1.65
+v2,100,read,std futex mutex lock_contended,25.62
+v2,100,write,AtomicWaker::wake,5.04
+v2,100,write,FuturesUnordered task wake_by_ref,6.11
+v2,100,write,malloc,8.52
+v2,100,write,memory copy (copy_nonoverlapping call chains),2.14
+v2,100,write,std futex mutex lock_contended,1.1
+v2,4096,read,Tokio push_remote_task,3.71
+v2,4096,read,memory copy (copy_nonoverlapping call chains),1.43
+v2,4096,read,std futex mutex lock_contended,24.43
+v2,4096,write,AtomicWaker::wake,2.51
+v2,4096,write,CRC32C SIMD,3.36
+v2,4096,write,FuturesUnordered task wake_by_ref,2.2
+v2,4096,write,malloc,13.83
+v2,4096,write,memory copy (copy_nonoverlapping call chains),8.52
+v2,4096,write,memory fill (write_bytes call chains),1.23
+v2,4096,write,std futex mutex lock_contended,2.2
+v2,65536,read,Tokio push_remote_task,3.84
+v2,65536,read,memory copy (copy_nonoverlapping call chains),0.81
+v2,65536,read,std futex mutex lock_contended,23.97
+v2,65536,write,CRC32C SIMD,0.86
+v2,65536,write,malloc,4.09
+v2,65536,write,memory copy (copy_nonoverlapping call chains),56.87
+v2,65536,write,memory fill (write_bytes call chains),21.96
+v2,4194304,write,CRC32C SIMD,12.5
+v2,4194304,write,memory copy (copy_nonoverlapping call chains),64.33
+v2,4194304,write,memory fill (write_bytes call chains),17.44

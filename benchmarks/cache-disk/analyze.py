@@ -120,22 +120,20 @@ print(
         indent=2,
     )
 )
-for disks in [1, 20]:
-    for key_size, value_size in sorted(
-        {(r["key_bytes"], r["value_bytes"]) for r in summary}
-    ):
-        pair = []
-        for engine in ["moat", "foyer"]:
-            candidates = [
-                r
-                for r in summary
-                if (r["engine"], r["disks"], r["key_bytes"], r["value_bytes"])
-                == (engine, disks, key_size, value_size)
-            ]
-            if candidates:
-                pair.append(max(candidates, key=lambda r: r["ops_per_second"]))
-        if len(pair) == 2:
-            a, b = pair
-            print(
-                f"d={disks} k={key_size} v={value_size}: moat={a['ops_per_second']:.0f} ({a['clients']} clients), foyer={b['ops_per_second']:.0f} ({b['clients']} clients), ratio={a['ops_per_second'] / b['ops_per_second']:.3f}"
+for disks, key_size, value_size in sorted(
+    {(r["disks"], r["key_bytes"], r["value_bytes"]) for r in summary}
+):
+    best = []
+    for engine in sorted({r["engine"] for r in summary}):
+        candidates = [
+            r
+            for r in summary
+            if (r["engine"], r["disks"], r["key_bytes"], r["value_bytes"])
+            == (engine, disks, key_size, value_size)
+        ]
+        if candidates:
+            row = max(candidates, key=lambda r: r["ops_per_second"])
+            best.append(
+                f"{engine}={row['ops_per_second']:.0f} ({row['clients']} clients)"
             )
+    print(f"d={disks} k={key_size} v={value_size}: " + ", ".join(best))
