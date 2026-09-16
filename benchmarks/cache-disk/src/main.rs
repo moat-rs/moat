@@ -569,21 +569,31 @@ async fn run(c: Config) -> Result<()> {
     let before_cpu = cpu();
     let start = Instant::now();
     for first in (0..count).step_by(c.prefill_batch) {
+        let end = (first + c.prefill_batch).min(count);
+        let width = c.prefill_batch.div_ceil(c.runtime_cpus.len());
         let mut jobs = Vec::new();
-        for (i, key) in keys
-            .iter()
-            .enumerate()
-            .take((first + c.prefill_batch).min(count))
-            .skip(first)
-        {
+        // One task per application worker, not per record: avoid serial task
+        // injection limiting a multi-device write test before it reaches I/O.
+        for start in (first..end).step_by(width) {
             let cache = cache.clone();
-            let key = key.clone();
+            let keys = keys.clone();
             let len = c.value_bytes;
+            let stop = (start + width).min(end);
             jobs.push(tokio::spawn(async move {
-                let mut value = vec![0x7c; len];
-                value[..8].copy_from_slice(&(i as u64).to_le_bytes());
-                value[len - 8..].copy_from_slice(&(!(i as u64)).to_le_bytes());
-                cache.put(key, value).await
+                let writes = (start..stop).map(|i| {
+                    let cache = &cache;
+                    let key = keys[i].clone();
+                    async move {
+                        let mut value = vec![0x7c; len];
+                        value[..8].copy_from_slice(&(i as u64).to_le_bytes());
+                        value[len - 8..].copy_from_slice(&(!(i as u64)).to_le_bytes());
+                        cache.put(key, value).await
+                    }
+                });
+                for result in join_all(writes).await {
+                    result?;
+                }
+                Ok::<_, anyhow::Error>(())
             }));
         }
         for result in join_all(jobs).await {

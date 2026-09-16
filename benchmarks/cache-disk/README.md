@@ -26,7 +26,7 @@ ownership semantics, not isolated device or checksum-normalized comparisons.
 `engine_segment_bytes` defaults to 2 GiB for v1/v2; foyer retains 16-MiB blocks.
 `moat_huge_pages: true` requests preferred huge pages for both engine pools;
 it does not change foyer's allocator. Prefill creates values in application
-workers, admits up to `prefill_batch` requests (default 256), waits for each
+workers (at most one task per configured application core per batch), admits up to `prefill_batch` requests (default 256), waits for each
 batch to complete/drain, and finally synchronizes every device. Every inserted
 key is read and checked before timed random reads. Write measurements include
 value generation, routing, allocation, copies, checksums, and batch barriers.
