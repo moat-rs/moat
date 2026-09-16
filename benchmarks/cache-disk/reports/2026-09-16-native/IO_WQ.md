@@ -2,7 +2,7 @@ Why large reads create io-wq workers
 ===================================
 
 The native adapter removes Tokio from v1/v2, but it does not prevent Linux
-from creating `iou-wrk` helpers. In the first 4-MiB process, the maximum
+from creating io-wq workers. In the first 4-MiB process, the maximum
 observed task count was 5,141 for v1 and 5,124 for v2, including 21 application
 threads. These are whole-process maxima across prefill, verification, and the
 concurrency sweep, not runnable-worker counts or measurements specific to
