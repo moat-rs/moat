@@ -25,7 +25,7 @@ from statistics import median
 
 def write_csv(path, rows):
     with path.open("w", newline="") as file:
-        writer = csv.DictWriter(file, fieldnames=list(dict.fromkeys(key for row in rows for key in row)))
+        writer = csv.DictWriter(file, fieldnames=list(dict.fromkeys(key for row in rows for key in row)), lineterminator="\n")
         writer.writeheader()
         writer.writerows(rows)
 
