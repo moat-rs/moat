@@ -33,9 +33,6 @@ parser.add_argument("--repeats", type=int, default=3)
 parser.add_argument("--records", type=int, default=256)
 parser.add_argument("--disks", type=int, default=1)
 parser.add_argument("--verify-reads", action="store_true")
-parser.add_argument("--engine-preassembled-input", action="store_true")
-parser.add_argument("--v2-batch-large-records", action="store_true")
-parser.add_argument("--engine-in-place-input", action="store_true")
 args = parser.parse_args()
 cpus = sorted(os.sched_getaffinity(0))
 if args.disks < 1 or len(cpus) < args.disks + 2:
@@ -68,9 +65,6 @@ for engine in args.engines:
         "prefill_batch": max(args.disks, min(256, (64 << 20) // (args.key_bytes + args.value_bytes) // 4)),
         "moat_verify_reads": args.verify_reads,
         "engine_segment_bytes": 16 << 20,
-        "engine_preassembled_input": args.engine_preassembled_input and engine in ("v1", "v2"),
-        "v2_batch_large_records": args.v2_batch_large_records and engine == "v2",
-        "engine_in_place_input": args.engine_in_place_input and engine in ("v1", "v2"),
     }
     name = f"{engine}-d{args.disks}-k{args.key_bytes}-v{args.value_bytes}"
     path = root / (name + ".json")

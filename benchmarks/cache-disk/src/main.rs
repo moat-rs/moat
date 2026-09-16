@@ -32,14 +32,16 @@ use serde::{Deserialize, Serialize};
 type Hasher = BuildHasherDefault<DefaultHasher>;
 const SEGMENT: u64 = 16 << 20;
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Disk {
     path: String,
     serial: String,
     #[serde(default)]
     expected_capacity: Option<u64>,
 }
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Config {
     host: String,
     #[serde(default)]
@@ -66,15 +68,31 @@ struct Config {
     engine_segment_bytes: u64,
     #[serde(default = "prefill_batch")]
     prefill_batch: usize,
-    // Diagnostic: produce the full-key engine envelope in one allocation.
-    #[serde(default)]
-    engine_preassembled_input: bool,
-    // Diagnostic: pack queued large values into v2 frames as well.
-    #[serde(default)]
-    v2_batch_large_records: bool,
-    // Diagnostic: generate large values directly in the prepared I/O buffer.
-    #[serde(default)]
-    engine_in_place_input: bool,
+}
+
+impl Config {
+    // Explicit allowlist: operator host, device, and CPU identities stay private.
+    fn public_summary(&self) -> serde_json::Value {
+        serde_json::json!({
+            "engine": self.engine,
+            "disks": (0..self.disks.len()).collect::<Vec<_>>(),
+            "bytes_per_disk": self.bytes_per_disk,
+            "records_per_disk": self.records_per_disk,
+            "key_bytes": self.key_bytes,
+            "value_bytes": self.value_bytes,
+            "client_levels": self.client_levels,
+            "clients": self.clients,
+            "runtime_workers": self.runtime_cpus.len(),
+            "io_workers": self.io_cpus.len(),
+            "seconds": self.seconds,
+            "repeats": self.repeats,
+            "pool_bytes_per_disk": self.pool_bytes_per_disk,
+            "moat_verify_reads": self.moat_verify_reads,
+            "moat_huge_pages": self.moat_huge_pages,
+            "engine_segment_bytes": self.engine_segment_bytes,
+            "prefill_batch": self.prefill_batch,
+        })
+    }
 }
 
 fn validate(config: &Config) -> Result<()> {
@@ -113,22 +131,6 @@ fn validate(config: &Config) -> Result<()> {
             "invalid client level"
         );
     }
-    ensure!(
-        !config.engine_preassembled_input || matches!(config.engine.as_str(), "v1" | "v2"),
-        "preassembled input requires an engine adapter"
-    );
-    ensure!(
-        !config.v2_batch_large_records || config.engine == "v2",
-        "large-frame batching requires v2"
-    );
-    ensure!(
-        !config.engine_in_place_input
-            || (matches!(config.engine.as_str(), "v1" | "v2")
-                && config.value_bytes >= 65536
-                && !config.engine_preassembled_input
-                && !config.v2_batch_large_records),
-        "in-place input requires large prepared engine writes without other input diagnostics"
-    );
     ensure!(
         config.engine_segment_bytes >= 16 << 20
             && config.engine_segment_bytes <= u32::MAX as u64

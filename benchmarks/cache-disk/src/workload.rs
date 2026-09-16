@@ -361,7 +361,7 @@ fn records(c: &Config) -> Result<Vec<Vec<Record>>> {
 }
 
 pub(super) fn run(c: Config) -> Result<()> {
-    println!("CONFIG {}", serde_json::to_string(&c)?);
+    println!("CONFIG {}", c.public_summary());
     println!(
         "DRIVER {}",
         serde_json::json!({"mode":"native-poll", "workers":c.disks.len(), "tokio":c.engine == "foyer", "routing":"before timing", "concurrency":"fixed per disk"})
@@ -509,6 +509,27 @@ mod tests {
         }))
         .unwrap()
     }
+    #[test]
+    fn public_configuration_omits_operator_identifiers() {
+        let mut c = config();
+        c.host = "private-host-marker".into();
+        c.forbidden_serials = vec!["private-exclusion-marker".into()];
+        c.disks[0].path = "/private/device-marker".into();
+        c.disks[0].serial = "private-serial-marker".into();
+        c.disks[0].expected_capacity = Some(987654321);
+        c.io_cpus = vec![12345];
+        c.runtime_cpus = vec![23456, 34567];
+        let summary = c.public_summary();
+        let text = summary.to_string();
+        for private in ["private-", "987654321", "12345", "23456", "34567"] {
+            assert!(!text.contains(private));
+        }
+        assert_eq!(summary["disks"], serde_json::json!([0]));
+        assert_eq!(summary["io_workers"], 1);
+        assert_eq!(summary["runtime_workers"], 2);
+        assert_eq!(summary["value_bytes"], 100);
+    }
+
     #[test]
     fn batches_and_reads_survive_backpressure_and_reordering() -> Result<()> {
         let c = config();

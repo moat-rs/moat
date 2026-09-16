@@ -76,29 +76,20 @@ pub(super) struct Put {
 }
 impl Put {
     pub fn new(c: &Config, record: &Record) -> Self {
-        let value = if c.engine_in_place_input {
-            Value::Generated {
+        let split = c.engine == "foyer" || c.key_bytes + c.value_bytes >= 65536;
+        let prefix = if split { 0 } else { c.key_bytes };
+        let mut value = vec![0x7c; prefix + c.value_bytes];
+        if prefix > 0 {
+            value[..prefix].copy_from_slice(&record.key);
+        }
+        crate::stamp_value(&mut value[prefix..], record.number);
+        let value = if split {
+            Value::Parts {
                 key: record.key.clone(),
-                len: c.value_bytes,
-                number: record.number,
+                value,
             }
         } else {
-            let split = c.engine == "foyer"
-                || (!c.engine_preassembled_input && !c.v2_batch_large_records && c.key_bytes + c.value_bytes >= 65536);
-            let prefix = if split { 0 } else { c.key_bytes };
-            let mut value = vec![0x7c; prefix + c.value_bytes];
-            if prefix > 0 {
-                value[..prefix].copy_from_slice(&record.key);
-            }
-            crate::stamp_value(&mut value[prefix..], record.number);
-            if split {
-                Value::Parts {
-                    key: record.key.clone(),
-                    value,
-                }
-            } else {
-                Value::Bytes(value)
-            }
+            Value::Bytes(value)
         };
         Self { id: record.id, value }
     }
@@ -109,14 +100,12 @@ impl Put {
 pub(super) enum Value {
     Bytes(Vec<u8>),
     Parts { key: Bytes, value: Vec<u8> },
-    Generated { key: Bytes, len: usize, number: usize },
 }
 impl Value {
     fn len(&self) -> usize {
         match self {
             Self::Bytes(bytes) => bytes.len(),
             Self::Parts { key, value } => key.len() + value.len(),
-            Self::Generated { key, len, .. } => key.len() + len,
         }
     }
     fn copy_into(&self, output: &mut [u8]) {
@@ -127,18 +116,12 @@ impl Value {
                 prefix.copy_from_slice(key);
                 payload.copy_from_slice(value);
             }
-            Self::Generated { key, len, number } => {
-                assert_eq!(output.len(), key.len() + len);
-                output[..key.len()].copy_from_slice(key);
-                output[key.len()..].fill(0x7c);
-                crate::stamp_value(&mut output[key.len()..], *number);
-            }
         }
     }
     fn bytes(&self) -> &[u8] {
         match self {
             Self::Bytes(bytes) => bytes,
-            Self::Generated { .. } | Self::Parts { .. } => unreachable!("split input requires prepared writes"),
+            Self::Parts { .. } => unreachable!("split input requires prepared writes"),
         }
     }
 }
