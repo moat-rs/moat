@@ -31,6 +31,8 @@ parser.add_argument("--seconds", type=int, default=5)
 parser.add_argument("--engines", nargs="+", default=["foyer", "v1", "v2"])
 parser.add_argument("--repeats", type=int, default=3)
 parser.add_argument("--records", type=int, default=256)
+parser.add_argument("--engine-preassembled-input", action="store_true")
+parser.add_argument("--v2-batch-large-records", action="store_true")
 args = parser.parse_args()
 cpus = sorted(os.sched_getaffinity(0))
 if len(cpus) < 3:
@@ -61,6 +63,8 @@ for engine in args.engines:
         "moat_verify_reads": False,
         "engine_segment_bytes": 16 << 20,
         "moat_batched_completions": True,
+        "engine_preassembled_input": args.engine_preassembled_input and engine in ("v1", "v2"),
+        "v2_batch_large_records": args.v2_batch_large_records and engine == "v2",
     }
     name = f"{engine}-d1-k{args.key_bytes}-v{args.value_bytes}"
     path = root / (name + ".json")

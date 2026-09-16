@@ -80,6 +80,12 @@ struct Config {
     engine_segment_bytes: u64,
     #[serde(default = "prefill_batch")]
     prefill_batch: usize,
+    // Diagnostic: produce the full-key engine envelope in one allocation.
+    #[serde(default)]
+    engine_preassembled_input: bool,
+    // Diagnostic: pack queued large values into v2 frames as well.
+    #[serde(default)]
+    v2_batch_large_records: bool,
 }
 
 #[derive(Debug)]
@@ -109,6 +115,14 @@ fn validate(config: &Config) -> Result<()> {
     );
     ensure!(config.bytes_per_disk.is_multiple_of(SEGMENT), "unaligned device window");
     ensure!(config.prefill_batch > 0, "empty prefill batch");
+    ensure!(
+        !config.engine_preassembled_input || matches!(config.engine.as_str(), "v1" | "v2"),
+        "preassembled input requires an engine adapter"
+    );
+    ensure!(
+        !config.v2_batch_large_records || config.engine == "v2",
+        "large-frame batching requires v2"
+    );
     ensure!(
         config.engine_segment_bytes >= 16 << 20
             && config.engine_segment_bytes <= u32::MAX as u64
@@ -354,9 +368,9 @@ impl Cache {
             .disk_of(&Xxh3.identify(&[0; 16], DEFAULT_IDENTITY_VERSION, key))
             .unwrap()
     }
-    async fn put(&self, key: moat_cache::Bytes, value: Vec<u8>) -> Result<()> {
+    async fn put(&self, key: moat_cache::Bytes, value: Vec<u8>, preassembled: bool) -> Result<()> {
         match self {
-            Self::Engines(store) => store.put(key, value).await?,
+            Self::Engines(store) => store.put(key, value, preassembled).await?,
             Self::Moat(cache) => {
                 cache.insert(key, value.into()).await?;
             }
@@ -578,16 +592,21 @@ async fn run(c: Config) -> Result<()> {
             let cache = cache.clone();
             let keys = keys.clone();
             let len = c.value_bytes;
+            let preassembled = c.engine_preassembled_input;
             let stop = (start + width).min(end);
             jobs.push(tokio::spawn(async move {
                 let writes = (start..stop).map(|i| {
                     let cache = &cache;
                     let key = keys[i].clone();
                     async move {
-                        let mut value = vec![0x7c; len];
-                        value[..8].copy_from_slice(&(i as u64).to_le_bytes());
-                        value[len - 8..].copy_from_slice(&(!(i as u64)).to_le_bytes());
-                        cache.put(key, value).await
+                        let prefix = if preassembled { key.len() } else { 0 };
+                        let mut value = vec![0x7c; prefix + len];
+                        if preassembled {
+                            value[..prefix].copy_from_slice(&key);
+                        }
+                        value[prefix..prefix + 8].copy_from_slice(&(i as u64).to_le_bytes());
+                        value[prefix + len - 8..].copy_from_slice(&(!(i as u64)).to_le_bytes());
+                        cache.put(key, value, preassembled).await
                     }
                 });
                 for result in join_all(writes).await {

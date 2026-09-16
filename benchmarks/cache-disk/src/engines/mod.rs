@@ -109,13 +109,18 @@ impl Engines {
         let id = Xxh3.identify(&[0; 16], DEFAULT_IDENTITY_VERSION, key);
         (id, &self.senders[self.placement.disk_of(&id).unwrap()])
     }
-    pub async fn put(&self, key: Bytes, value: Vec<u8>) -> Result<()> {
+    pub async fn put(&self, key: Bytes, value: Vec<u8>, preassembled: bool) -> Result<()> {
         let (id, sender) = self.route(&key);
         // Both engines store exactly the same full-key envelope. Field lengths
         // are fixed by this workload; no production cache policy is benchmarked.
-        let mut bytes = Vec::with_capacity(key.len() + value.len());
-        bytes.extend_from_slice(&key);
-        bytes.extend_from_slice(&value);
+        let bytes = if preassembled {
+            value
+        } else {
+            let mut bytes = Vec::with_capacity(key.len() + value.len());
+            bytes.extend_from_slice(&key);
+            bytes.extend_from_slice(&value);
+            bytes
+        };
         let (reply, wait) = oneshot::channel();
         sender
             .send(Command::Put(Put {

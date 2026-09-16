@@ -60,6 +60,7 @@ pub(super) struct V2 {
     limits: FrameLimits,
     len: u32,
     verify: bool,
+    batch_large: bool,
     lsn: u64,
     out: Vec<Completion>,
 }
@@ -101,6 +102,7 @@ impl V2 {
             limits,
             len: (c.key_bytes + c.value_bytes) as u32,
             verify: c.moat_verify_reads,
+            batch_large: c.v2_batch_large_records,
             lsn: 1,
             out: Vec::with_capacity(256),
         })
@@ -109,7 +111,7 @@ impl V2 {
 impl Backend for V2 {
     fn put(&mut self, batch: &VecDeque<Put>) -> Result<Option<(u64, usize)>> {
         let first = &batch[0];
-        let (result, count) = if first.value.len() >= 65536 {
+        let (result, count) = if first.value.len() >= 65536 && !self.batch_large {
             let Some(mut buffer) = self.pool.alloc(PreparedFrame::required_len(self.limits, self.len)?) else {
                 return Ok(None);
             };
