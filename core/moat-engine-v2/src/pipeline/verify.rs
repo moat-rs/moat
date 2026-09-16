@@ -148,7 +148,13 @@ impl<Q: crate::io::Queue> Pipeline<Q> {
     /// If another write publishes before `read`, admission checks sizes again.
     pub(super) fn verified_read_requirements(&self, key: ChunkId, range: Range<u32>) -> Result<ReadRequirements> {
         let location = self.location(key)?;
-        let read = VerifiedRead::plan(Ticket(self.next_ticket), key, location, range, self.base)?;
+        let read = VerifiedRead::plan(
+            Ticket(self.next_ticket),
+            key,
+            location,
+            range,
+            self.extents[location.segment as usize].base,
+        )?;
         Ok(ReadRequirements {
             metadata_len: read.metadata_len(),
             value_len: read.value_buffer_len(),
@@ -167,7 +173,13 @@ impl<Q: crate::io::Queue> Pipeline<Q> {
         let prepare = || -> Result<VerifiedRead> {
             let ticket = self.admission(false)?;
             let location = self.location(key)?;
-            let read = VerifiedRead::plan(ticket, key, location, range, self.base)?;
+            let read = VerifiedRead::plan(
+                ticket,
+                key,
+                location,
+                range,
+                self.extents[location.segment as usize].base,
+            )?;
             for (required, available) in [
                 (
                     read.metadata_len(),
@@ -189,7 +201,7 @@ impl<Q: crate::io::Queue> Pipeline<Q> {
             Err(error) => return Err(Rejected { error, input: buffers }),
         };
         let ticket = read.ticket;
-        let offset = self.base + read.location.frame_offset as u64;
+        let offset = self.extents[read.location.segment as usize].base + read.location.frame_offset as u64;
         let len = read.metadata_len();
         read.value = Some(buffers.value);
         let slot = self.take_slot(Pending::VerifiedRead(read));

@@ -20,3 +20,6 @@ pub mod frame;
 pub mod io;
 pub mod pipeline;
 pub mod segment;
+
+#[cfg(unix)]
+pub mod engine;

@@ -79,9 +79,9 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// Rejected admission with input ownership preserved for retry.
 #[derive(Debug)]
-pub struct Rejected<T> {
+pub struct Rejected<T, E = Error> {
     /// Why admission failed.
-    pub error: Error,
+    pub error: E,
     /// Original input buffers, still owned by the caller.
     pub input: T,
 }

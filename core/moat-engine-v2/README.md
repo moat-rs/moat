@@ -2,7 +2,7 @@
 
 Independent implementation of the [unified immutable frame proposal](../../docs/design/engine-frame-layout.md), developed alongside `moat-engine` for review before replacement. It does not depend on, wrap, or copy the old engine's pipelines. Shared primitives come from `moat-common`: chunk identifiers, alignment helpers, CRC32C generation and verification, and buffers. Frame assembly uses the common checksum iterator to write directly into the metadata area without allocating a checksum vector.
 
-**Implemented: frame codec, segment metadata/recovery primitives, and a single-owner I/O pipeline.** `Pipeline<Q>` connects one explicitly assigned segment to file or Linux io_uring I/O, a local index, reads with optional verification, ordered write completion, and flush. This crate is not yet a complete device engine or a drop-in replacement. Device/superblock encoding, cross-segment management, crash-safe header updates, and physical space reclamation remain subsequent stages. The existing engine and its consumers continue to use their current implementation.
+**Implemented: frame and segment codecs, a single-owner I/O pipeline, and an append-only multi-segment device engine.** `Engine<D, Q>` persists geometry, rebuilds one resident index, routes reads across allocations, and rolls over full segments. It reuses the existing pipeline and registered I/O path without adding locks. `Pipeline<Q>` remains available for a caller-managed single segment. The crate is not yet a drop-in replacement: physical reclamation, segment reuse, and integration with existing consumers remain separate work. See the [device lifecycle document](../../docs/design/engine-device-lifecycle.md).
 
 ## Usage
 
@@ -31,7 +31,7 @@ The codec accepts byte slices. The I/O layer must supply an aligned buffer addre
 
 ## Persistent encoding
 
-All integer fields are explicitly little-endian; there are no Rust layout casts or unsafe blocks. Frame starts and lengths are multiples of 4096 bytes. The magic is `MOATFRM2` and the version is `2`. The decoder rejects the original engine's batch encoding; this is not a migration reader. These constants identify frames only, not a completed device format.
+All integer fields are explicitly little-endian; there are no Rust layout casts or unsafe blocks. Frame starts and lengths are multiples of 4096 bytes. The magic is `MOATFRM2` and the version is `2`. The decoder rejects the original engine's batch encoding; this is not a migration reader. These constants identify frames; device superblocks have a separate magic and version.
 
 | Header offset | Bytes | Field |
 | ---: | ---: | --- |
@@ -67,7 +67,7 @@ Metadata is variable-length: `64 + 64 * records + 4 * checksum_count`. It is not
 
 Eight-byte value-start alignment is a fixed format invariant enforced by both construction and validation, with no configuration switch. The current CRC backend's small-value path can benefit from aligned `u64` processing without a bytewise prefix. Basic alignment adds 0–7 padding bytes before each nonempty value; value lengths are unchanged. Page-placement rules may introduce larger gaps. This choice does not imply a performance improvement for every value size or workload.
 
-`FrameHeader::decode` checks the fixed header before callers allocate or read the declared extent. Geometry calculations use 64-bit arithmetic and are bounded before conversion to slice indices. `FrameLimits` must eventually be persisted in the device superblock, independently of runtime batching options. `FramePosition` checks segment incarnation and physical offset; the segment allocator must separately reserve footer space.
+`FrameHeader::decode` checks the fixed header before callers allocate or read the declared extent. Geometry calculations use 64-bit arithmetic and are bounded before conversion to slice indices. `Engine` persists `FrameLimits` in the device superblocks, independently of runtime batching options. `FramePosition` checks segment incarnation and physical offset; the segment allocator must separately reserve footer space.
 
 ## Construction and ownership
 
@@ -96,7 +96,7 @@ The common admission path uses a constant-time upper bound. Near capacity, it wa
 
 Verified reads must eventually fetch metadata and distant payload as separate extents, coalescing only when useful. For 32 records of 1 KiB each, metadata occupies 2240 bytes and the last value begins at offset 34816. The APIs let a reader validate the front metadata and that value without fetching intervening payloads. The pipeline now implements this read planning and I/O submission, including reusing payload bytes already fetched with metadata.
 
-Checksums detect corruption; they do not make writes atomic or durable. The segment scanner implements prefix validation. The pipeline implements ordered publication and flush barriers; device lifecycle and safe segment reuse remain caller responsibilities.
+Checksums detect corruption; they do not make writes atomic or durable. The segment scanner implements prefix validation. The pipeline implements ordered publication and flush barriers; `Engine` implements allocation and sealing, while safe segment reuse remains unimplemented.
 
 ## Segment metadata and recovery
 
@@ -133,7 +133,7 @@ assert_eq!(footer.frames().next().unwrap().record(0).unwrap().descriptor().lsn, 
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-Segment codec tests use memory images; pipeline tests also use small temporary files and Linux io_uring. They establish validation, I/O ordering, and reservation behavior, not power-loss safety. In particular, a torn in-place segment-header update is detectable but not repairable here; a recoverable update protocol remains required before persistent I/O integration.
+Segment codec tests use memory images; pipeline tests also use small temporary files and Linux io_uring. They establish validation, I/O ordering, and reservation behavior, not power-loss safety. `Engine` preserves the original allocation header and writes a separate seal header after persisting the footer. Lifecycle fault tests cover failed calls and torn metadata; they do not simulate hardware power loss.
 
 ## Error contract
 
@@ -164,7 +164,7 @@ The [pipeline document](../../docs/design/engine-io-pipeline.md) describes owner
 - `flush()` waits for preceding writes and a data-sync operation. Write completion alone does not imply durability. A write or sync failure blocks further writes to the assigned allocation.
 - `read_only` and `restore` accept recovered storage and scanner/footer metadata without authorizing new writes to the recovered tail.
 
-`io::FileQueue` is a blocking functional backend. On Linux, `io::UringQueue::with_pool(file, depth, pool)` registers the shared `moat-common::BufferPool` arenas and uses fixed-buffer reads/writes for their buffers. `UringQueue::new(file, depth)` supports ordinary aligned buffers. Both constructors register the file, batch submissions, and request `SINGLE_ISSUER` with `DEFER_TASKRUN`; unsupported kernels fall back to a basic ring, observable through `deferred_taskrun()`. Registration failures remain errors. The index, operation slots, and write publication queue have a single mutable owner. Upper-layer segment selection and future reclamation safety remain separate work.
+`io::FileQueue` is a blocking functional backend. On Linux, `io::UringQueue::with_pool(file, depth, pool)` registers the shared `moat-common::BufferPool` arenas and uses fixed-buffer reads/writes for their buffers. `UringQueue::new(file, depth)` supports ordinary aligned buffers. Both constructors register the file, batch submissions, and request `SINGLE_ISSUER` with `DEFER_TASKRUN`; unsupported kernels fall back to a basic ring, observable through `deferred_taskrun()`. Registration failures remain errors. The index, operation slots, and write publication queue have a single mutable owner. `Engine::rollover_to` exposes caller-directed selection of unused slots; reclamation safety remains separate work.
 
 `io::Buffer` owns either an `AlignedBuf` or a `PooledBuf`. Write methods and `ReadBuffers::new` accept either through `Into<Buffer>`; explicit `ReadBuffers` fields take `.into()`. Completion and rejection return the same allocation without copying its contents or cloning its pool owner. A registered queue rejects buffers from another pool before I/O, while heap buffers use ordinary reads/writes. Registered storage stays alive until the ring is closed, and accepted requests are drained before their memory is released.
 

@@ -97,7 +97,7 @@ impl<Q: Queue> Pipeline<Q> {
                 } else {
                     read.value = request.buffer.take();
                 }
-                let position = self.position(read.location.frame_offset)?;
+                let position = self.position_in(read.location.segment as usize, read.location.frame_offset)?;
                 let result = result.and_then(|()| {
                     if metadata_phase {
                         read.finish_metadata(self.limits, position)

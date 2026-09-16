@@ -148,7 +148,7 @@ impl<Q: Queue> Pipeline<Q> {
         let location = self.location(key)?;
         frame::validate_range(location.value_len, range)?;
         Ok(ReadExtent::new(
-            self.base + location.frame_offset as u64 + location.value_offset as u64,
+            self.extents[location.segment as usize].base + location.frame_offset as u64 + location.value_offset as u64,
             range,
         ))
     }

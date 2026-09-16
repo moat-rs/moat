@@ -22,6 +22,7 @@ pub(super) type Index = HashMap<ChunkId, Location, ChunkIdHashBuilder>;
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Location {
+    pub segment: u32,
     pub frame_offset: u32,
     pub frame_len: u32,
     pub metadata_len: u32,
@@ -32,13 +33,14 @@ pub(super) struct Location {
     pub kind: RecordKind,
 }
 
-pub(super) fn entries(metadata: Metadata<'_>) -> impl Iterator<Item = (ChunkId, Location)> {
+pub(super) fn entries(metadata: Metadata<'_>, segment: u32) -> impl Iterator<Item = (ChunkId, Location)> {
     let header = metadata.header();
     metadata.records().enumerate().map(move |(ordinal, record)| {
         let d = record.descriptor();
         (
             d.key,
             Location {
+                segment,
                 frame_offset: header.position().offset(),
                 frame_len: header.frame_len() as u32,
                 metadata_len: header.metadata_len() as u32,

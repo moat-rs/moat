@@ -107,6 +107,11 @@ enum Pending {
     Flush { ticket: Ticket, submitted: bool },
 }
 
+struct Extent {
+    header: SegmentHeader,
+    base: u64,
+}
+
 /// A bounded pipeline whose queue, index, and publication order share one owner.
 ///
 /// Different workers can own independent pipelines without locks. A returned
@@ -115,8 +120,8 @@ enum Pending {
 /// prohibited while this pipeline or any read into its storage remains live.
 pub struct Pipeline<Q> {
     queue: Q,
-    header: SegmentHeader,
-    base: u64,
+    extents: Vec<Extent>,
+    current: usize,
     limits: FrameLimits,
     segment: Option<SegmentBuilder>,
     index: Index,
@@ -155,11 +160,24 @@ impl<Q: Queue> Pipeline<Q> {
         {
             return Err(Error::InvalidArgument("invalid queue, extent, or I/O frame limit"));
         }
+        let mut pipeline = Self::empty(queue, limits)?;
+        pipeline.extents.push(Extent { header, base });
+        Ok(pipeline)
+    }
+
+    pub(crate) fn empty(queue: Q, limits: FrameLimits) -> Result<Self> {
+        if queue.depth() == 0
+            || queue.depth() > 32768
+            || queue.vacant() != queue.depth()
+            || limits.max_frame_len() > i32::MAX as u32
+        {
+            return Err(Error::InvalidArgument("invalid queue or frame limit"));
+        }
         let depth = queue.depth();
         Ok(Self {
             queue,
-            header,
-            base,
+            extents: Vec::new(),
+            current: 0,
             limits,
             segment: None,
             index: Index::default(),
@@ -185,26 +203,78 @@ impl<Q: Queue> Pipeline<Q> {
         let position = self.position(h.position().offset())?;
         if position.segment_seq() != h.position().segment_seq()
             || h.position().offset() as u64 + h.frame_len() as u64
-                > self
+                > self.extents[self.current]
                     .header
                     .footer_range()
-                    .map_or(self.header.segment_len(), |range| range.start) as u64
+                    .map_or(self.extents[self.current].header.segment_len(), |range| range.start)
+                    as u64
         {
             return Err(Error::InvalidArgument(
                 "recovered frame is outside the assigned segment",
             ));
         }
         let metadata = Metadata::decode(metadata.as_bytes(), self.limits, position)?;
-        index::apply(&mut self.index, index::entries(metadata));
+        index::apply(&mut self.index, index::entries(metadata, self.current as u32));
         Ok(())
     }
 
     fn position(&self, offset: u32) -> Result<FramePosition> {
-        let end = self
-            .header
-            .footer_range()
-            .map_or(self.header.segment_len(), |range| range.start);
-        Ok(FramePosition::new(self.header.id().sequence, offset, end)?)
+        self.position_in(self.current, offset)
+    }
+
+    fn position_in(&self, segment: usize, offset: u32) -> Result<FramePosition> {
+        let header = self.extents[segment].header;
+        let end = header.footer_range().map_or(header.segment_len(), |range| range.start);
+        Ok(FramePosition::new(header.id().sequence, offset, end)?)
+    }
+
+    // Device geometry validates disjoint extents and never reuses an allocation.
+    pub(crate) fn attach(&mut self, header: SegmentHeader, base: u64, writable: bool) -> Result<()> {
+        if self.in_flight() != 0
+            || self.segment.is_some()
+            || self.queue_failed
+            || self.failed_at.is_some()
+            || self.extents.len() >= u32::MAX as usize
+        {
+            return Err(Error::InvalidArgument("pipeline cannot switch segment"));
+        }
+        let builder = if writable {
+            Some(SegmentBuilder::new(header)?)
+        } else {
+            None
+        };
+        self.current = self.extents.len();
+        self.extents.push(Extent { header, base });
+        self.segment = builder;
+        Ok(())
+    }
+
+    pub(crate) fn take_segment(&mut self) -> Result<Option<SegmentBuilder>> {
+        if self.in_flight() != 0 {
+            return Err(Error::Backpressure);
+        }
+        if self.queue_failed {
+            return Err(Error::QueueFailed);
+        }
+        if let Some(ticket) = self.failed_at {
+            return Err(Error::WriteFailed(ticket));
+        }
+        Ok(self.segment.take())
+    }
+
+    pub(crate) fn reserve_index(
+        &mut self,
+        additional: usize,
+    ) -> std::result::Result<(), std::collections::TryReserveError> {
+        self.index.try_reserve(additional)
+    }
+
+    pub(crate) fn index_len(&self) -> usize {
+        self.index.len()
+    }
+
+    pub(crate) fn data_end(&self) -> Option<u32> {
+        self.segment.as_ref().map(SegmentBuilder::data_end)
     }
 
     fn location(&self, key: ChunkId) -> Result<Location> {

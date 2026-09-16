@@ -73,7 +73,7 @@ impl<Q: Queue> Pipeline<Q> {
             let position = encode(segment, this.limits, buffer)?;
             let metadata = Metadata::decode(buffer, this.limits, position)?;
             let len = metadata.header().frame_len();
-            let entries = index::entries(metadata).collect();
+            let entries = index::entries(metadata, this.current as u32).collect();
             segment.append(metadata)?;
             Ok((
                 Write {
@@ -81,7 +81,7 @@ impl<Q: Queue> Pipeline<Q> {
                     entries,
                     completed: None,
                 },
-                this.base + position.offset() as u64,
+                this.extents[this.current].base + position.offset() as u64,
                 len,
             ))
         };
