@@ -14,6 +14,8 @@
 
 //! Matched disk-cache workloads; raw devices require a checked serial allowlist.
 
+mod engines;
+
 use std::{
     fs,
     hash::{BuildHasherDefault, DefaultHasher},
@@ -72,6 +74,12 @@ struct Config {
     moat_verify_reads: bool,
     #[serde(default)]
     moat_batched_completions: bool,
+    #[serde(default)]
+    moat_huge_pages: bool,
+    #[serde(default = "engine_segment_bytes")]
+    engine_segment_bytes: u64,
+    #[serde(default = "prefill_batch")]
+    prefill_batch: usize,
 }
 
 #[derive(Debug)]
@@ -100,6 +108,20 @@ fn validate(config: &Config) -> Result<()> {
         "invalid record size"
     );
     ensure!(config.bytes_per_disk.is_multiple_of(SEGMENT), "unaligned device window");
+    ensure!(config.prefill_batch > 0, "empty prefill batch");
+    ensure!(
+        config.engine_segment_bytes >= 16 << 20
+            && config.engine_segment_bytes <= u32::MAX as u64
+            && config.engine_segment_bytes.is_multiple_of(4096),
+        "invalid engine segment size"
+    );
+    ensure!(
+        config
+            .key_bytes
+            .checked_add(config.value_bytes)
+            .is_some_and(|len| len <= (4 << 20) + 4096),
+        "entry exceeds engine value bound"
+    );
     let mut seen = std::collections::HashSet::new();
     for disk in &config.disks {
         let path = fs::canonicalize(&disk.path)?;
@@ -182,6 +204,7 @@ impl Device for Window {
     }
 }
 enum Cache {
+    Engines(engines::Engines),
     Moat(Moat),
     Foyer { shards: Vec<Foyer>, placement: Placement },
 }
@@ -196,6 +219,9 @@ impl Cache {
                 weight: c.bytes_per_disk,
             })
             .collect();
+        if matches!(c.engine.as_str(), "v1" | "v2") {
+            return Ok(Self::Engines(engines::Engines::open(c, targets)?));
+        }
         if c.engine == "moat" {
             let mut engines = Vec::new();
             for (disk, target) in c.disks.iter().zip(&targets) {
@@ -320,6 +346,7 @@ impl Cache {
     }
     async fn put(&self, key: moat_cache::Bytes, value: Vec<u8>) -> Result<()> {
         match self {
+            Self::Engines(store) => store.put(key, value).await?,
             Self::Moat(cache) => {
                 cache.insert(key, value.into()).await?;
             }
@@ -331,7 +358,7 @@ impl Cache {
     }
     async fn drain(&self) -> Result<()> {
         match self {
-            Self::Moat(_) => {}
+            Self::Moat(_) | Self::Engines(_) => {}
             Self::Foyer { shards, .. } => {
                 for cache in shards {
                     cache.storage().wait().await;
@@ -351,6 +378,10 @@ impl Cache {
             Ok(())
         }
         match self {
+            Self::Engines(store) => {
+                let data = store.get(key).await?;
+                check(&data.bytes()[key.len()..], expected, len)
+            }
             Self::Moat(cache) => {
                 let view = cache.get(key).await?.context("unexpected moat disk miss")?;
                 ensure!(!view.is_resident(), "unexpected moat memory promotion");
@@ -365,6 +396,7 @@ impl Cache {
     }
     fn assert_disk_only(&self) -> Result<()> {
         match self {
+            Self::Engines(_) => {}
             Self::Moat(cache) => ensure!(
                 cache.statistics().memory.resident_weight == 0,
                 "memory residency changed"
@@ -379,6 +411,7 @@ impl Cache {
     }
     async fn close(&self) -> Result<()> {
         match self {
+            Self::Engines(store) => store.close().await?,
             Self::Moat(cache) => cache.close().await?,
             Self::Foyer { shards, .. } => {
                 for cache in shards {
@@ -525,20 +558,30 @@ async fn run(c: Config) -> Result<()> {
     let before_disk = diskstats(&c)?;
     let before_cpu = cpu();
     let start = Instant::now();
-    for first in (0..count).step_by(256) {
+    for first in (0..count).step_by(c.prefill_batch) {
         let mut jobs = Vec::new();
-        for (i, key) in keys.iter().enumerate().take((first + 256).min(count)).skip(first) {
-            let mut value = vec![0x7c; c.value_bytes];
-            value[..8].copy_from_slice(&(i as u64).to_le_bytes());
-            value[c.value_bytes - 8..].copy_from_slice(&(!(i as u64)).to_le_bytes());
-            jobs.push(cache.put(key.clone(), value));
+        for (i, key) in keys
+            .iter()
+            .enumerate()
+            .take((first + c.prefill_batch).min(count))
+            .skip(first)
+        {
+            let cache = cache.clone();
+            let key = key.clone();
+            let len = c.value_bytes;
+            jobs.push(tokio::spawn(async move {
+                let mut value = vec![0x7c; len];
+                value[..8].copy_from_slice(&(i as u64).to_le_bytes());
+                value[len - 8..].copy_from_slice(&(!(i as u64)).to_le_bytes());
+                cache.put(key, value).await
+            }));
         }
         for result in join_all(jobs).await {
-            result?;
+            result??;
         }
         cache.drain().await?;
     }
-    // Both implementations have completed their writes; use an identical device sync boundary.
+    // Each implementation has completed its writes; use the same device sync boundary.
     for disk in &c.disks {
         FileDevice::open(&disk.path, true)?.sync()?;
     }
@@ -603,4 +646,18 @@ fn main() -> Result<()> {
         })
         .build()?;
     runtime.block_on(run(config))
+}
+
+fn fresh_identity() -> Result<[u8; 16]> {
+    use std::io::Read;
+    let mut bytes = [0; 16];
+    fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    Ok(bytes)
+}
+
+fn engine_segment_bytes() -> u64 {
+    2 << 30
+}
+fn prefill_batch() -> usize {
+    256
 }
