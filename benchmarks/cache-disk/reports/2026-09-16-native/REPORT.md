@@ -78,6 +78,8 @@ One additional process was interrupted by the observer racing a disappearing `/p
 
 V1/v2 have 21 application threads, including the coordinator, and create no Tokio runtime. Linux may add io-wq helpers; these appear in observed process-task counts. [Runtime observations](runtime.csv) retain their counts and huge-page snapshots. Process CPU measurements are not whole-machine CPU usage.
 
+A [separate read-only investigation](IO_WQ.md) confirms that the devices' 128-KiB request limit triggers io-wq offload for larger SQEs, including with huge pages and fixed buffers. Splitting the same logical read into SQEs within that limit avoided observed helpers in the diagnostic cases. This establishes the offload mechanism, not its share of the reported throughput or CPU cost.
+
 The previous [application/Tokio comparison](../2026-09-16-20disk/REPORT.md) remains valid for its recorded adapter. The native driver also moves hashing/placement out of timing, generates values on device-owner threads, avoids the intermediate large-value envelope copy, fixes per-device concurrency, and removes cross-device batch barriers. Its gains are not isolated lock-removal measurements or engine implementation changes.
 
 GNU/glibc release build, harness Clippy, three driver tests, and multi-device file smoke checks passed. Driver tests cover backpressure, out-of-order completions, and corrupt-data rejection. File checks cover engine read CRC, small-segment rollover, and buffer pressure. All 20 devices were idle, had no open users, and had released their benchmark locks after the final profiles.
