@@ -12,26 +12,42 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{
-    fs::OpenOptions,
-    io::{Seek, SeekFrom},
-    ops::Range,
-    os::unix::fs::{FileExt, OpenOptionsExt},
-    sync::Arc,
-};
+use std::{fs::OpenOptions, io, ops::Range, os::unix::fs::OpenOptionsExt, sync::Arc};
 
-use moat_common::{AlignedBuf, BufferPool, PAGE_SIZE, align_up};
+use moat_common::{BufferPool, PAGE_SIZE, align_up};
 use moat_engine_v2::{
+    engine::{self, Device, Engine, Error, FormatOptions},
     frame::{FrameBuilder, FrameLimits, PreparedFrame},
     io::{Buffer, UringQueue},
-    pipeline::{Completion, Error, Pipeline, ReadBuffers},
-    segment::{SegmentHeader, SegmentId},
+    pipeline::{self, Completion, ReadBuffers},
 };
 
-use crate::{Backend, CAPACITY, Config, DEPTH, MAX_VALUE, Record, SEGMENT, key};
+use crate::{Backend, Config, DEPTH, MAX_VALUE, Record, SEGMENT, key};
+
+// The same explicit extent bounds formatting, allocation, and recovery.
+struct Window {
+    file: std::fs::File,
+    capacity: u64,
+}
+impl Device for Window {
+    fn capacity(&self) -> io::Result<u64> {
+        Ok(self.capacity)
+    }
+    fn read_at(&self, bytes: &mut [u8], offset: u64) -> io::Result<()> {
+        assert!(offset <= self.capacity && bytes.len() as u64 <= self.capacity - offset);
+        Device::read_at(&self.file, bytes, offset)
+    }
+    fn write_at(&self, bytes: &[u8], offset: u64) -> io::Result<()> {
+        assert!(offset <= self.capacity && bytes.len() as u64 <= self.capacity - offset);
+        Device::write_at(&self.file, bytes, offset)
+    }
+    fn sync(&self) -> io::Result<()> {
+        self.file.sync_data()
+    }
+}
 
 pub(super) struct Unified {
-    pipeline: Pipeline<UringQueue>,
+    pipeline: Engine<Window, UringQueue>,
     limits: FrameLimits,
     pool: Arc<BufferPool>,
     deferred: bool,
@@ -45,28 +61,35 @@ pub(super) struct Unified {
 
 impl Unified {
     pub(super) fn new(config: &Config) -> Self {
-        let mut file = OpenOptions::new()
+        let file = OpenOptions::new()
             .read(true)
             .write(true)
             .custom_flags(libc::O_DIRECT)
             .open(&config.path)
             .unwrap();
-        assert!(file.seek(SeekFrom::End(0)).unwrap() >= CAPACITY);
-        let id = SegmentId {
-            device_id: crate::fresh_identity(),
-            segment_no: 0,
-            sequence: 1,
-        };
-        let header = SegmentHeader::new(id, SEGMENT as u32).unwrap();
-        let mut page = AlignedBuf::zeroed(PAGE_SIZE as usize);
-        header.encode_into(&mut page).unwrap();
-        file.write_all_at(&page, SEGMENT).unwrap();
-        file.sync_data().unwrap();
+        assert!(Device::capacity(&file).unwrap() >= config.capacity());
         let limits = FrameLimits::new(8 << 20, MAX_VALUE).unwrap();
+        let device = Window {
+            file: file.try_clone().unwrap(),
+            capacity: config.capacity(),
+        };
+        engine::format(
+            &device,
+            FormatOptions {
+                device_id: crate::fresh_identity(),
+                segment_size: SEGMENT as u32,
+                limits,
+            },
+        )
+        .unwrap();
         let pool = BufferPool::new(config.pool_options()).unwrap();
         let queue = UringQueue::with_pool(file, DEPTH, pool.clone()).unwrap();
         let deferred = queue.deferred_taskrun();
-        let pipeline = Pipeline::new(queue, header, limits, SEGMENT).unwrap();
+        let mut pipeline = Engine::open(device, queue).unwrap();
+        if config.whole_device {
+            let average = config.sizes().iter().sum::<usize>() / config.sizes().len();
+            pipeline.reserve_index(config.bytes as usize / average + 64).unwrap();
+        }
         let sizes = config.sizes();
         let capacity = if sizes.len() == 1 && sizes[0] >= 65536 {
             PreparedFrame::required_len(limits, sizes[0] as u32).unwrap()
@@ -122,9 +145,9 @@ impl Backend for Unified {
         crate::memory::snapshot(&self.pool, self.deferred)
     }
 
-    fn write_batch(&mut self, records: &[Record]) {
+    fn write_batch(&mut self, records: &[Record]) -> usize {
         if records.iter().all(|record| record.value.len() >= 65536) {
-            for record in records {
+            for (written, record) in records.iter().enumerate() {
                 let mut buffer = self.buffer();
                 PreparedFrame::new(self.limits, record.value.len() as u32, &mut buffer)
                     .unwrap()
@@ -142,7 +165,14 @@ impl Backend for Unified {
                             break;
                         }
                         Err(rejected) => {
-                            assert!(matches!(rejected.error, Error::Backpressure), "{}", rejected.error);
+                            if matches!(rejected.error, Error::OutOfSpace) {
+                                return written;
+                            }
+                            assert!(
+                                matches!(rejected.error, Error::Pipeline(pipeline::Error::Backpressure)),
+                                "{}",
+                                rejected.error
+                            );
                             buffer = rejected.input;
                             self.reap(true);
                         }
@@ -164,7 +194,11 @@ impl Backend for Unified {
                         break;
                     }
                     Err(rejected) => {
-                        assert!(matches!(rejected.error, Error::Backpressure), "{}", rejected.error);
+                        assert!(
+                            matches!(rejected.error, Error::Pipeline(pipeline::Error::Backpressure)),
+                            "{}",
+                            rejected.error
+                        );
                         buffer = rejected.input;
                         self.reap(true);
                     }
@@ -172,13 +206,23 @@ impl Backend for Unified {
             }
         }
         self.reap(false);
+        records.len()
+    }
+
+    fn seal(&mut self) {
+        self.pipeline.seal().unwrap();
+    }
+
+    fn usage(&self) -> serde_json::Value {
+        serde_json::json!({"segments":self.pipeline.layout().segment_count(),
+            "allocated_segments":self.pipeline.allocated_segments(),"indexed_versions":self.pipeline.indexed_versions()})
     }
 
     fn flush(&mut self, _: u64) {
         loop {
             match self.pipeline.flush() {
                 Ok(_) => break,
-                Err(Error::Backpressure) => self.reap(true),
+                Err(Error::Pipeline(pipeline::Error::Backpressure)) => self.reap(true),
                 Err(error) => panic!("flush failed: {error}"),
             }
         }

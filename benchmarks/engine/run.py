@@ -44,10 +44,16 @@ def main():
     parser.add_argument("--range", default="full", help="full or START:END in logical value bytes")
     parser.add_argument("--sizes", nargs="+", default=["100", "1024", "4096", "65536", "4194304", "mixed"])
     parser.add_argument("--huge-pages", choices=["disabled", "preferred", "required"], default="preferred")
-    parser.add_argument("--overwrite-first-4g", action="store_true", required=True)
+    scope = parser.add_mutually_exclusive_group(required=True)
+    scope.add_argument("--overwrite-first-4g", action="store_true")
+    scope.add_argument("--overwrite-entire-device", action="store_true")
+    parser.add_argument("--expected-capacity", type=int, help="required byte capacity for whole-device runs")
     args = parser.parse_args()
     if args.repeats < 1 or args.seconds < 1 or not 1 <= args.payload_mib <= 512:
         parser.error("repeats/seconds must be positive; payload must be 1..512 MiB")
+    if args.overwrite_entire_device:
+        if not args.expected_capacity or any(not size.isdigit() or int(size) < 65536 for size in args.sizes):
+            parser.error("whole-device mode requires --expected-capacity and explicit --sizes >= 65536")
     device = args.device.resolve(strict=True)
     binary = args.binary.resolve(strict=True)
     sys = Path("/sys/class/block") / device.name
@@ -59,6 +65,15 @@ def main():
     require(len(info) == 1 and not info[0].get("children"), "device has partitions")
     require(not info[0]["fstype"] and not any(info[0]["mountpoints"]), "device has a filesystem or mount")
     require(subprocess.check_output(["wipefs", "--no-act", str(device)]) == b"", "device has signatures")
+    capacity = int((sys / "size").read_text()) * 512
+    if args.overwrite_entire_device:
+        require(capacity == args.expected_capacity, "wrong device capacity")
+        # Conservative peak estimate covers both resident indexes, pool and input.
+        minimum_size = min(map(int, args.sizes))
+        estimate = (capacity // minimum_size + 64) * 512 + (2 << 30)
+        available = next(int(line.split()[1]) * 1024 for line in Path("/proc/meminfo").read_text().splitlines()
+                         if line.startswith("MemAvailable:"))
+        require(estimate < available // 2, "insufficient memory for distinct-key whole-device index")
     require(args.cpu in os.sched_getaffinity(0), "CPU is outside allowed affinity")
     args.output.mkdir(parents=True, exist_ok=True, mode=0o700)
     # Coordinate other runs of this harness; this cannot exclude unrelated users.
@@ -77,13 +92,14 @@ def main():
                     errors = args.output / f"{name}.stderr"
                     qds = "1,16,64" if size == "4194304" and args.range == "full" else "1,64"
                     command = ["taskset", "-c", str(args.cpu), str(binary), str(device), engine, size,
-                               str(args.payload_mib), str(args.seconds), qds, "--overwrite-first-4g",
+                               str(args.payload_mib), str(args.seconds), qds,
+                               "--overwrite-entire-device" if args.overwrite_entire_device else "--overwrite-first-4g",
                                "--verify", args.verify, "--range", args.range, "--huge-pages", args.huge_pages]
                     print("START", name, flush=True)
                     # Never silently overwrite an earlier measurement.
                     with output.open("x") as out, errors.open("x") as err:
                         subprocess.run(command, stdout=out, stderr=err, check=True,
-                                       timeout=120 + len(qds.split(",")) * (args.seconds + 5))
+                                       timeout=(24 * 3600 if args.overwrite_entire_device else 120) + len(qds.split(",")) * (args.seconds + 5))
                     for line in output.read_text().splitlines():
                         row = json.loads(line)
                         print("DONE", name, row["phase"], row["qd"],

@@ -19,22 +19,22 @@ use moat_engine::{
     Reader, Writer, blocking,
 };
 
-use crate::{Backend, CAPACITY, Config, DEPTH, MAX_VALUE, Record, SEGMENT, key};
+use crate::{Backend, Config, DEPTH, MAX_VALUE, Record, SEGMENT, key};
 
 // The engine derives all async offsets from this capacity. This wrapper also
-// bounds the blocking format/recovery path; it never formats the whole disk.
-struct Window(FileDevice);
+// bounds the blocking format/recovery path to the explicitly selected extent.
+struct Window(FileDevice, u64);
 
 impl Device for Window {
     fn capacity(&self) -> u64 {
-        CAPACITY
+        self.1
     }
     fn read_at(&self, buf: &mut [u8], offset: u64) -> io::Result<()> {
-        assert!(offset <= CAPACITY && buf.len() as u64 <= CAPACITY - offset);
+        assert!(offset <= self.1 && buf.len() as u64 <= self.1 - offset);
         self.0.read_at(buf, offset)
     }
     fn write_at(&self, buf: &[u8], offset: u64) -> io::Result<()> {
-        assert!(offset <= CAPACITY && buf.len() as u64 <= CAPACITY - offset);
+        assert!(offset <= self.1 && buf.len() as u64 <= self.1 - offset);
         self.0.write_at(buf, offset)
     }
     fn sync(&self) -> io::Result<()> {
@@ -46,6 +46,7 @@ impl Device for Window {
 }
 
 pub(super) struct Legacy {
+    engine: moat_engine::Engine,
     queue: Box<dyn IoQueue>,
     deferred: bool,
     writer: Writer,
@@ -59,8 +60,8 @@ pub(super) struct Legacy {
 impl Legacy {
     pub(super) fn new(config: &Config) -> Self {
         let device = FileDevice::open(&config.path, true).unwrap();
-        assert!(device.capacity() >= CAPACITY);
-        let device = Arc::new(Window(device));
+        assert!(device.capacity() >= config.capacity());
+        let device = Arc::new(Window(device, config.capacity()));
         moat_engine::format(
             &*device,
             &FormatOptions {
@@ -94,6 +95,7 @@ impl Legacy {
         let writer = engine.writer(&mut *queue).unwrap();
         let reader = engine.reader(&mut *queue).unwrap();
         Self {
+            engine,
             queue,
             deferred,
             writer,
@@ -120,8 +122,8 @@ impl Backend for Legacy {
         crate::memory::snapshot(self.queue.pool(), self.deferred)
     }
 
-    fn write_batch(&mut self, records: &[Record]) {
-        for record in records {
+    fn write_batch(&mut self, records: &[Record]) -> usize {
+        for (written, record) in records.iter().enumerate() {
             loop {
                 let result = if record.value.len() >= 65536 {
                     match self.writer.prepare_large(&mut *self.queue, record.value.len() as u32) {
@@ -149,11 +151,27 @@ impl Backend for Legacy {
                 match result {
                     Ok(PutOutcome::Written { .. }) => break,
                     Err(Error::Busy) => self.reap(true),
+                    Err(Error::NoSpace) => return written,
                     other => panic!("write failed: {other:?}"),
                 }
             }
         }
         self.reap(false);
+        records.len()
+    }
+
+    fn seal(&mut self) {
+        let ticket = self.writer.seal(&mut *self.queue).unwrap();
+        blocking::wait_with(&mut *self.queue, &mut self.writer, ticket, &mut self.writes).unwrap();
+        for completion in self.writes.drain(..) {
+            completion.result.unwrap();
+        }
+    }
+
+    fn usage(&self) -> serde_json::Value {
+        let usage = self.engine.usage();
+        serde_json::json!({"segments":usage.segments,"allocated_segments":usage.segments-usage.free_segments,
+            "indexed_versions":usage.chunks,"index_bytes":usage.index_bytes})
     }
 
     fn flush(&mut self, records: u64) {

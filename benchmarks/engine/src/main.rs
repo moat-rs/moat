@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Destructive, bounded comparison of the legacy engine and the v2 pipeline.
+//! Destructive comparison of the legacy engine and the v2 device engine.
 
 mod legacy;
 mod memory;
@@ -39,6 +39,8 @@ struct Config {
     engine: String,
     workload: String,
     bytes: u64,
+    capacity: u64,
+    whole_device: bool,
     seconds: u64,
     qds: Vec<usize>,
     disk_stat: Option<PathBuf>,
@@ -52,16 +54,28 @@ impl Config {
         let args: Vec<_> = std::env::args().collect();
         assert!(
             args.len() >= 8 && (args.len() - 8).is_multiple_of(2),
-            "usage: moat-engine-compare PATH legacy|v2 SIZE|mixed PAYLOAD_MIB SECONDS QDS --overwrite-first-4g [--verify true|false] [--range full|START:END] [--huge-pages disabled|preferred|required]"
+            "usage: moat-engine-compare PATH legacy|v2 SIZE|mixed PAYLOAD_MIB SECONDS QDS --overwrite-first-4g|--overwrite-entire-device [--verify true|false] [--range full|START:END] [--huge-pages disabled|preferred|required]"
         );
-        assert_eq!(args[7], "--overwrite-first-4g");
+        assert!(matches!(
+            args[7].as_str(),
+            "--overwrite-first-4g" | "--overwrite-entire-device"
+        ));
         assert!(matches!(args[2].as_str(), "legacy" | "v2"));
         let path = fs::canonicalize(&args[1]).unwrap();
         let stat = PathBuf::from("/sys/class/block")
             .join(path.file_name().unwrap())
             .join("stat");
+        let whole_device = args[7] == "--overwrite-entire-device";
+        let capacity = if whole_device {
+            use std::io::{Seek, SeekFrom};
+            fs::File::open(&path).unwrap().seek(SeekFrom::End(0)).unwrap()
+        } else {
+            CAPACITY
+        };
         let mut config = Self {
             path,
+            capacity,
+            whole_device,
             engine: args[2].clone(),
             workload: args[3].clone(),
             bytes: args[4].parse::<u64>().unwrap().checked_mul(1 << 20).unwrap(),
@@ -98,9 +112,23 @@ impl Config {
                 "range must fit every value"
             );
         }
-        assert!((1..=512 << 20).contains(&config.bytes));
+        if whole_device {
+            // Full distinct-key workloads require a feasible resident index.
+            // Do not silently turn a tiny-record run into a repeated-key workload.
+            assert!(
+                config.sizes().iter().all(|&size| size >= 65536),
+                "full distinct-key mode requires values >= 64 KiB; use a separately labeled distributed workload for smaller values"
+            );
+            config.bytes = capacity;
+        } else {
+            assert!((1..=512 << 20).contains(&config.bytes));
+        }
         assert!(config.seconds > 0 && config.qds.iter().all(|&qd| (1..=DEPTH).contains(&qd)));
         config
+    }
+
+    fn capacity(&self) -> u64 {
+        self.capacity
     }
 
     fn pool_options(&self) -> PoolOptions {
@@ -147,7 +175,9 @@ fn fresh_identity() -> [u8; 16] {
 
 trait Backend {
     fn memory(&self) -> serde_json::Value;
-    fn write_batch(&mut self, records: &[Record]);
+    fn write_batch(&mut self, records: &[Record]) -> usize;
+    fn seal(&mut self);
+    fn usage(&self) -> serde_json::Value;
     fn flush(&mut self, records: u64);
     fn prepare_reads(&mut self, config: &Config, sizes: &[usize], qd: usize);
     fn read(&mut self, number: u64, range: Range<u32>) -> u64;
@@ -223,6 +253,8 @@ impl Measurement {
         println!(
             "{}",
             json!({
+                "scope": if config.whole_device { "whole-device" } else { "first-4g" },
+                "device_capacity": config.capacity, "usage": backend.usage(),
                 "engine": config.engine, "workload": config.workload, "phase": phase,
                 "qd": qd, "seconds": elapsed, "operations": self.completed,
                 "payload_bytes": self.bytes, "gib_s": self.bytes as f64 / elapsed / (1u64 << 30) as f64,
@@ -299,8 +331,12 @@ fn run(mut backend: impl Backend, config: &Config) {
     // Mixed groups retain input order. Uniform large records use prepared I/O.
     let batch = if sizes.len() == 1 && sizes[0] >= 65536 { 16 } else { 64 };
     let group_bytes: u64 = (0..batch).map(|i| sizes[i % sizes.len()] as u64).sum();
-    let groups = (config.bytes / group_bytes).max(1);
-    let count = groups * batch as u64;
+    let groups = if config.whole_device {
+        u64::MAX / batch as u64
+    } else {
+        (config.bytes / group_bytes).max(1)
+    };
+    let mut count = 0u64;
     let mut records: Vec<_> = (0..batch)
         .map(|i| Record {
             number: 0,
@@ -308,16 +344,42 @@ fn run(mut backend: impl Backend, config: &Config) {
         })
         .collect();
     let mut measurement = Measurement::new(config);
+    let mut progress = Instant::now();
     for group in 0..groups {
         for (i, record) in records.iter_mut().enumerate() {
             record.number = group * batch as u64 + i as u64;
             record.value[..8].copy_from_slice(&record.number.to_le_bytes());
         }
-        backend.write_batch(&records);
+        let written = backend.write_batch(&records);
+        count += written as u64;
+        measurement.bytes += records[..written].iter().map(|r| r.value.len() as u64).sum::<u64>();
+        if config.whole_device && progress.elapsed() >= Duration::from_secs(30) {
+            eprintln!(
+                "{}",
+                json!({"phase":"fill-progress", "records":count,
+                "payload_bytes":measurement.bytes,"seconds":measurement.start.elapsed().as_secs_f64(),
+                "usage":backend.usage()})
+            );
+            progress = Instant::now();
+        }
+        if written != records.len() {
+            assert!(config.whole_device, "bounded dataset did not fit");
+            break;
+        }
     }
     backend.flush(count);
+    if config.whole_device {
+        backend.seal();
+    }
+    assert!(count > 0, "device did not fit any records");
+    if config.whole_device {
+        let usage = backend.usage();
+        assert_eq!(
+            usage["segments"], usage["allocated_segments"],
+            "fill stopped before all segments were allocated"
+        );
+    }
     measurement.completed = count;
-    measurement.bytes = groups * group_bytes;
     measurement.report(config, "write", DEPTH, &backend);
     for &qd in &config.qds {
         backend.prepare_reads(config, &sizes, qd);

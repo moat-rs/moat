@@ -2,7 +2,7 @@
 
 This standalone crate compares `moat-engine` and `moat-engine-v2` on the same
 Linux direct-I/O device. Neither engine depends on this harness or on the other
-engine. The v2 side exercises its current single-segment pipeline; this is not
+engine. The v2 side exercises its append-only multi-segment engine. This is not
 a comparison of complete storage services.
 
 The [2026-09-15 report](reports/2026-09-15/REPORT.md) includes three repetitions,
@@ -48,12 +48,45 @@ python3 benchmarks/engine/run.py \
   --repeats 3 --seconds 10 --payload-mib 512 --overwrite-first-4g
 ```
 
-Both engines use a 2-GiB data segment beginning at offset 2 GiB. The legacy
-formatter sees a bounded 4-GiB device and writes its superblocks in the first
-segment-sized region. The v2 harness persists a fresh active segment header;
-its geometry and format bounds are fixed by the harness. Every run uses a new
-device identity. V2 device formatting, allocation and rollover remain outside
-the pipeline's implemented scope.
+Both engines use 2-GiB segment slots. Legacy reserves its first segment-sized
+region for device metadata; v2 places two 4-KiB superblocks before its slots
+and reserves an independent seal page in each slot. Each formatter sees only
+the selected device extent. Every run uses a fresh random identity. The current
+v2 adapter uses `Engine`, including persisted geometry, allocation and rollover.
+Historical single-segment reports retain their original source and methodology.
+
+### Whole-device mode
+
+`--overwrite-entire-device` **destroys data throughout the assigned device**.
+The runner additionally requires its exact byte capacity and checks a
+conservative index-memory estimate. Use a separate output directory:
+
+```sh
+python3 benchmarks/engine/run.py \
+  --device /dev/REVIEWED_SCRATCH_DEVICE --serial EXPECTED_SERIAL \
+  --expected-capacity CAPACITY_BYTES --overwrite-entire-device \
+  --binary /path/to/moat-engine-compare --output /path/to/full-results \
+  --cpu NUMA_LOCAL_CPU --sizes 4194304 --repeats 1 --seconds 60
+```
+
+Each engine writes distinct consecutive keys until admission reports no free
+segments, drains writes, flushes, and seals the final segment. The harness
+requires all available segments to have been allocated. Progress is emitted to
+stderr every 30 seconds. The measured write interval includes rollover and
+sealing. Both indexes reserve capacity before timing in this mode.
+
+Random reads select from the entire written key range, including all allocated
+segments. They do not mean that every record is read during a timed phase.
+Logical payload occupancy is less than raw capacity because of metadata,
+page padding, space too small for another record, and a trailing partial slot.
+This is one complete append-only fill, not a steady-state overwrite/GC workload
+or a claim of device preconditioning. One repeat is one full fill per engine;
+additional repeats repeat the full fill and must be budgeted accordingly.
+
+Distinct-key full-device workloads currently require values of at least 64 KiB.
+The indexes are resident; filling a large device with tiny distinct records can
+exceed RAM. Smaller datasets spread across a device would be a different
+workload and must not be reported as a full tiny-record fill.
 
 For a short functional exercise, explicitly create a disposable sparse file
 of 4 GiB, then invoke the binary directly. The binary opens an existing path
@@ -84,7 +117,7 @@ target/engine-compare/x86_64-unknown-linux-gnu/release/moat-engine-compare \
   completion processing and the final durable flush. No precomputed checksums
   are passed to the legacy prepared-write path. Allocation of initial I/O
   buffers, input patterns, formatting and opening occur before the timer.
-- Each dataset contains at most 512 MiB of payload, rounded down to complete
+- In bounded mode, each dataset contains at most 512 MiB of payload, rounded down to complete
   groups, with a minimum of one group. This is **burst write throughput**, not
   sustained, full-device steady-state ingestion or per-record durable latency.
 - Uniform random full-value reads use logical concurrency 1 and 64; 4-MiB
@@ -101,7 +134,7 @@ target/engine-compare/x86_64-unknown-linux-gnu/release/moat-engine-compare \
   Use `--sizes` on the runner to select values large enough to contain it, for
   example `--sizes 65536 4194304 --range 4096:8192`. Range reads use concurrency
   1 and 64. Keep different range/mode runs in separate output directories.
-- Three fresh write/read repetitions alternate engine order. Read selection
+- The runner defaults to three fresh write/read repetitions and alternates engine order. Read selection
   uses the same fixed random seed. Latency samples cover one request in 16,
   from read admission through delivery to the common verification callback.
 
@@ -116,7 +149,7 @@ separate. Store raw files outside the repository; publish only sanitized data.
 python3 benchmarks/engine/analyze.py /path/to/results /path/to/summary
 ```
 
-The analyzer groups by huge-page policy, verification mode and range as well as workload, engine
+The analyzer groups by device scope/capacity, huge-page policy, verification mode and range as well as workload, engine
 and concurrency. It retains each numeric sample and reports medians and the minimum
 and maximum throughput per configuration. Median latency columns are medians
 of run percentiles, not percentiles of a combined latency histogram.
@@ -134,12 +167,14 @@ rather than attributing unrelated huge pages to the pool. `Transparent` alone
 means a successful hint, not guaranteed promotion.
 
 The two implementations retain differences: legacy uses a preallocated
-concurrent index; v2 uses a growing single-owner index. Initial legacy index
-allocation is outside the timer; v2 index growth is inside it. The v2 builder
+concurrent index; v2 uses a single-owner hash table. In bounded mode, initial
+legacy index allocation is outside the timer and v2 index growth is inside it.
+Whole-device mode reserves both indexes before timing. The v2 builder
 and completion metadata allocate in the measured write path. These results compare the current code,
 and do not isolate only the on-disk format or the benefit of removing locks.
 
-The data window is small and repeatedly accessed. Direct I/O bypasses the OS
+The bounded data window is small and repeatedly accessed. Direct I/O bypasses the OS
 page cache but does not eliminate device-side caching or prove cold-media
 latency. This suite does not test recovery, crashes, bit corruption,
-rollover, multi-worker scaling, concurrent mutation or space reclamation.
+multi-worker scaling, concurrent mutation or space reclamation. Whole-device
+mode additionally exercises rollover and routing across all allocated segments.

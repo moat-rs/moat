@@ -25,7 +25,7 @@ from statistics import median
 
 def write_csv(path, rows):
     with path.open("w", newline="") as file:
-        writer = csv.DictWriter(file, fieldnames=list(rows[0]))
+        writer = csv.DictWriter(file, fieldnames=list(dict.fromkeys(key for row in rows for key in row)))
         writer.writeheader()
         writer.writerows(rows)
 
@@ -45,20 +45,24 @@ def main():
                 raise ValueError(f"invalid sample: {path.name}")
             row.setdefault("read_range", "full")
             row.setdefault("huge_pages", "Disabled")
+            row.setdefault("scope", "first-4g")
+            row.setdefault("device_capacity", 4 << 30)
+            usage = row.pop("usage", {})
+            row.update({f"usage_{key}": value for key, value in usage.items()})
             memory = row.pop("memory", {})
             row.update({f"memory_{key}": value for key, value in memory.items()})
             row["device_read_bytes_per_op"] = row["device_read_bytes"] / row["operations"]
             row["device_write_amplification"] = row["device_write_bytes"] / row["payload_bytes"]
             row["cpu_percent"] = (row["cpu_user_s"] + row["cpu_system_s"]) / row["seconds"] * 100
             rows.append(row)
-            groups[(row["workload"], row["phase"], row["qd"], row["engine"], row["verified_reads"], row["read_range"], row["huge_pages"])].append(row)
+            groups[(row["workload"], row["phase"], row["qd"], row["engine"], row["verified_reads"], row["read_range"], row["huge_pages"], row["scope"], row["device_capacity"])].append(row)
     if not rows:
         raise ValueError("no engine samples")
     summaries = []
-    for (workload, phase, qd, engine, verify, read_range, huge_pages), samples in sorted(groups.items()):
+    for (workload, phase, qd, engine, verify, read_range, huge_pages, scope, capacity), samples in sorted(groups.items()):
         if len({row["repeat"] for row in samples}) != len(samples):
             raise ValueError("duplicate repetition")
-        summary = {"workload": workload, "phase": phase, "qd": qd, "engine": engine, "samples": len(samples), "verified_reads": verify, "read_range": read_range, "huge_pages": huge_pages}
+        summary = {"workload": workload, "phase": phase, "qd": qd, "engine": engine, "samples": len(samples), "verified_reads": verify, "read_range": read_range, "huge_pages": huge_pages, "scope": scope, "device_capacity": capacity}
         for column in ["gib_s", "ops_s", "p50_us", "p99_us", "p999_us", "device_read_bytes_per_op", "device_write_amplification", "cpu_percent"]:
             values = [row[column] for row in samples if row[column] is not None]
             summary[column] = median(values) if values else None
