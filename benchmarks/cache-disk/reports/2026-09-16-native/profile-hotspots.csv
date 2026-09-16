@@ -1,0 +1,60 @@
+engine,phase,value_bytes,self_percent,kind,symbol
+v1,write,65536,50.87,user,libc bulk copy (rep movsb)
+v1,write,65536,10.66,user,libc bulk fill (rep stosb)
+v1,write,65536,6.65,user,crc_fast::crc32::fusion::x86::iscsi::avx512_vpclmulqdq::crc32_iscsi_avx512_vpclmulqdq_v3x2
+v1,write,65536,5.59,kernel,Unresolved kernel samples
+v1,write,65536,2.75,user,malloc
+v1,write,65536,2.42,user,moat_engine::codec::checksum_since
+v1,write,65536,1.96,user,<moat_engine::index::Table>::find
+v1,write,65536,1.56,user,"<alloc::vec::Vec<moat_cache_disk_compare::engines::Done>>::extend_trusted::<core::iter::adapters::map::Map<alloc::vec::drain::Drain<moat_engine::writer::types::Completion>, <moat_cache_disk_compare::engines::v1::V1 as moat_cache_disk_compare::engines::Backend>::poll::{closure#0}>>"
+v1,write,65536,1.28,user,<moat_engine::writer::Writer>::close_all_pending
+v1,write,65536,1.23,user,moat_cache_disk_compare::workload::worker::<moat_cache_disk_compare::engines::v1::V1>
+v1,write,65536,0.93,user,<moat_engine::writer::Writer>::poll
+v1,write,65536,0.67,user,<moat_engine::index::IndexWriter>::insert_if_newer
+v1,write,65536,0.66,user,<moat_cache_disk_compare::engines::Put>::new
+v1,write,65536,0.58,user,<moat_common::pool::BufferPool>::alloc
+v1,write,65536,0.55,user,<moat_engine::index::Table>::locate
+v1,read,65536,25.13,kernel,Unresolved kernel samples
+v1,read,65536,16.79,user,"<alloc::vec::Vec<moat_cache_disk_compare::engines::Done>>::extend_trusted::<core::iter::adapters::map::Map<alloc::vec::drain::Drain<moat_engine::writer::types::Completion>, <moat_cache_disk_compare::engines::v1::V1 as moat_cache_disk_compare::engines::Backend>::poll::{closure#0}>>"
+v1,read,65536,12.45,user,<moat_engine::writer::Writer>::close_all_pending
+v1,read,65536,6.89,user,Unresolved userspace samples
+v1,read,65536,6.43,user,<moat_common::pool::PooledBuf as core::ops::drop::Drop>::drop
+v1,read,65536,5.92,user,<moat_engine::index::Index>::get_and_pin
+v1,read,65536,2.92,user,<moat_engine::index::Table>::find
+v1,read,65536,2.8,user,"<core::iter::adapters::map::Map<alloc::vec::drain::Drain<moat_engine::reader::ReadCompletion>, <moat_cache_disk_compare::engines::v1::V1 as moat_cache_disk_compare::engines::Backend>::poll::{closure#1}> as core::iter::traits::iterator::Iterator>::fold::<(), core::iter::traits::iterator::Iterator::for_each::call<moat_cache_disk_compare::engines::Done, <alloc::vec::Vec<moat_cache_disk_compare::engines::Done>>::extend_trusted<core::iter::adapters::map::Map<alloc::vec::drain::Drain<moat_engine::reader::ReadCompletion>, <moat_cache_disk_compare::engines::v1::V1 as moat_cache_disk_compare::engines::Backend>::poll::{closure#1}>>::{closure#0}>::{closure#0}>"
+v1,read,65536,1.45,user,<moat_engine::reader::Reader>::poll
+v1,read,65536,1.36,user,<moat_engine::uring::UringQueue as moat_engine::io::IoQueue>::poll
+v1,read,65536,0.94,user,moat_cache_disk_compare::workload::reads::<moat_cache_disk_compare::engines::v1::V1>
+v1,read,65536,0.74,user,<moat_cache_disk_compare::engines::v1::V1 as moat_cache_disk_compare::engines::Backend>::poll
+v1,read,65536,0.67,user,<moat_cache_disk_compare::engines::Data>::check
+v1,read,65536,0.67,user,io_uring::sys::io_uring_enter
+v1,read,65536,0.65,user,<std::sys::pal::unix::time::Timespec>::now
+v1,read,65536,0.56,user,<moat_common::pool::BufferPool>::alloc
+v2,write,65536,48.52,user,libc bulk copy (rep movsb)
+v2,write,65536,17.47,user,libc bulk fill (rep stosb)
+v2,write,65536,6.6,user,crc_fast::crc32::fusion::x86::iscsi::avx512_vpclmulqdq::crc32_iscsi_avx512_vpclmulqdq_v3x2
+v2,write,65536,4.36,kernel,Unresolved kernel samples
+v2,write,65536,2.0,user,moat_engine_v2::codec::crc_with_zeroed_checksum
+v2,write,65536,1.29,user,malloc
+v2,write,65536,1.16,user,<moat_engine_v2::pipeline::Pipeline<moat_engine_v2::io::uring::UringQueue>>::write_prepared::<moat_engine_v2::io::buffer::Buffer>
+v2,write,65536,0.92,user,<moat_engine_v2::pipeline::Pipeline<moat_engine_v2::io::uring::UringQueue>>::poll
+v2,write,65536,0.72,user,<moat_cache_disk_compare::engines::Put>::new
+v2,write,65536,0.68,user,moat_cache_disk_compare::workload::worker::<moat_cache_disk_compare::engines::v2::V2>
+v2,write,65536,0.67,user,"<hashbrown::map::HashMap<moat_common::chunk_id::ChunkId, moat_engine_v2::pipeline::index::Location, core::hash::BuildHasherDefault<moat_common::chunk_id::ChunkIdHasher>>>::rustc_entry"
+v2,write,65536,0.59,user,Unresolved userspace samples
+v2,write,65536,0.54,user,<moat_engine_v2::frame::header::FrameHeader>::decode
+v2,write,65536,0.53,user,<moat_engine_v2::io::uring::UringQueue as moat_engine_v2::io::Queue>::try_submit
+v2,read,65536,43.39,kernel,Unresolved kernel samples
+v2,read,65536,14.04,user,Unresolved userspace samples
+v2,read,65536,7.06,user,<moat_common::pool::PooledBuf as core::ops::drop::Drop>::drop
+v2,read,65536,6.01,user,<moat_common::pool::BufferPool>::alloc
+v2,read,65536,5.94,user,<moat_engine_v2::pipeline::Pipeline<moat_engine_v2::io::uring::UringQueue>>::direct_extent
+v2,read,65536,2.37,user,<moat_engine_v2::io::uring::UringQueue as moat_engine_v2::io::Queue>::poll
+v2,read,65536,2.28,user,<moat_engine_v2::pipeline::Pipeline<moat_engine_v2::io::uring::UringQueue>>::poll
+v2,read,65536,1.34,user,<std::sys::pal::unix::time::Timespec>::now
+v2,read,65536,1.04,user,<moat_cache_disk_compare::engines::v2::V2 as moat_cache_disk_compare::engines::Backend>::poll
+v2,read,65536,0.87,user,<moat_engine_v2::io::uring::UringQueue>::reap
+v2,read,65536,0.85,user,moat_cache_disk_compare::workload::reads::<moat_cache_disk_compare::engines::v2::V2>
+v2,read,65536,0.76,user,io_uring::sys::io_uring_enter
+v2,read,65536,0.61,user,<moat_engine_v2::pipeline::Pipeline<moat_engine_v2::io::uring::UringQueue>>::start_flush
+v2,read,65536,0.53,user,syscall

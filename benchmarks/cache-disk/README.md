@@ -78,9 +78,13 @@ The file smoke runner uses 16-MiB engine segments to exercise rollover. Use
 `--disks 2 --verify-reads` to check multiple devices with engine CRC verification;
 for 4-MiB values, pass `--records 32` to fit its 1-GiB files.
 
-The [current twenty-device comparison](reports/2026-09-16-20disk/REPORT.md)
-compares foyer, v1, and v2 with independent write repetitions and numeric
-read/CPU/I/O results.
+The [native twenty-device comparison](reports/2026-09-16-native/REPORT.md)
+uses the current polling adapters, with 45 prefills, 75 measured read phases,
+and separate CPU profiles. Its CSVs retain run identifiers, exact operation
+counts and durations, CPU costs, and physical I/O totals.
+
+The [historical application/Tokio comparison](reports/2026-09-16-20disk/REPORT.md)
+retains its original source, workload, and all three implementations.
 
 The [bottleneck investigation](reports/2026-09-16-bottlenecks/REPORT.md)
 separates admission batching, envelope copying, large-frame packing, and
