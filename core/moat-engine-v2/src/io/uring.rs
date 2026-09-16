@@ -233,7 +233,11 @@ impl Queue for UringQueue {
     }
 
     fn poll(&mut self, wait: bool) -> io::Result<()> {
-        self.reap();
+        // Deferred task work is driven by the enter below. Other rings may have
+        // completed work since the last poll; reclaim its SQE budget first.
+        if !self.deferred {
+            self.reap();
+        }
         self.stage();
         if self.pending == 0 {
             return Ok(());

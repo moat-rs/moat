@@ -215,4 +215,4 @@ cargo bench -p moat-engine-v2 --bench frame
 
 The benchmark measures in-memory assembly, full validation, and prepared finalization. It does not measure device throughput, recovery, or end-to-end latency, and does not establish an improvement over the old engine.
 
-Pipeline functional checks can be run with `cargo test -p moat-engine-v2 --test pipeline -- --test-threads=1`. Device comparisons are maintained separately in the [benchmark reports](../../benchmarks/engine/README.md).
+Pipeline functional checks can be run with `cargo test -p moat-engine-v2 --test pipeline -- --test-threads=1`. The [experiment archive](../../docs/experiments/README.md) preserves the measured revisions, complete samples, profiles, and ablation decisions. The active [engine driver](../../benchmarks/engine/README.md) and [application comparison](../../benchmarks/cache-disk/README.md) document their different measurement boundaries.
