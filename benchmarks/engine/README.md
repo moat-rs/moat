@@ -21,6 +21,12 @@ fixed buffers/files and deferred completion work on both sides. It compares
 matching `Disabled` and `Preferred` huge-page policies, records observed memory
 backing, and retains 228 measured phases across two three-repetition matrices.
 
+The [full-device comparison](reports/2026-09-16-full/REPORT.md) fills the complete
+30.7-TB device with distinct 4-MiB records under both engines, then measures
+random reads across the entire written key range. It includes rollover and
+sealing, preserves fill-progress samples, and states the limits of one fill per
+engine. Tiny-record full fills are not part of that report.
+
 ## Build and run
 
 Build for GNU/Linux with glibc. `x86-64-v3` requires a compatible destination CPU;
