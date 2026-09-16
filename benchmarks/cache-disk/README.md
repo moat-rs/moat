@@ -60,6 +60,11 @@ The [current twenty-device comparison](reports/2026-09-16-20disk/REPORT.md)
 compares foyer, v1, and v2 with independent write repetitions and numeric
 read/CPU/I/O results.
 
+The [bottleneck investigation](reports/2026-09-16-bottlenecks/REPORT.md)
+separates admission batching, envelope copying, large-frame packing, and
+in-place producers with controlled twenty-device experiments. It preserves
+the default comparison and labels changes in producer semantics explicitly.
+
 The [historical matrix](reports/2026-09-10/REPORT.md) contains single-disk and
 20-disk results for four key/value sizes and three matched concurrency levels.
 [Methodology and limitations](reports/2026-09-10/README.md) describe the run.

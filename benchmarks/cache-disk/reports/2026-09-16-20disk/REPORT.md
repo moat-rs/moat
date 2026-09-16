@@ -117,6 +117,10 @@ in foyer's high-concurrency large reads. These are integration-path costs;
 the results are not isolated engine or device ceilings. The remaining small
 write regressions have not been reduced to one independently verified cause.
 
+The subsequent [controlled bottleneck investigation](../2026-09-16-bottlenecks/REPORT.md)
+tests admission batches and input preparation without changing the engine
+format. Its diagnostic producer modes are reported separately from this matrix.
+
 Validation and artifacts
 ------------------------
 
