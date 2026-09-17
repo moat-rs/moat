@@ -20,7 +20,7 @@ results belong here instead of beside executable code.
 | [io-wq boundary investigation](cache-disk/2026-09-16-native/IO_WQ.md) | Reproduces offload at the device request byte limit and validates the actual split queue. Huge pages do not remove that byte limit. Probe results establish behavior, not throughput. |
 | [Twenty-device request splitting](cache-disk/2026-09-16-split/REPORT.md) | Reruns all three engines after v2 splits oversized requests. Retains 45 prefills, 75 reads, phase observations, and the weaker results. |
 | [V2 ablation and cleanup](engine/2026-09-16-ablation/REPORT.md) | Removes one feature at a time, brackets treatments with fresh controls, and records the resulting implementation decisions. |
-| [Twenty-device mixed fill and recovery](engine/2026-09-17-recovery/REPORT.md) | Baseline before the footer-trailer change: five equally frequent record sizes, full-device fill, and three parallel recovery rounds with timing, index size, I/O, and verification results. |
+| [Footer recovery ablation](engine/2026-09-17-footer-ablation/REPORT.md) | Removes route over-reservation and bulky baseline attachments; retains measured allocation/read savings and fault coverage. |
 
 ## Optimization inventory
 

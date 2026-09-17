@@ -80,8 +80,8 @@ slot remains. Lifecycle operations pause admission and incur synchronous latency
 Full keys map to their latest LSN, kind, segment route, frame, and value location.
 Tombstones remain indexed so older values cannot reappear. Physical traversal order
 cannot override a higher LSN. The complete index resides in memory; `reserve_index`
-reserves capacity without establishing a memory admission budget. Segment route
-capacity is reserved when opening the device.
+reserves capacity without establishing a memory admission budget. Segment routes
+grow with discovered allocations rather than reserving space for every unused slot.
 
 Every slot requires its allocation header and final 4 KiB. Recovery validates
 allocation identity before comparing trailer generations. A valid same-generation

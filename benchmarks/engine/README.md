@@ -184,9 +184,3 @@ page cache but does not eliminate device-side caching or prove cold-media
 latency. This suite does not test recovery, crashes, bit corruption,
 multi-worker scaling, concurrent mutation or space reclamation. Whole-device
 mode additionally exercises rollover and routing across all allocated segments.
-
-## Mixed-record recovery benchmark
-
-The [recovery guide](RECOVERY.md) describes the standalone full-device fill and
-multi-device runner. Fresh processes measure `Engine::open` after every segment
-has been durably sealed.

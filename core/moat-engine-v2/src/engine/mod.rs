@@ -59,7 +59,7 @@ impl<D: Device, Q: Queue> Engine<D, Q> {
     /// accelerate recovery; active segments are scanned with payload validation.
     pub fn open(device: D, queue: Q) -> Result<Self> {
         let layout = Layout::read(&device)?;
-        let pipeline = Pipeline::empty(queue, layout.limits(), layout.segment_count() as usize)?;
+        let pipeline = Pipeline::empty(queue, layout.limits())?;
         let mut engine = Self {
             device,
             layout,

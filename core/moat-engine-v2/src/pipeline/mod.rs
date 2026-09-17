@@ -160,12 +160,12 @@ impl<Q: Queue> Pipeline<Q> {
         {
             return Err(Error::InvalidArgument("invalid queue, extent, or I/O frame limit"));
         }
-        let mut pipeline = Self::empty(queue, limits, 1)?;
+        let mut pipeline = Self::empty(queue, limits)?;
         pipeline.extents.push(Extent { header, base });
         Ok(pipeline)
     }
 
-    pub(crate) fn empty(queue: Q, limits: FrameLimits, segment_capacity: usize) -> Result<Self> {
+    pub(crate) fn empty(queue: Q, limits: FrameLimits) -> Result<Self> {
         if queue.depth() == 0
             || queue.depth() > 32768
             || queue.vacant() != queue.depth()
@@ -176,7 +176,7 @@ impl<Q: Queue> Pipeline<Q> {
         let depth = queue.depth();
         Ok(Self {
             queue,
-            extents: Vec::with_capacity(segment_capacity),
+            extents: Vec::new(),
             current: 0,
             limits,
             segment: None,
