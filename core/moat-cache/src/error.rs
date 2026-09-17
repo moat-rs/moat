@@ -43,7 +43,7 @@ pub enum Error {
     /// The cache is closing or its coordinator stopped.
     #[error("cache is closed")]
     Closed,
-    /// Capacity could not be made available while retaining storage GC reserves.
+    /// Logical capacity or append-only disk headroom is exhausted.
     #[error("cache disk capacity exhausted")]
     NoSpace,
 }

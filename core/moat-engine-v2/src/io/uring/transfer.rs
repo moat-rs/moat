@@ -88,8 +88,9 @@ impl Transfer {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use moat_common::AlignedBuf;
+
+    use super::*;
 
     fn transfer() -> Transfer {
         Transfer::new(

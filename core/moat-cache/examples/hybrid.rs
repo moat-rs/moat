@@ -21,25 +21,24 @@ use moat_cache::{Bytes, Cache, Lookup};
 use moat_cache_memory::Cache as MemoryCache;
 use moat_cache_store::{Options, Store};
 use moat_common::{HugePages, PoolOptions};
-use moat_engine::{FormatOptions, MemDevice, QueueBackend, QueueOptions};
+use moat_server::storage::{self, Disk, FormatOptions, FrameLimits, MemDevice, QueueBackend, QueueOptions};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     block_on(async {
         let device = Arc::new(MemDevice::new(17 << 20));
-        moat_engine::format(
+        storage::format(
             &*device,
             &FormatOptions {
-                segment_size: 1 << 20,
-                chunk_max: 128 << 10,
-                disk_uuid: [1; 16],
+                segment_size: (1 << 20) as u32,
+                limits: FrameLimits::new(((128 << 10) + 8192u32).next_power_of_two(), 128 << 10).unwrap(),
+                device_id: [1; 16],
             },
         )?;
-        let (engine, _) = moat_engine::open(
+        let engine = Disk::open(
             device,
-            moat_engine::Options {
+            storage::Options {
                 index_capacity: 128,
                 verify_reads: false,
-                ..Default::default()
             },
         )?;
         let (store, inventory) = Store::new(
@@ -48,7 +47,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 backend: QueueBackend::Sync,
                 queue: QueueOptions {
                     depth: 16,
-                    descriptors: 4,
+
                     pool: PoolOptions {
                         bytes: 16 << 20,
                         max_class: 1 << 20,

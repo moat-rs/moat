@@ -21,7 +21,7 @@ use moat_cache::{Bytes, Cache, MemoryPolicy, Options};
 use moat_cache_memory::Cache as MemoryCache;
 use moat_cache_store::Store;
 use moat_common::{HugePages, PoolOptions};
-use moat_engine::{FileDevice, FormatOptions, QueueBackend, QueueOptions};
+use moat_server::storage::{self, Disk, FileDevice, FormatOptions, FrameLimits, QueueBackend, QueueOptions};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let operations = std::env::var("MOAT_HYBRID_BENCH_OPS")
@@ -34,23 +34,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for (key_len, value_len) in [(16, 128), (256, 4096), (4096, 65536)] {
             let file = tempfile::NamedTempFile::new()?;
             let device = Arc::new(FileDevice::create(file.path(), 65 << 20, false)?);
-            moat_engine::format(
+            storage::format(
                 &*device,
                 &FormatOptions {
-                    segment_size: 1 << 20,
-                    chunk_max: 128 << 10,
-                    disk_uuid: [1; 16],
+                    segment_size: (1 << 20) as u32,
+                    limits: FrameLimits::new(((128 << 10) + 8192u32).next_power_of_two(), 128 << 10).unwrap(),
+                    device_id: [1; 16],
                 },
             )?;
-            let engine = moat_engine::open(
+            let engine = Disk::open(
                 device,
-                moat_engine::Options {
+                storage::Options {
                     index_capacity: 1024,
                     verify_reads: false,
-                    ..Default::default()
                 },
-            )?
-            .0;
+            )?;
             let (store, _) = Store::new(
                 vec![engine],
                 moat_cache_store::Options {
@@ -61,7 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     },
                     queue: QueueOptions {
                         depth: 16,
-                        descriptors: 4,
+
                         pool: PoolOptions {
                             bytes: 16 << 20,
                             max_class: 1 << 20,

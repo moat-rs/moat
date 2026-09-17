@@ -20,7 +20,7 @@ use futures_executor::block_on;
 use futures_util::{FutureExt, future::join_all};
 use moat_cache_store::{DeleteResult, Error, Options, Store};
 use moat_common::{ChunkId, HugePages, PoolOptions};
-use moat_engine::{Device, Engine, FormatOptions, MemDevice, QueueBackend, QueueOptions};
+use moat_server::storage::{self, Device, Disk, FormatOptions, FrameLimits, MemDevice, QueueBackend, QueueOptions};
 use parking_lot::{Condvar, Mutex};
 
 const SEGMENT: u64 = 1 << 20;
@@ -37,7 +37,7 @@ fn options() -> Options {
         backend: QueueBackend::Sync,
         queue: QueueOptions {
             depth: 8,
-            descriptors: 4,
+
             pool: PoolOptions {
                 bytes: 32 << 20,
                 max_class: 1 << 20,
@@ -47,18 +47,16 @@ fn options() -> Options {
         ..Default::default()
     }
 }
-fn engine(device: Arc<dyn Device>) -> Engine {
-    moat_engine::open(
+fn engine(device: Arc<dyn Device>) -> Disk {
+    Disk::open(
         device,
-        moat_engine::Options {
+        storage::Options {
             index_capacity: 1024,
-            batch_limit: 128 << 10,
+
             verify_reads: true,
-            ..Default::default()
         },
     )
     .unwrap()
-    .0
 }
 fn device(uuid: u8) -> Arc<GateDevice> {
     let device = Arc::new(GateDevice {
@@ -66,12 +64,12 @@ fn device(uuid: u8) -> Arc<GateDevice> {
         gate: Mutex::new((false, false)),
         changed: Condvar::new(),
     });
-    moat_engine::format(
+    storage::format(
         &*device,
         &FormatOptions {
-            segment_size: SEGMENT,
-            chunk_max: 128 << 10,
-            disk_uuid: [uuid; 16],
+            segment_size: (SEGMENT) as u32,
+            limits: FrameLimits::new(((128 << 10) + 8192u32).next_power_of_two(), 128 << 10).unwrap(),
+            device_id: [uuid; 16],
         },
     )
     .unwrap();
@@ -352,7 +350,7 @@ fn inventory_fences_conditional_deletes_and_restart_keep_completed_versions() {
 }
 
 #[test]
-fn failed_delete_keeps_the_value_and_can_be_retried() {
+fn failed_delete_poisoning_requires_reopen_and_preserves_the_value() {
     let device = device(6);
     let (store, _) = Store::new(vec![engine(device.clone())], options()).unwrap();
     let lsn = block_on(store.put(id(1), bytes(b"survivor"))).unwrap();
@@ -363,7 +361,10 @@ fn failed_delete_keeps_the_value_and_can_be_retried() {
     ));
     device.data.fail_writes_in(None);
     assert_eq!(&**block_on(store.get(id(1), None)).unwrap().unwrap(), b"survivor");
-    assert!(block_on(store.flush()).is_err()); // Observe the failed mutation.
+    assert!(block_on(store.flush()).is_err());
+    assert!(block_on(store.delete(id(1), Some(lsn))).is_err());
+    assert!(block_on(store.close()).is_err());
+    let (store, _) = Store::new(vec![engine(device.clone())], options()).unwrap();
     assert!(matches!(
         block_on(store.delete(id(1), Some(lsn))).unwrap(),
         DeleteResult::Deleted(_)
@@ -401,19 +402,18 @@ fn per_disk_workers_progress_independently_and_placement_survives_reordering() {
 fn startup_failure_releases_previously_acquired_writers_before_returning() {
     let a = engine(device(9));
     let b = engine(device(10));
-    let mut q = options().queue.build(QueueBackend::Sync).unwrap();
-    let writer = b.writer(q.as_mut()).unwrap();
+    let writer = storage::Session::open(b.clone(), &options().queue, QueueBackend::Sync).unwrap();
     assert!(Store::new(vec![a.clone(), b.clone()], options()).is_err());
     // The first worker must have finished shutdown even though the second failed.
-    let first = a.writer(q.as_mut()).unwrap();
-    first.detach(q.as_mut());
-    writer.detach(q.as_mut());
+    let first = storage::Session::open(a.clone(), &options().queue, QueueBackend::Sync).unwrap();
+    drop(first);
+    drop(writer);
     let (store, _) = Store::new(vec![a, b], options()).unwrap();
     block_on(store.close()).unwrap();
 }
 
 #[test]
-fn reclaim_preserves_live_chunks_and_frees_explicitly_deleted_space() {
+fn reclaim_is_unsupported_and_deleted_space_is_not_reused() {
     let device = device(11);
     let (store, _) = Store::new(vec![engine(device.clone())], options()).unwrap();
     for i in 0..32 {
@@ -423,8 +423,10 @@ fn reclaim_preserves_live_chunks_and_frees_explicitly_deleted_space() {
         block_on(store.delete(id(i), None)).unwrap();
     }
     let before = store.usage(0).unwrap().free_segments;
-    assert!(block_on(store.reclaim(0)).unwrap().is_some());
-    assert!(store.usage(0).unwrap().free_segments >= before);
+    assert!(
+        matches!(block_on(store.reclaim(0)), Err(Error::Engine(error)) if matches!(*error, storage::Error::Unsupported(_)))
+    );
+    assert_eq!(store.usage(0).unwrap().free_segments, before);
     for i in 20..32 {
         let data = block_on(store.get(id(i), None)).unwrap().unwrap();
         assert_eq!(data.len(), 100_000);
@@ -440,13 +442,13 @@ fn reclaim_preserves_live_chunks_and_frees_explicitly_deleted_space() {
 #[test]
 fn uring_file_backend_drives_the_same_adapter_contract() {
     let file = tempfile::NamedTempFile::new().unwrap();
-    let device = Arc::new(moat_engine::FileDevice::create(file.path(), 17 * SEGMENT, false).unwrap());
-    moat_engine::format(
+    let device = Arc::new(storage::FileDevice::create(file.path(), 17 * SEGMENT, false).unwrap());
+    storage::format(
         &*device,
         &FormatOptions {
-            segment_size: SEGMENT,
-            chunk_max: 128 << 10,
-            disk_uuid: [12; 16],
+            segment_size: (SEGMENT) as u32,
+            limits: FrameLimits::new(((128 << 10) + 8192u32).next_power_of_two(), 128 << 10).unwrap(),
+            device_id: [12; 16],
         },
     )
     .unwrap();
@@ -479,8 +481,11 @@ fn corruption_is_shared_with_waiters_and_does_not_leak_buffer_credits() {
     let opened = engine(device.clone());
     let (store, _) = Store::new(vec![opened.clone()], options()).unwrap();
     block_on(store.put(id(1), bytes(b"verified"))).unwrap();
-    let stat = opened.stat(&id(1)).unwrap();
-    let offset = (SEGMENT * (stat.segment as u64 + 1) + stat.value_offset as u64) as usize;
+    let offset = device.data.with_data(|data| {
+        data.windows(b"verified".len())
+            .position(|bytes| bytes == b"verified")
+            .unwrap()
+    });
     device.data.with_data_mut(|data| data[offset] ^= 1);
     device.arm();
     let hold = store.put(id(2), bytes(b"hold"));
@@ -495,7 +500,12 @@ fn corruption_is_shared_with_waiters_and_does_not_leak_buffer_credits() {
     let Error::Engine(b) = block_on(b).unwrap_err() else {
         panic!("expected engine error")
     };
-    assert!(matches!(&*a, moat_engine::Error::Corrupt(_)));
+    assert!(matches!(
+        &*a,
+        storage::Error::Engine(moat_engine_v2::engine::Error::Pipeline(
+            moat_engine_v2::pipeline::Error::Frame(_)
+        ))
+    ));
     assert!(Arc::ptr_eq(&a, &b));
     assert_eq!(store.statistics().requests, 0);
     assert_eq!(store.statistics().bytes, 0);
@@ -520,9 +530,8 @@ fn close_stops_admission_then_drains_before_releasing_the_writer() {
     block_on(close).unwrap();
     block_on(write).unwrap();
     assert_eq!(&**block_on(read).unwrap().unwrap(), b"pending");
-    let mut queue = options().queue.build(QueueBackend::Sync).unwrap();
-    let writer = opened.writer(queue.as_mut()).unwrap();
-    writer.detach(queue.as_mut());
+    let session = storage::Session::open(opened, &options().queue, QueueBackend::Sync).unwrap();
+    drop(session);
     assert_eq!(store.statistics().requests, 0);
 }
 

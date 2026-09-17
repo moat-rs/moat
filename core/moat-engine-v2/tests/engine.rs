@@ -15,6 +15,14 @@
 //! Multi-segment routing, restart, and lifecycle failure tests on small files.
 #![cfg(unix)]
 
+use std::{
+    cell::{Cell, RefCell},
+    fs::File,
+    io,
+    os::unix::fs::FileExt,
+    rc::Rc,
+};
+
 use moat_common::{AlignedBuf, ChunkId, PAGE_SIZE};
 use moat_engine_v2::{
     engine::{self, Device, Engine, Error, FormatOptions, Layout},
@@ -22,13 +30,6 @@ use moat_engine_v2::{
     io::{FileQueue, Queue},
     pipeline::{self, Completion, ReadBuffers},
     segment::{FooterTrailer, SegmentHeader},
-};
-use std::{
-    cell::{Cell, RefCell},
-    fs::File,
-    io,
-    os::unix::fs::FileExt,
-    rc::Rc,
 };
 
 const PAGE: usize = PAGE_SIZE as usize;

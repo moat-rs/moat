@@ -29,7 +29,6 @@ mod write;
 
 use std::collections::VecDeque;
 
-use crate::io::Buffer;
 pub use error::{Error, Rejected, Result};
 use index::{Index, Location};
 use moat_common::{ChunkId, PAGE_SIZE, is_aligned};
@@ -39,7 +38,7 @@ use verify::VerifiedRead;
 
 use crate::{
     frame::{FrameLimits, FramePosition, Metadata, RecordKind},
-    io::{Operation, Queue, Request},
+    io::{Buffer, Operation, Queue, Request},
     segment::{SegmentBuilder, SegmentHeader},
 };
 
@@ -268,6 +267,23 @@ impl<Q: Queue> Pipeline<Q> {
         self.index.try_reserve(additional)
     }
 
+    pub(crate) fn visit_versions(&self, mut visit: impl FnMut(ChunkId, u64, Option<u32>)) {
+        for (&key, location) in &self.index {
+            visit(
+                key,
+                location.lsn,
+                (location.kind == RecordKind::Data).then_some(location.value_len),
+            );
+        }
+    }
+
+    pub(crate) fn stat(&self, key: &ChunkId) -> Option<(u64, u32)> {
+        self.index
+            .get(key)
+            .filter(|loc| loc.kind == RecordKind::Data)
+            .map(|loc| (loc.lsn, loc.value_len))
+    }
+
     pub(crate) fn index_len(&self) -> usize {
         self.index.len()
     }
@@ -331,7 +347,15 @@ impl<Q: Queue> Pipeline<Q> {
     /// Queues a persistence barrier after preceding writes, blocking new write
     /// admission until it completes. Reads may continue. Poll to drive progress.
     pub fn flush(&mut self) -> Result<Ticket> {
-        let ticket = self.admission(true)?;
+        // A persistence barrier needs no active allocation, including immediately
+        // after open. It still must preserve failed-write and barrier ordering.
+        let ticket = self.admission(false)?;
+        if let Some(ticket) = self.failed_at {
+            return Err(Error::WriteFailed(ticket));
+        }
+        if self.flush.is_some() {
+            return Err(Error::Backpressure);
+        }
         let slot = self.take_slot(Pending::Flush {
             ticket,
             submitted: false,

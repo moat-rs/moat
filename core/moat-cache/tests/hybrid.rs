@@ -24,7 +24,7 @@ use moat_cache::{Bytes, Cache, DiskPolicy, Error, FillToken, Lookup, Options, Pr
 use moat_cache_memory::Cache as MemoryCache;
 use moat_cache_store::Store;
 use moat_common::{ChunkId, HugePages, PoolOptions};
-use moat_engine::{Device, FormatOptions, MemDevice, QueueBackend, QueueOptions};
+use moat_server::storage::{self, Device, Disk, FormatOptions, FrameLimits, MemDevice, QueueBackend, QueueOptions};
 
 fn bytes(data: impl AsRef<[u8]>) -> Bytes {
     Bytes::from(data.as_ref().to_vec())
@@ -35,12 +35,12 @@ const CHUNK_MAX: usize = 128 << 10;
 
 fn device() -> Arc<MemDevice> {
     let device = Arc::new(MemDevice::new(17 * SEGMENT));
-    moat_engine::format(
+    storage::format(
         &*device,
         &FormatOptions {
-            segment_size: SEGMENT,
-            chunk_max: CHUNK_MAX as u32,
-            disk_uuid: [1; 16],
+            segment_size: (SEGMENT) as u32,
+            limits: FrameLimits::new(((CHUNK_MAX as u32) + 8192u32).next_power_of_two(), CHUNK_MAX as u32).unwrap(),
+            device_id: [1; 16],
         },
     )
     .unwrap();
@@ -52,24 +52,22 @@ fn store(device: Arc<dyn Device>) -> Store {
 fn store_on(devices: Vec<Arc<dyn Device>>, backend: QueueBackend) -> Store {
     // The file fixture uses smaller chunks to bound registered memory across
     // both disks. Restart tests also need headroom for old rings to be released.
-    let (batch_limit, pool_bytes, max_class) = match backend {
-        QueueBackend::Uring => (64 << 10, 2 << 20, 128 << 10),
-        _ => (1 << 20, 32 << 20, 1 << 20),
+    let (pool_bytes, max_class) = match backend {
+        QueueBackend::Uring => (2 << 20, 128 << 10),
+        _ => (32 << 20, 1 << 20),
     };
     let engines = devices
         .into_iter()
         .map(|device| {
-            moat_engine::open(
+            Disk::open(
                 device,
-                moat_engine::Options {
+                storage::Options {
                     index_capacity: 1024,
-                    batch_limit,
+
                     verify_reads: false,
-                    ..Default::default()
                 },
             )
             .unwrap()
-            .0
         })
         .collect();
     Store::new(
@@ -80,7 +78,7 @@ fn store_on(devices: Vec<Arc<dyn Device>>, backend: QueueBackend) -> Store {
             backend,
             queue: QueueOptions {
                 depth: 8,
-                descriptors: 4,
+
                 pool: PoolOptions {
                     bytes: pool_bytes,
                     max_class,
@@ -439,65 +437,64 @@ fn old_disk_reads_cannot_promote_after_invalidation_or_overwrite() {
 }
 
 #[test]
-fn disk_capacity_and_gc_sustain_small_and_large_overwrite_churn() {
+fn append_only_capacity_returns_no_space_while_live_values_remain_readable() {
     block_on(async {
         let mut options = Options::default();
         options.disk.capacity = Some(512 << 10);
         options.disk.entries = Some(16);
         let cache = cache(device(), options).await;
-        for round in 0..400_u32 {
+        let mut exhausted = false;
+        for round in 0..1000_u32 {
             let key = bytes(format!("key-{}", round % 24));
             let value: Bytes = vec![(round % 251) as u8; if round % 2 == 0 { 60 << 10 } else { 128 }].into();
-            cache
-                .insert(key.clone(), value.clone())
-                .await
-                .unwrap_or_else(|e| panic!("round {round}: {e}"));
+            match cache.insert(key.clone(), value.clone()).await {
+                Ok(_) => {}
+                Err(Error::NoSpace) => {
+                    exhausted = true;
+                    break;
+                }
+                Err(error) => panic!("round {round}: {error}"),
+            }
             cache.clear_memory();
             assert_eq!(cache.get(&key).await.unwrap().unwrap().value(), value.as_ref());
             assert!(cache.statistics().disk_bytes <= 512 << 10);
             assert!(cache.statistics().disk_entries <= 16);
         }
+        assert!(exhausted, "append-only storage must stop admitting writes");
         assert!(cache.statistics().disk_evictions > 0);
-        cache.close().await.unwrap();
+        assert!(matches!(cache.close().await, Err(Error::NoSpace)));
     });
 }
 
 #[test]
-fn failed_writes_and_deletes_preserve_disk_versions_release_reservations_and_allow_retry() {
-    block_on(async {
-        let device = device();
-        let cache = cache(device.clone(), Options::default()).await;
-        cache.insert(bytes(b"key"), vec![1].into()).await.unwrap();
-        for delete in [false, true] {
+fn failed_mutations_preserve_disk_versions_and_require_reopen() {
+    for delete in [false, true] {
+        block_on(async {
+            let device = device();
+            let first = cache(device.clone(), Options::default()).await;
+            first.insert(bytes(b"key"), vec![1].into()).await.unwrap();
             device.fail_writes_in(Some(0..device.capacity()));
             if delete {
-                assert!(cache.invalidate(&bytes(b"key")).await.is_err());
+                assert!(first.invalidate(&bytes(b"key")).await.is_err());
             } else {
-                assert!(cache.insert(bytes(b"key"), vec![2].into()).await.is_err());
+                assert!(first.insert(bytes(b"key"), vec![2].into()).await.is_err());
             }
             device.fail_writes_in(None);
-            assert_eq!(cache.statistics().disk_entries, 1);
-            assert_eq!(cache.statistics().key_leases, 0);
-            assert_eq!(cache.get(&bytes(b"key")).await.unwrap().unwrap().value(), &[1]);
-            assert!(cache.flush().await.is_err());
-            cache.flush().await.unwrap();
-        }
-        assert!(cache.invalidate(&bytes(b"key")).await.unwrap());
-        let token = miss(cache.lookup(&bytes(b"key")).await.unwrap());
-        let sibling = miss(cache.lookup(&bytes(b"key")).await.unwrap());
-        device.fail_writes_in(Some(0..device.capacity()));
-        assert!(cache.populate(token, vec![2].into()).await.is_err());
-        device.fail_writes_in(None);
-        assert!(!sibling.is_valid());
-        assert!(cache.populate(sibling, vec![3].into()).await.unwrap().is_none());
-        assert!(cache.flush().await.is_err());
-        let token = miss(cache.lookup(&bytes(b"key")).await.unwrap());
-        assert_eq!(
-            cache.populate(token, vec![4].into()).await.unwrap().unwrap().value(),
-            &[4]
-        );
-        cache.close().await.unwrap();
-    });
+            first.clear_memory();
+            assert_eq!(first.statistics().disk_entries, 1);
+            assert_eq!(first.statistics().key_leases, 0);
+            assert_eq!(first.get(&bytes(b"key")).await.unwrap().unwrap().value(), &[1]);
+            assert!(first.flush().await.is_err());
+            assert!(first.insert(bytes(b"key"), vec![2].into()).await.is_err());
+            assert!(first.close().await.is_err());
+            let reopened = cache(device, Options::default()).await;
+            assert_eq!(reopened.get(&bytes(b"key")).await.unwrap().unwrap().value(), &[1]);
+            reopened.insert(bytes(b"key"), vec![3].into()).await.unwrap();
+            reopened.clear_memory();
+            assert_eq!(reopened.get(&bytes(b"key")).await.unwrap().unwrap().value(), &[3]);
+            reopened.close().await.unwrap();
+        });
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -510,13 +507,13 @@ fn uring_multiple_disks_recover_after_device_order_changes() {
         ];
         let mut devices: Vec<Arc<dyn Device>> = Vec::new();
         for (index, file) in files.iter().enumerate() {
-            let device = Arc::new(moat_engine::FileDevice::create(file.path(), 17 * SEGMENT, false).unwrap());
-            moat_engine::format(
+            let device = Arc::new(storage::FileDevice::create(file.path(), 17 * SEGMENT, false).unwrap());
+            storage::format(
                 &*device,
                 &FormatOptions {
-                    segment_size: SEGMENT,
-                    chunk_max: 64 << 10,
-                    disk_uuid: [index as u8 + 1; 16],
+                    segment_size: (SEGMENT) as u32,
+                    limits: FrameLimits::new(((64 << 10) + 8192u32).next_power_of_two(), 64 << 10).unwrap(),
+                    device_id: [index as u8 + 1; 16],
                 },
             )
             .unwrap();
@@ -657,5 +654,31 @@ fn disk_sieve_gives_disk_hits_a_second_chance() {
         assert!(cache.get(&bytes(b"c")).await.unwrap().is_some());
         assert!(cache.get(&bytes(b"d")).await.unwrap().is_some());
         cache.close().await.unwrap();
+    });
+}
+
+#[test]
+fn failed_population_invalidates_siblings_and_reopen_allows_a_new_fill() {
+    block_on(async {
+        let device = device();
+        let first = cache(device.clone(), Options::default()).await;
+        first.insert(bytes(b"baseline"), vec![1].into()).await.unwrap();
+        let token = miss(first.lookup(&bytes(b"missing")).await.unwrap());
+        let sibling = miss(first.lookup(&bytes(b"missing")).await.unwrap());
+        device.fail_writes_in(Some(0..device.capacity()));
+        assert!(first.populate(token, vec![2].into()).await.is_err());
+        device.fail_writes_in(None);
+        assert!(!sibling.is_valid());
+        assert!(first.populate(sibling, vec![3].into()).await.unwrap().is_none());
+        assert_eq!(first.statistics().key_leases, 0);
+        assert!(first.flush().await.is_err());
+        assert!(first.close().await.is_err());
+        let reopened = cache(device, Options::default()).await;
+        let token = miss(reopened.lookup(&bytes(b"missing")).await.unwrap());
+        assert_eq!(
+            reopened.populate(token, vec![4].into()).await.unwrap().unwrap().value(),
+            &[4]
+        );
+        reopened.close().await.unwrap();
     });
 }

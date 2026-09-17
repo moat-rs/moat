@@ -21,21 +21,20 @@ use moat_cache::{Bytes, Cache, Lookup, Options, Priority};
 use moat_cache_memory::Cache as Memory;
 use moat_cache_store::Store;
 use moat_common::{ChunkId, HugePages, PoolOptions};
-use moat_engine::{Engine, FormatOptions, MemDevice, QueueBackend, QueueOptions};
+use moat_server::storage::{self, Disk, FormatOptions, FrameLimits, MemDevice, QueueBackend, QueueOptions};
 
 fn bytes(data: &[u8]) -> Bytes {
     Bytes::from(data.to_vec())
 }
 fn store(device: Arc<MemDevice>) -> Store {
-    let engine: Engine = moat_engine::open(
+    let engine: Disk = Disk::open(
         device,
-        moat_engine::Options {
+        storage::Options {
             index_capacity: 1024,
             ..Default::default()
         },
     )
-    .unwrap()
-    .0;
+    .unwrap();
     Store::new(
         vec![engine],
         moat_cache_store::Options {
@@ -44,7 +43,7 @@ fn store(device: Arc<MemDevice>) -> Store {
             backend: QueueBackend::Sync,
             queue: QueueOptions {
                 depth: 8,
-                descriptors: 4,
+
                 pool: PoolOptions {
                     bytes: 16 << 20,
                     max_class: 1 << 20,
@@ -59,12 +58,12 @@ fn store(device: Arc<MemDevice>) -> Store {
 }
 fn device() -> Arc<MemDevice> {
     let d = Arc::new(MemDevice::new(65 << 20));
-    moat_engine::format(
+    storage::format(
         &*d,
         &FormatOptions {
-            segment_size: 1 << 20,
-            chunk_max: 128 << 10,
-            disk_uuid: [19; 16],
+            segment_size: (1 << 20) as u32,
+            limits: FrameLimits::new(((128 << 10) + 8192u32).next_power_of_two(), 128 << 10).unwrap(),
+            device_id: [19; 16],
         },
     )
     .unwrap();

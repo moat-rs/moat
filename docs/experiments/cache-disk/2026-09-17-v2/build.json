@@ -1,0 +1,8 @@
+{
+  "head": "a512c3dd223e359fa8286a7e0e73da436961eee5",
+  "dirty": true,
+  "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)\nbinary: rustc\ncommit-hash: 88d9e12ae178fab0fb5cc050a94da85685d449ea\ncommit-date: 2026-08-18\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.0\nLLVM version: 22.1.8\n",
+  "rustflags": "-C target-cpu=x86-64-v3",
+  "binary_sha256": "b794d48dbcd5b5d8b51c078a0e9472f31b3b8b3faf15aee18031d08289555763",
+  "source_archive_sha256": "eb743e28e4af7d62efeed2c2d311f98f78ac14bcd221400adabf839adca542dc"
+}

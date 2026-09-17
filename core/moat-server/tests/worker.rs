@@ -12,8 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Several workers over several in-memory disks: owners write, everyone
-//! reads, shutdown seals, and a reopened node sees everything.
+//! Owner-only v2 workers, shutdown sealing and recovery.
 
 use std::{
     collections::HashMap,
@@ -24,8 +23,10 @@ use std::{
 };
 
 use moat_common::{ChunkId, HugePages, PoolOptions};
-use moat_engine::{Device, Error, FormatOptions, MemDevice, Options, Outcome, PutOptions, QueueOptions, ReadOutcome};
-use moat_server::{Context, Handler, Node, PollMode, QueueBackend, Step, WorkerOptions};
+use moat_server::{
+    Context, Handler, Node, PollMode, QueueBackend, Step, WorkerOptions,
+    storage::{self, Completion, Device, Error, FormatOptions, FrameLimits, MemDevice, Options, QueueOptions, Session},
+};
 
 const DISKS: usize = 3;
 const WORKERS: usize = 4;
@@ -35,12 +36,12 @@ fn devices() -> Vec<Arc<dyn Device>> {
     (0..DISKS)
         .map(|d| {
             let dev = MemDevice::new(8 << 20);
-            moat_engine::format(
+            storage::format(
                 &dev,
                 &FormatOptions {
                     segment_size: 1 << 20,
-                    chunk_max: 64 << 10,
-                    disk_uuid: [d as u8 + 1; 16],
+                    limits: FrameLimits::new(128 << 10, 64 << 10).unwrap(),
+                    device_id: [d as u8 + 1; 16],
                 },
             )
             .unwrap();
@@ -59,7 +60,6 @@ fn worker_options() -> WorkerOptions {
                 max_class: 1 << 20,
                 huge_pages: HugePages::Disabled,
             },
-            descriptors: 16,
         },
         // MemDevice needs Sync on Linux; exercise the default fallback elsewhere.
         backend: if cfg!(target_os = "linux") {
@@ -83,11 +83,11 @@ fn value(disk: usize, i: u64) -> Vec<u8> {
 }
 
 /// Phase 1: every owner writes its disks' keys and waits for the tickets.
-/// Phase 2: every worker reads every key of every disk. Then stop.
+/// Phase 2: each owner reads every key of its own disks. Then stop.
 struct Load {
     writes_pending: HashMap<(usize, u64), (usize, u64)>,
     written: bool,
-    reads_pending: HashMap<u64, (usize, u64)>,
+    reads_pending: HashMap<(usize, u64), (usize, u64)>,
     next_read: usize,
     reads_done: u64,
     all_written: Arc<AtomicUsize>,
@@ -97,32 +97,45 @@ struct Load {
 
 impl Handler for Load {
     fn run(&mut self, cx: &mut Context<'_>) -> Step {
-        for (disk, c) in cx.writes.drain(..) {
-            let ticket = c.ticket;
-            let (d, i) = self.writes_pending.remove(&(disk, ticket)).expect("known ticket");
-            assert_eq!(d, disk);
-            assert!(matches!(c.result, Ok(Outcome::Put { .. })), "put {i} on disk {disk}");
+        for (disk, completion) in cx.completions.drain(..) {
+            match completion {
+                Completion::Write { ticket, result, .. } => {
+                    self.writes_pending
+                        .remove(&(disk, ticket.number()))
+                        .expect("known write");
+                    result.unwrap();
+                }
+                Completion::Read {
+                    ticket,
+                    result,
+                    buffers,
+                } => {
+                    let (d, i) = self.reads_pending.remove(&(disk, ticket.number())).expect("known read");
+                    assert_eq!(d, disk);
+                    assert_eq!(buffers.view(result.unwrap()), value(disk, i));
+                    self.reads_done += 1;
+                }
+                Completion::Flush { .. } => unreachable!(),
+            }
         }
         if !self.written {
             // Write everything the worker owns, respecting back-pressure.
             let mut issued_all = true;
-            for disk in 0..cx.disks.len() {
+            for disk in 0..DISKS {
                 if !cx.owns(disk) {
                     continue;
                 }
-                let (q, slot) = cx.disk(disk);
-                let w = slot.writer.as_mut().unwrap();
+                let session = cx.disk(disk).unwrap();
                 for i in 0..KEYS_PER_DISK {
                     if self.writes_pending.values().any(|&(d, k)| d == disk && k == i)
-                        || slot.engine.contains(&key(disk, i))
+                        || session.stat(&key(disk, i)).is_some()
                     {
                         continue;
                     }
-                    match w.put(q, key(disk, i), &value(disk, i), PutOptions::default()) {
-                        Ok(moat_engine::PutOutcome::Written { ticket, .. }) => {
-                            self.writes_pending.insert((disk, ticket), (disk, i));
+                    match session.write(key(disk, i), Some(&value(disk, i))) {
+                        Ok((ticket, _)) => {
+                            self.writes_pending.insert((disk, ticket.number()), (disk, i));
                         }
-                        Ok(moat_engine::PutOutcome::Exists) => {}
                         Err(Error::Busy) => {
                             issued_all = false;
                             break;
@@ -133,7 +146,7 @@ impl Handler for Load {
             }
             if issued_all && self.writes_pending.is_empty() {
                 self.written = true;
-                if cx.disks.iter().any(|s| s.writer.is_some()) {
+                if !cx.disks.is_empty() {
                     self.all_written.fetch_add(1, Ordering::AcqRel);
                 }
             }
@@ -142,26 +155,20 @@ impl Handler for Load {
         if self.all_written.load(Ordering::Acquire) < self.owners {
             return Step::Idle;
         }
-        // Read phase: every worker reads every key of every disk, 8 at a time.
-        for (disk, c) in cx.reads.drain(..) {
-            let (d, i) = self.reads_pending.remove(&c.token).expect("known token");
-            assert_eq!(d, disk);
-            let data = c.result.unwrap();
-            assert_eq!(&*data, &value(disk, i)[..], "key {i} disk {disk}");
-            self.reads_done += 1;
-        }
+        // Each request runs on the owner of its disk.
         let total = DISKS * KEYS_PER_DISK as usize;
         while self.next_read < total && self.reads_pending.len() < 8 {
             let disk = self.next_read / KEYS_PER_DISK as usize;
             let i = (self.next_read % KEYS_PER_DISK as usize) as u64;
-            let token = self.next_read as u64;
-            let (q, slot) = cx.disk(disk);
-            match slot.reader.get(q, &key(disk, i), None, token) {
-                Ok(ReadOutcome::Submitted) => {
-                    self.reads_pending.insert(token, (disk, i));
+            let Some(session) = cx.disk(disk) else {
+                self.next_read += 1;
+                continue;
+            };
+            match session.read(key(disk, i), None) {
+                Ok(ticket) => {
+                    self.reads_pending.insert((disk, ticket.number()), (disk, i));
                     self.next_read += 1;
                 }
-                Ok(ReadOutcome::Miss) => panic!("missing key {i} on disk {disk}"),
                 Err(Error::Busy) => break,
                 Err(e) => panic!("{e}"),
             }
@@ -176,7 +183,7 @@ impl Handler for Load {
 }
 
 #[test]
-fn owners_write_everyone_reads_and_a_reopened_node_recovers() {
+fn owners_write_and_read_their_disks_and_reopened_sessions_recover() {
     let devices = devices();
     let mut node = Node::open(
         devices.clone(),
@@ -211,27 +218,18 @@ fn owners_write_everyone_reads_and_a_reopened_node_recovers() {
     for w in workers {
         w.join().unwrap();
     }
-    assert_eq!(
-        reads_total.load(Ordering::Acquire),
-        WORKERS * DISKS * KEYS_PER_DISK as usize
-    );
-    for (d, e) in node.engines().iter().enumerate() {
-        assert_eq!(e.usage().chunks, KEYS_PER_DISK as usize, "disk {d}");
-    }
+    assert_eq!(reads_total.load(Ordering::Acquire), DISKS * KEYS_PER_DISK as usize);
     drop(node);
-
-    // Workers sealed their disks on shutdown: reopening needs no scan.
-    let node = Node::open(
-        devices,
-        Options {
-            index_capacity: 1024,
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    for (d, r) in node.reports().iter().enumerate() {
-        assert_eq!(r.scanned, 0, "disk {d}");
-        assert_eq!(r.chunks, KEYS_PER_DISK as usize, "disk {d}");
+    let node = Node::open(devices, Options::default()).unwrap();
+    for (disk, handle) in node.engines().iter().enumerate() {
+        let session = Session::open(handle.clone(), &worker_options().queue, QueueBackend::Sync).unwrap();
+        let mut count = 0;
+        session.visit(|id, _, len| {
+            assert!(len > 0);
+            assert!(session.stat(&id).is_some());
+            count += 1;
+        });
+        assert_eq!(count, KEYS_PER_DISK, "disk {disk}");
     }
     // Placement is deterministic and covers every disk.
     let mut hits = vec![0usize; DISKS];
@@ -239,4 +237,52 @@ fn owners_write_everyone_reads_and_a_reopened_node_recovers() {
         hits[node.disk_of(&ChunkId::from_u128(i))] += 1;
     }
     assert!(hits.iter().all(|&h| h > 500), "{hits:?}");
+}
+
+struct Idle;
+impl Handler for Idle {
+    fn run(&mut self, _: &mut Context<'_>) -> Step {
+        Step::Idle
+    }
+}
+
+#[test]
+fn invalid_topologies_fail_before_starting_workers() {
+    let list = devices();
+    assert!(matches!(
+        Node::open(Vec::new(), Options::default()),
+        Err(moat_server::NodeError::NoDisks)
+    ));
+    assert!(matches!(
+        Node::open(vec![list[0].clone(), list[0].clone()], Options::default()),
+        Err(moat_server::NodeError::DuplicateIdentity { .. })
+    ));
+    let mut node = Node::open(list, Options::default()).unwrap();
+    node.set_owners(vec![0, 1, 2]);
+    assert!(matches!(
+        node.start(&[worker_options()], |_| Idle),
+        Err(moat_server::NodeError::InvalidOwners)
+    ));
+    node.assign_owners(2, &[Some(1), Some(0), Some(1)], &[Some(0), Some(1)]);
+    assert_eq!(node.owners(), &[1, 0, 1]);
+}
+
+#[test]
+fn partial_worker_startup_failure_releases_all_earlier_sessions() {
+    let mut node = Node::open(devices(), Options::default()).unwrap();
+    node.set_owners(vec![0, 1, 1]);
+    let options = worker_options();
+    let held = Session::open(node.engines()[2].clone(), &options.queue, options.backend).unwrap();
+    assert!(node.start(&[options.clone(), options.clone()], |_| Idle).is_err());
+    for disk in &node.engines()[..2] {
+        Session::open(disk.clone(), &options.queue, options.backend).unwrap();
+    }
+    drop(held);
+    let workers = node.start(&[options.clone(), options], |_| Idle).unwrap();
+    for worker in &workers {
+        worker.stop();
+    }
+    for worker in workers {
+        worker.join().unwrap();
+    }
 }

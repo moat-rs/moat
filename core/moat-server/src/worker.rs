@@ -12,23 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Worker threads.
-//!
-//! A node runs one kind of worker. Every worker may be pinned to a core and owns
-//! exactly one [`IoQueue`] (io_uring, one registered buffer pool, one
-//! fixed-file table) through which it drives every disk: it holds a
-//! [`Reader`] for each disk, so a read is served on the worker that receives
-//! the request, and a [`Writer`] for each disk it *owns*, so each disk's log
-//! has a single writer. The loop is the same on every worker; owning a disk
-//! only means more `Writer` calls on it.
-//!
-//! What the worker does not know is where requests come from. That is the
-//! [`Handler`]: the network reactor in a server, a load generator in a
-//! benchmark, a script in a test. It runs once per loop iteration on the
-//! worker thread, sees the completions the queue delivered since the last
-//! iteration, and issues new operations through the [`Context`]. With io_uring,
-//! only the queue's idle wait blocks. The synchronous development backend
-//! performs device I/O inline, so a slow disk can stall its worker.
+//! Threads driving exclusively owned v2 sessions.
 
 use std::{
     io,
@@ -41,8 +25,8 @@ use std::{
     time::Duration,
 };
 
-pub use moat_engine::QueueBackend;
-use moat_engine::{Completion, Engine, IoQueue, QueueOptions, ReadCompletion, Reader, Writer, blocking};
+pub use crate::storage::QueueBackend;
+use crate::storage::{Completion, Disk, QueueOptions, Session};
 
 /// Index of a disk in a node's disk list.
 pub type DiskId = usize;
@@ -52,8 +36,8 @@ pub type DiskId = usize;
 pub enum PollMode {
     /// Spin: the lowest latency, one core per worker.
     Busy,
-    /// Wait for I/O when some is in flight; sleep `idle_sleep` otherwise. For
-    /// deployments that cannot dedicate cores.
+    /// Sleep after an idle handler iteration. For deployments that cannot
+    /// dedicate cores; polling all disks first avoids waiting on a single disk.
     Adaptive {
         /// How long to sleep when neither I/O nor requests are pending.
         idle_sleep: Duration,
@@ -65,7 +49,7 @@ pub enum PollMode {
 pub struct WorkerOptions {
     /// Core to pin the thread to; `None` leaves scheduling to the OS.
     pub core: Option<usize>,
-    /// The worker's queue: depth, pool, descriptor table.
+    /// Queue depth and pool allocated separately for each owned disk.
     pub queue: QueueOptions,
     /// Queue implementation.
     pub backend: QueueBackend,
@@ -101,57 +85,46 @@ pub enum Step {
     Stop,
 }
 
-/// One disk as seen from a worker: its engine, this worker's read pipeline,
-/// and the write pipeline if this worker owns the disk.
+/// One disk exclusively owned by this worker.
 pub struct DiskSlot {
-    /// The disk.
-    pub engine: Engine,
-    /// This worker's reader for the disk.
-    pub reader: Reader,
-    /// The disk's writer, present on its owner only.
-    pub writer: Option<Writer>,
+    /// Stable node-wide disk index.
+    pub id: DiskId,
+    /// The single-owner engine adapter.
+    pub session: Session,
 }
-
-/// What a [`Handler`] sees on each iteration.
+/// What a handler sees on each iteration. Only locally owned disks are exposed.
 pub struct Context<'a> {
-    /// Index of this worker in the node.
+    /// Worker index in the node.
     pub worker: usize,
-    /// The worker's queue; pass it to every engine call.
-    pub queue: &'a mut dyn IoQueue,
-    /// Every disk, indexed by [`DiskId`].
+    /// Owned disks, each with its own engine and queue.
     pub disks: &'a mut [DiskSlot],
-    /// Read completions delivered since the last iteration, tagged by disk.
-    /// The handler drains them.
-    pub reads: &'a mut Vec<(DiskId, ReadCompletion)>,
-    /// Write completions delivered since the last iteration, tagged by disk.
-    /// The handler drains them.
-    pub writes: &'a mut Vec<(DiskId, Completion)>,
+    /// Native v2 completions tagged with node-wide disk IDs; drain on each call.
+    pub completions: &'a mut Vec<(DiskId, Completion)>,
 }
-
 impl Context<'_> {
-    /// Whether this worker owns `disk` (holds its writer).
+    /// Whether this worker owns a disk.
     pub fn owns(&self, disk: DiskId) -> bool {
-        self.disks[disk].writer.is_some()
+        self.disks.iter().any(|slot| slot.id == disk)
     }
-
-    /// The queue and the slot of `disk`, borrowed together so the handler can
-    /// call `slot.reader.get(queue, ..)` or `slot.writer.put(queue, ..)`.
-    pub fn disk(&mut self, disk: DiskId) -> (&mut dyn IoQueue, &mut DiskSlot) {
-        (self.queue, &mut self.disks[disk])
+    /// Gets an owned session. Route remote-disk requests to their owner explicitly.
+    pub fn disk(&mut self, disk: DiskId) -> Option<&mut Session> {
+        self.disks
+            .iter_mut()
+            .find(|slot| slot.id == disk)
+            .map(|slot| &mut slot.session)
     }
 }
 
 /// The request source of a worker. See the [module docs](self).
 pub trait Handler: Send + 'static {
-    /// Called once on the worker thread before the loop starts, with every
-    /// pipeline attached.
+    /// Called once on the worker thread after its owned sessions recover.
     fn start(&mut self, _cx: &mut Context<'_>) {}
 
     /// Called once per loop iteration, after completions were collected.
     fn run(&mut self, cx: &mut Context<'_>) -> Step;
 
     /// Called once on the worker thread after the loop ends, before the
-    /// writers are sealed and detached.
+    /// sessions are drained, sealed and released.
     fn stop(&mut self, _cx: &mut Context<'_>) {}
 }
 
@@ -174,7 +147,7 @@ pub enum WorkerError {
         worker: usize,
         /// The cause.
         #[source]
-        source: moat_engine::Error,
+        source: crate::storage::Error,
     },
     /// The handler panicked; the worker thread is gone.
     #[error("worker {0} panicked")]
@@ -189,14 +162,13 @@ pub struct Worker<H: Handler> {
 }
 
 impl<H: Handler> Worker<H> {
-    /// Starts worker `index`: pins it, builds its queue, attaches a reader for
-    /// every engine in `disks` and a writer for those flagged as owned, then
-    /// runs `handler`. Returns once the pipelines are attached, so setup
-    /// errors are reported here rather than at `join`.
+    /// Starts worker `index`, recovers each assigned disk and runs `handler`.
+    /// Each disk gets a separate queue and pool. Startup errors are returned
+    /// here; runtime and shutdown failures are returned by `join`.
     pub fn spawn(
         index: usize,
         opts: WorkerOptions,
-        disks: Vec<(Engine, bool)>,
+        disks: Vec<(DiskId, Disk)>,
         handler: H,
     ) -> Result<Self, WorkerError> {
         let stop = Arc::new(AtomicBool::new(false));
@@ -279,7 +251,7 @@ pub fn pin_to_core(_core: usize) -> io::Result<()> {
 fn run_worker<H: Handler>(
     index: usize,
     opts: WorkerOptions,
-    disks: Vec<(Engine, bool)>,
+    disks: Vec<(DiskId, Disk)>,
     mut handler: H,
     stop: Arc<AtomicBool>,
     ready: mpsc::Sender<Result<(), WorkerError>>,
@@ -287,69 +259,46 @@ fn run_worker<H: Handler>(
     let io_err = |source| WorkerError::Io { worker: index, source };
     let engine_err = |source| WorkerError::Engine { worker: index, source };
 
-    let setup = || -> Result<(Box<dyn IoQueue>, Vec<DiskSlot>), WorkerError> {
+    let setup = || -> Result<Vec<DiskSlot>, WorkerError> {
         if let Some(core) = opts.core {
             pin_to_core(core).map_err(io_err)?;
         }
-        let mut queue = opts.queue.build(opts.backend).map_err(io_err)?;
-        let mut slots = Vec::with_capacity(disks.len());
-        for (engine, owner) in disks {
-            let reader = engine.reader(&mut *queue).map_err(engine_err)?;
-            let writer = if owner {
-                Some(engine.writer(&mut *queue).map_err(engine_err)?)
-            } else {
-                None
-            };
-            slots.push(DiskSlot { engine, reader, writer });
-        }
-        Ok((queue, slots))
+        disks
+            .into_iter()
+            .map(|(id, disk)| {
+                let session = Session::open(disk, &opts.queue, opts.backend).map_err(engine_err)?;
+                Ok(DiskSlot { id, session })
+            })
+            .collect()
     };
-    let (mut queue, mut slots) = match setup() {
-        Ok(v) => v,
-        Err(e) => {
-            let _ = ready.send(Err(e));
+    let mut slots = match setup() {
+        Ok(slots) => slots,
+        Err(error) => {
+            let _ = ready.send(Err(error));
             return Err(WorkerError::Panicked(index));
         }
     };
     let _ = ready.send(Ok(()));
-
-    let mut reads = Vec::new();
-    let mut writes = Vec::new();
-    let mut read_scratch = Vec::new();
-    let mut write_scratch = Vec::new();
+    let mut completions = Vec::new();
+    let mut scratch = Vec::new();
     {
         let mut cx = Context {
             worker: index,
-            queue: &mut *queue,
             disks: &mut slots,
-            reads: &mut reads,
-            writes: &mut writes,
+            completions: &mut completions,
         };
         handler.start(&mut cx);
-
-        let mut idle = false;
         loop {
-            // One `io_uring_enter` per iteration for every disk on this
-            // worker. In busy mode never wait; in adaptive mode wait when the
-            // handler had nothing to do (the queue returns at once if nothing
-            // is in flight).
-            let wait = idle && matches!(opts.poll_mode, PollMode::Adaptive { .. });
-            cx.queue.poll(wait).map_err(io_err)?;
-            for (d, slot) in cx.disks.iter_mut().enumerate() {
-                slot.reader.poll(cx.queue, &mut read_scratch).map_err(engine_err)?;
-                cx.reads.extend(read_scratch.drain(..).map(|c| (d, c)));
-                if let Some(w) = &mut slot.writer {
-                    w.poll(cx.queue, &mut write_scratch).map_err(engine_err)?;
-                    cx.writes.extend(write_scratch.drain(..).map(|c| (d, c)));
-                }
+            for slot in cx.disks.iter_mut() {
+                slot.session.poll(false, &mut scratch).map_err(engine_err)?;
+                cx.completions
+                    .extend(scratch.drain(..).map(|completion| (slot.id, completion)));
             }
             let step = handler.run(&mut cx);
             if step == Step::Stop || stop.load(Ordering::Acquire) {
                 break;
             }
-            idle = step == Step::Idle;
-            if idle
-                && cx.queue.in_flight() == 0
+            if step == Step::Idle
                 && let PollMode::Adaptive { idle_sleep } = opts.poll_mode
             {
                 thread::sleep(idle_sleep);
@@ -357,18 +306,22 @@ fn run_worker<H: Handler>(
         }
         handler.stop(&mut cx);
     }
-
-    // Clean shutdown: seal every owned disk so the next open needs no scan,
-    // then close every descriptor.
-    for slot in slots.iter_mut() {
-        if let Some(mut w) = slot.writer.take() {
-            blocking::seal(&mut *queue, &mut w).map_err(engine_err)?;
-            blocking::drain(&mut *queue, &mut w).map_err(engine_err)?;
-            w.detach(&mut *queue);
+    // Drain and validate admitted I/O before sealing, including requests accepted by stop.
+    for slot in &mut slots {
+        while slot.session.in_flight() != 0 {
+            slot.session.poll(true, &mut scratch).map_err(engine_err)?;
+            for completion in scratch.drain(..) {
+                match completion {
+                    Completion::Write { result, .. } | Completion::Flush { result, .. } => {
+                        result.map_err(crate::storage::Error::from).map_err(engine_err)?
+                    }
+                    Completion::Read { result, .. } => {
+                        result.map_err(crate::storage::Error::from).map_err(engine_err)?;
+                    }
+                }
+            }
         }
-    }
-    for slot in slots.drain(..) {
-        slot.reader.detach(&mut *queue);
+        slot.session.seal().map_err(engine_err)?;
     }
     Ok(handler)
 }

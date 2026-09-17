@@ -13,9 +13,8 @@
 // limitations under the License.
 
 //! Whole-node throughput and latency: many disks, many pinned workers, one
-//! io_uring queue per worker, every worker reading every disk and each disk
-//! written by its owner. The load generator is a [`Handler`] on every worker,
-//! exactly where the network reactor will sit.
+//! io_uring queue per disk, with all reads and writes on its owner. The load generator is a [`Handler`] on every
+//! worker, exactly where the network reactor will sit.
 //!
 //! ```sh
 //! # List the NVMe namespaces that would be used (nothing is written):
@@ -34,14 +33,13 @@
 //! per write workload), `MOAT_BENCH_WORKERS` (default: 4 per disk, bounded by
 //! cores), `MOAT_BENCH_CORES` (CPU list, default: every online CPU but the
 //! first two), `MOAT_BENCH_DEPTH` (queue depth, 1024), `MOAT_BENCH_POOL_MB`
-//! (pool per worker, 512), `MOAT_BENCH_LARGE` / `MOAT_BENCH_SMALL` (value
+//! (pool per disk, 512), `MOAT_BENCH_LARGE` / `MOAT_BENCH_SMALL` (value
 //! sizes, 1 MiB / 4 KiB), `MOAT_BENCH_LARGE_INFLIGHT` (outstanding large reads
 //! per worker, 4), `MOAT_BENCH_INFLIGHT` (outstanding small reads per worker,
 //! comma-separated list, default 32), `MOAT_BENCH_WRITE_INFLIGHT` (outstanding
 //! large puts per owned disk, 64), `MOAT_BENCH_SMALL_WRITE_INFLIGHT`
 //! (outstanding small puts per owned disk; defaults to WRITE_INFLIGHT when
-//! explicitly set, otherwise 512), `MOAT_BENCH_WRITE_PREFETCH` (prefetch the
-//! index slot this many puts ahead, default 16; zero disables the hint),
+//! explicitly set, otherwise 512),
 //! `MOAT_BENCH_SECONDS` (duration of each
 //! read phase, 10), `MOAT_BENCH_SYNC` (blocking queue instead of io_uring, for
 //! files), `MOAT_BENCH_SEGMENT_MB` (segment size, 1024), `MOAT_BENCH_REOPEN`
@@ -50,8 +48,6 @@
 //! `MOAT_BENCH_WRITE_PHASES` (comma-separated large,small; both by default),
 //! `MOAT_BENCH_READ_PHASES` (comma-separated large,small; both by default),
 //! `MOAT_BENCH_REPORT_DISKS` (print per-disk phase completion counts and IOPS),
-//! `MOAT_BENCH_SHARD_READS` (assign each worker one disk, for locality comparisons),
-//! `MOAT_BENCH_WAIT_READS` (wait for I/O after refilling, for polling comparisons),
 //! Read and write latency histograms sample one in 16 operations.
 //! Default cores are spread across last-level caches, using SMT siblings last.
 //! Explicit `MOAT_BENCH_CORES` preserves the supplied order.
@@ -77,11 +73,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use moat_common::{ChunkId, PoolOptions, block_checksums};
-use moat_engine::{
-    Device, Error, FileDevice, FormatOptions, Options, PutOptions, PutOutcome, QueueOptions, ReadOutcome,
+use moat_common::{ChunkId, PoolOptions};
+use moat_server::{
+    Context, Handler, Node, PollMode, QueueBackend, Step, WorkerOptions, disk,
+    storage::{self, Completion, Device, Error, FileDevice, FormatOptions, FrameLimits, Options, QueueOptions},
 };
-use moat_server::{Context, Handler, Node, PollMode, QueueBackend, Step, WorkerOptions, disk};
 
 fn env(name: &str, default: u64) -> u64 {
     std::env::var(name).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
@@ -167,9 +163,6 @@ struct Plan {
     small: usize,
     write_inflight: usize,
     small_write_inflight: usize,
-    write_prefetch: u64,
-    shard_reads: bool,
-    wait_reads: bool,
     /// Values per disk in each size class.
     large_count: u64,
     small_count: u64,
@@ -180,7 +173,7 @@ struct SharedState {
     plan: Plan,
     /// Index into `plan.phases`, or `phases.len()` to stop.
     phase: AtomicUsize,
-    /// Workers that finished the current phase.
+    /// Workers that finished the current phase (including idle owners).
     done: AtomicUsize,
     /// Set by the driver to end a timed phase.
     stop: AtomicBool,
@@ -223,30 +216,30 @@ struct Load {
     // read state: outstanding reads by slot (the slot number is the token)
     read_pending: Vec<Option<(usize, Option<Instant>)>>,
     read_free: Vec<usize>,
+    read_tickets: HashMap<(usize, u64), usize>,
     read_outstanding: usize,
     hist: Hist,
     ops: u64,
     bytes: u64,
     per_disk: Vec<u64>,
     pattern_large: Arc<Vec<u8>>,
-    sums_large: Arc<Vec<u32>>,
     pattern_small: Arc<Vec<u8>>,
 }
 
 impl Load {
-    fn begin_phase(&mut self, cx: &mut Context<'_>, phase: usize) {
+    fn begin_phase(&mut self, _cx: &mut Context<'_>, phase: usize) {
         self.seen_phase = Some(phase);
         self.finished_phase = false;
-        self.write_cursor = vec![0; cx.disks.len()];
-        self.write_pending = (0..cx.disks.len()).map(|_| VecDeque::new()).collect();
-        self.write_outstanding = vec![0; cx.disks.len()];
+        self.write_cursor = vec![0; self.shared.per_disk_ops.len()];
+        self.write_pending = (0..self.shared.per_disk_ops.len()).map(|_| VecDeque::new()).collect();
+        self.write_outstanding = vec![0; self.shared.per_disk_ops.len()];
         self.read_pending.clear();
         self.read_free.clear();
         self.read_outstanding = 0;
         self.hist = Hist::new();
         self.ops = 0;
         self.bytes = 0;
-        self.per_disk = vec![0; cx.disks.len()];
+        self.per_disk = vec![0; self.shared.per_disk_ops.len()];
     }
 
     fn finish_phase(&mut self) {
@@ -272,13 +265,21 @@ impl Load {
         } else {
             (self.shared.plan.small, self.shared.plan.small_count, SMALL_KEY)
         };
-        for (disk, c) in cx.writes.drain(..) {
+        for (disk, completion) in cx.completions.drain(..) {
+            let Completion::Write {
+                ticket: completed,
+                result,
+                ..
+            } = completion
+            else {
+                panic!("expected write");
+            };
             // Each phase writes one record class per disk. The writer applies
             // those batches in order, so tracking needs no per-put hash lookup.
             let (ticket, started) = self.write_pending[disk].pop_front().expect("known ticket");
-            assert_eq!(ticket, c.ticket);
+            assert_eq!(ticket, completed.number());
             self.write_outstanding[disk] -= 1;
-            c.result.unwrap();
+            result.unwrap();
             if let Some(started) = started {
                 self.hist.record(started.elapsed());
             }
@@ -287,38 +288,28 @@ impl Load {
             self.per_disk[disk] += 1;
         }
         let mut all_issued = true;
-        for disk in 0..cx.disks.len() {
+        for disk in 0..self.shared.per_disk_ops.len() {
             if !cx.owns(disk) {
                 continue;
             }
             while self.write_cursor[disk] < count && self.write_outstanding[disk] < inflight {
                 let i = self.write_cursor[disk];
                 let id = key(kind, disk, i);
-                let (q, slot) = cx.disk(disk);
-                let w = slot.writer.as_mut().unwrap();
-                let ahead = self.shared.plan.write_prefetch;
-                if ahead > 0 && i.saturating_add(ahead) < count {
-                    w.prefetch(&key(kind, disk, i + ahead));
-                }
-                let outcome = if large {
-                    match w.prepare_large(q, len as u32) {
-                        Ok(mut v) => {
-                            v.value_mut().copy_from_slice(&self.pattern_large);
-                            w.put_large(q, id, v, Some(&self.sums_large), PutOptions::default())
-                        }
-                        Err(e) => Err(e),
-                    }
+                let session = cx.disk(disk).expect("owned disk");
+                let pattern = if large {
+                    &self.pattern_large
                 } else {
-                    w.put(q, id, &self.pattern_small, PutOptions::default())
+                    &self.pattern_small
                 };
+                let outcome = session.write(id, Some(pattern));
                 match outcome {
-                    Ok(PutOutcome::Written { ticket, .. }) => {
+                    Ok((ticket, _)) => {
+                        let ticket = ticket.number();
                         let started = ticket.is_multiple_of(16).then(Instant::now);
                         self.write_pending[disk].push_back((ticket, started));
                         self.write_outstanding[disk] += 1;
                         self.write_cursor[disk] += 1;
                     }
-                    Ok(PutOutcome::Exists) => self.write_cursor[disk] += 1,
                     Err(Error::Busy) => {
                         all_issued = false;
                         break;
@@ -340,13 +331,24 @@ impl Load {
         } else {
             (self.shared.plan.small, self.shared.plan.small_count, SMALL_KEY)
         };
-        for (disk, c) in cx.reads.drain(..) {
-            let slot = c.token as usize;
+        for (disk, completion) in cx.completions.drain(..) {
+            let Completion::Read {
+                ticket,
+                result,
+                buffers,
+            } = completion
+            else {
+                panic!("expected read");
+            };
+            let slot = self
+                .read_tickets
+                .remove(&(disk, ticket.number()))
+                .expect("known ticket");
             let (d, started) = self.read_pending[slot].take().expect("known token");
             self.read_free.push(slot);
             self.read_outstanding -= 1;
             debug_assert_eq!(d, disk);
-            let data = c.result.unwrap();
+            let data = buffers.view(result.unwrap());
             debug_assert_eq!(data.len(), len);
             if let Some(started) = started {
                 self.hist.record(started.elapsed());
@@ -364,13 +366,13 @@ impl Load {
             return Step::Continue;
         }
         let disks = cx.disks.len();
+        if disks == 0 {
+            self.finish_phase();
+            return Step::Idle;
+        }
         while self.read_outstanding < inflight {
             let r = self.rng.next();
-            let disk = if self.shared.plan.shard_reads {
-                cx.worker % disks
-            } else {
-                (r % disks as u64) as usize
-            };
+            let disk = cx.disks[(r % disks as u64) as usize].id;
             let i = (r >> 20) % count;
             let token = match self.read_free.pop() {
                 Some(s) => s,
@@ -379,15 +381,14 @@ impl Load {
                     self.read_pending.len() - 1
                 }
             };
-            let (q, slot) = cx.disk(disk);
-            match slot.reader.get(q, &key(kind, disk, i), None, token as u64) {
-                Ok(ReadOutcome::Submitted) => {
+            match cx.disk(disk).expect("owned disk").read(key(kind, disk, i), None) {
+                Ok(ticket) => {
+                    self.read_tickets.insert((disk, ticket.number()), token);
                     // Timestamps cost a vdso call each; sample one in 16.
                     let started = (r >> 40).is_multiple_of(16).then(Instant::now);
                     self.read_pending[token] = Some((disk, started));
                     self.read_outstanding += 1;
                 }
-                Ok(ReadOutcome::Miss) => panic!("missing key {i} on disk {disk}"),
                 Err(Error::Busy) => {
                     self.read_free.push(token);
                     break;
@@ -395,16 +396,15 @@ impl Load {
                 Err(e) => panic!("{e}"),
             }
         }
-        if self.shared.plan.wait_reads {
-            cx.queue.poll(true).unwrap();
-        }
         Step::Continue
     }
 }
 
 impl Handler for Load {
     fn start(&mut self, cx: &mut Context<'_>) {
-        pool::inspect(cx.queue.pool(), cx.worker);
+        for slot in cx.disks.iter() {
+            pool::inspect(slot.session.pool(), cx.worker);
+        }
     }
 
     fn run(&mut self, cx: &mut Context<'_>) -> Step {
@@ -420,8 +420,7 @@ impl Handler for Load {
         }
         if self.finished_phase {
             // Drain stragglers (none expected) and wait for the next phase.
-            cx.reads.clear();
-            cx.writes.clear();
+            cx.completions.clear();
             return Step::Idle;
         }
         match self.shared.plan.phases[phase] {
@@ -545,7 +544,7 @@ fn main() {
     let small = env("MOAT_BENCH_SMALL", 4 << 10) as usize;
     let segment = env("MOAT_BENCH_SEGMENT_MB", 1024) << 20;
     let seconds = env("MOAT_BENCH_SECONDS", 10);
-    let depth = env("MOAT_BENCH_DEPTH", 1024) as u32;
+    let depth = env("MOAT_BENCH_DEPTH", 1024) as usize;
     let pool_mb = env("MOAT_BENCH_POOL_MB", 512) as usize;
     let large_inflight = env("MOAT_BENCH_LARGE_INFLIGHT", 4) as usize;
     let write_inflight = env("MOAT_BENCH_WRITE_INFLIGHT", 64) as usize;
@@ -595,12 +594,12 @@ fn main() {
                 let mut uuid = [0u8; 16];
                 uuid[..8].copy_from_slice(&(i as u64 + 1).to_le_bytes());
                 uuid[8..].copy_from_slice(&0x6d6f_6174_6265_6e63u64.to_le_bytes());
-                moat_engine::format(
+                storage::format(
                     &device,
                     &FormatOptions {
-                        segment_size: segment,
-                        chunk_max: 4 << 20,
-                        disk_uuid: uuid,
+                        segment_size: u32::try_from(segment).expect("segment fits u32"),
+                        limits: FrameLimits::new(8 << 20, 4 << 20).unwrap(),
+                        device_id: uuid,
                     },
                 )
                 .unwrap_or_else(|e| panic!("{}: format: {e}", path.display()));
@@ -622,7 +621,6 @@ fn main() {
         Options {
             index_capacity,
             verify_reads,
-            ..Default::default()
         },
     )
     .expect("open");
@@ -630,7 +628,7 @@ fn main() {
     node.assign_owners(workers, &disk_numa, &worker_numa);
     println!("opened in {:.1?}; owners: {:?}", started.elapsed(), node.owners());
     println!(
-        "{workers} worker(s) on cores {:?}, queue depth {depth}, pool {pool_mb} MiB/worker, io_uring={}, verify_reads={verify_reads}",
+        "{workers} worker(s) on cores {:?}, queue depth {depth}, pool {pool_mb} MiB/disk, io_uring={}, verify_reads={verify_reads}",
         &cores[..workers.min(cores.len())],
         !sync
     );
@@ -660,9 +658,7 @@ fn main() {
             small,
             write_inflight,
             small_write_inflight,
-            write_prefetch: env("MOAT_BENCH_WRITE_PREFETCH", 16),
-            shard_reads: std::env::var_os("MOAT_BENCH_SHARD_READS").is_some(),
-            wait_reads: std::env::var_os("MOAT_BENCH_WAIT_READS").is_some(),
+
             large_count,
             small_count,
             phases,
@@ -676,7 +672,6 @@ fn main() {
         per_disk_ops: (0..node.engines().len()).map(|_| AtomicU64::new(0)).collect(),
     });
     let pattern_large: Arc<Vec<u8>> = Arc::new((0..large).map(|i| (i % 253) as u8).collect());
-    let sums_large = Arc::new(block_checksums(&pattern_large));
     let pattern_small: Arc<Vec<u8>> = Arc::new((0..small).map(|i| (i % 251) as u8).collect());
 
     let worker_opts: Vec<WorkerOptions> = (0..workers)
@@ -689,7 +684,6 @@ fn main() {
                     max_class: 8 << 20,
                     huge_pages: pool::policy(),
                 },
-                descriptors: (node.engines().len() * 2 + 8) as u32,
             },
             backend: if sync { QueueBackend::Sync } else { QueueBackend::Uring },
             poll_mode: PollMode::Busy,
@@ -707,13 +701,13 @@ fn main() {
             write_outstanding: Vec::new(),
             read_pending: Vec::new(),
             read_free: Vec::new(),
+            read_tickets: HashMap::new(),
             read_outstanding: 0,
             hist: Hist::new(),
             ops: 0,
             bytes: 0,
             per_disk: Vec::new(),
             pattern_large: pattern_large.clone(),
-            sums_large: sums_large.clone(),
             pattern_small: pattern_small.clone(),
         })
         .expect("start workers");

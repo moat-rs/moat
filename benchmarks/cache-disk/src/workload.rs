@@ -22,7 +22,6 @@ use moat_cache::{
     Bytes,
     identity::{DEFAULT_IDENTITY_VERSION, Fingerprint, Xxh3},
 };
-use moat_engine::{Device, FileDevice};
 use moat_server::{Placement, Target};
 use std::{
     collections::{HashMap, VecDeque},
@@ -94,14 +93,6 @@ impl Workers {
                         };
                         moat_server::worker::pin_to_core(core)?;
                         match config.engine.as_str() {
-                            "v1" => worker(
-                                engines::v1::V1::new(&config, disk)?,
-                                &config,
-                                disk,
-                                &records,
-                                receiver,
-                                &results,
-                            ),
                             "v2" => worker(
                                 engines::v2::V2::new(&config, disk)?,
                                 &config,
@@ -189,7 +180,11 @@ fn worker(
         let stats = match phase {
             Phase::Write => {
                 let stats = prefill(&mut backend, c, records, share(c.prefill_batch, c.disks.len(), disk))?;
-                FileDevice::open(&c.disks[disk].path, true)?.sync()?;
+                std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(&c.disks[disk].path)?
+                    .sync_data()?;
                 stats
             }
             Phase::Verify => reads(&mut backend, records, c.value_bytes, 128, None, 1)?,

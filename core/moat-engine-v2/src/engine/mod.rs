@@ -23,18 +23,19 @@ mod error;
 mod layout;
 mod recovery;
 
+use std::ops::Range;
+
+pub use device::Device;
+pub use error::{Error, Rejected, Result};
+pub use layout::{FormatOptions, Layout, format};
+use moat_common::{AlignedBuf, ChunkId, PAGE_SIZE};
+
 use crate::{
     frame::FrameBuilder,
     io::{Buffer, Queue},
     pipeline::{self, Completion, Pipeline, ReadBuffers, ReadRequirements, Ticket},
     segment,
 };
-use moat_common::{AlignedBuf, ChunkId, PAGE_SIZE};
-use std::ops::Range;
-
-pub use device::Device;
-pub use error::{Error, Rejected, Result};
-pub use layout::{FormatOptions, Layout, format};
 
 /// An exclusively owned device, its global index, and a dedicated I/O queue.
 ///
@@ -102,6 +103,15 @@ impl<D: Device, Q: Queue> Engine<D, Q> {
     /// Whether the latest published version is a data record.
     pub fn contains(&self, key: &ChunkId) -> bool {
         self.pipeline.contains(key)
+    }
+    /// Logical version and value length of a published live record.
+    pub fn stat(&self, key: &ChunkId) -> Option<(u64, u32)> {
+        self.pipeline.stat(key)
+    }
+    /// Visits every latest published version, including tombstones (`None`).
+    /// This allows owners to recover their LSN allocator without duplicating the index.
+    pub fn visit_versions(&self, visit: impl FnMut(ChunkId, u64, Option<u32>)) {
+        self.pipeline.visit_versions(visit);
     }
     /// Drives the shared queue and delivers read/write/flush completions.
     pub fn poll(&mut self, wait: bool, out: &mut Vec<Completion>) -> Result<usize> {

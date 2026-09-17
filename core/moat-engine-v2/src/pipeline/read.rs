@@ -14,13 +14,12 @@
 
 use std::ops::Range;
 
-use crate::io::Buffer;
 use moat_common::{ChunkId, PAGE_SIZE, align_down, align_up};
 
 use super::{Pending, Pipeline, Rejected, Result, Ticket};
 use crate::{
     frame,
-    io::{Operation, Queue},
+    io::{Buffer, Operation, Queue},
 };
 
 /// Reusable, caller-owned buffers for metadata and the requested value extent.

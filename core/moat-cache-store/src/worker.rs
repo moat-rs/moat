@@ -19,10 +19,7 @@ use std::{
 };
 
 use moat_common::ChunkId;
-use moat_engine::{
-    Completion, DeleteOutcome, Engine, IoQueue, Outcome, PutOptions, PutOutcome, ReadCompletion, ReadOutcome, Reader,
-    Writer,
-};
+use moat_server::storage::{self, Completion, Disk, Session};
 
 use crate::{
     DeleteResult, Error, InventoryEntry, Options, Result,
@@ -39,7 +36,7 @@ struct Chain {
 
 pub(crate) fn spawn(
     disk: usize,
-    engine: Engine,
+    engine: Disk,
     options: Options,
     receiver: mpsc::Receiver<Command>,
     counters: Arc<Counters>,
@@ -72,19 +69,15 @@ pub(crate) fn spawn(
 struct Worker {
     delivery: Delivery,
     disk: usize,
-    queue: Box<dyn IoQueue>,
-    writer: Writer,
-    reader: Reader,
+    session: Session,
     options: Options,
     receiver: mpsc::Receiver<Command>,
     counters: Arc<Counters>,
     chains: HashMap<ChunkId, Chain>,
     ready: VecDeque<ChunkId>,
     reads: HashMap<u64, ChunkId>,
-    writes: HashMap<u64, ChunkId>,
-    next_read: u64,
-    read_completions: Vec<ReadCompletion>,
-    write_completions: Vec<Completion>,
+    writes: HashMap<u64, (ChunkId, u64)>,
+    completions: Vec<Completion>,
     fence: Option<Fence>,
     closing: bool,
     close_reply: Option<Reply<()>>,
@@ -93,7 +86,7 @@ struct Worker {
 impl Worker {
     fn new(
         disk: usize,
-        engine: Engine,
+        engine: Disk,
         options: Options,
         receiver: mpsc::Receiver<Command>,
         counters: Arc<Counters>,
@@ -101,15 +94,11 @@ impl Worker {
         if let Some(&cpu) = options.worker_cpus.get(disk) {
             moat_server::worker::pin_to_core(cpu)?;
         }
-        let mut queue = options.queue.build(options.backend)?;
-        let writer = engine.writer(queue.as_mut())?;
-        let reader = engine.reader(queue.as_mut())?;
+        let session = Session::open(engine, &options.queue, options.backend)?;
         Ok(Self {
             delivery: Delivery::new(options.completion_executor.as_ref()),
             disk,
-            queue,
-            writer,
-            reader,
+            session,
             options,
             receiver,
             counters,
@@ -117,9 +106,7 @@ impl Worker {
             ready: VecDeque::new(),
             reads: HashMap::new(),
             writes: HashMap::new(),
-            next_read: 1,
-            read_completions: Vec::new(),
-            write_completions: Vec::new(),
+            completions: Vec::new(),
             fence: None,
             closing: false,
             close_reply: None,
@@ -128,12 +115,12 @@ impl Worker {
     }
     fn inventory(&self) -> Vec<InventoryEntry> {
         let mut entries = Vec::new();
-        self.writer.visit_chunks(|id, stat| {
+        self.session.visit(|id, lsn, len| {
             entries.push(InventoryEntry {
                 disk: self.disk,
                 id,
-                lsn: stat.lsn,
-                len: stat.len,
+                lsn,
+                len,
             })
         });
         entries
@@ -270,40 +257,45 @@ impl Worker {
                     self.chains.insert(id, chain);
                 }
             }
-            progress |= self.queue.poll(false)? != 0;
-            progress |= self.reader.poll(self.queue.as_mut(), &mut self.read_completions)? != 0;
-            progress |= self.writer.poll(self.queue.as_mut(), &mut self.write_completions)? != 0;
-            let mut reads = std::mem::take(&mut self.read_completions);
-            for completion in reads.drain(..) {
-                let id = self.reads.remove(&completion.token).expect("submitted read");
-                let operation = self.complete(id);
-                self.delivery
-                    .push(move || operation.read_done(completion.result.map_err(Error::from)));
-            }
-            self.read_completions = reads;
-            let mut writes = std::mem::take(&mut self.write_completions);
-            for completion in writes.drain(..) {
-                let result = completion.result.map_err(Error::from);
-                if self
-                    .fence
-                    .as_ref()
-                    .is_some_and(|fence| fence.ticket == Some(completion.ticket))
-                {
-                    self.finish_fence(result)?;
-                } else {
-                    let id = self.writes.remove(&completion.ticket).expect("submitted mutation");
-                    if let Err(error) = &result {
-                        self.write_error.get_or_insert(error.clone());
+            progress |= self.session.poll(false, &mut self.completions)? != 0;
+            let mut completions = std::mem::take(&mut self.completions);
+            for completion in completions.drain(..) {
+                match completion {
+                    Completion::Read {
+                        ticket,
+                        result,
+                        buffers,
+                    } => {
+                        let id = self.reads.remove(&ticket.number()).expect("submitted read");
+                        let operation = self.complete(id);
+                        self.delivery.push(move || {
+                            operation.read_done(
+                                result
+                                    .map(|range| storage::read_buffer(buffers, range))
+                                    .map_err(Error::from),
+                            )
+                        });
                     }
-                    self.complete(id).write_done(result);
+                    Completion::Write { ticket, result, .. } => {
+                        let (id, lsn) = self.writes.remove(&ticket.number()).expect("submitted mutation");
+                        let result = result.map(|()| lsn).map_err(Error::from);
+                        if let Err(error) = &result {
+                            self.write_error.get_or_insert(error.clone());
+                        }
+                        self.complete(id).write_done(result);
+                    }
+                    Completion::Flush { ticket, result } => {
+                        assert_eq!(self.fence.as_ref().and_then(|f| f.ticket), Some(ticket.number()));
+                        self.finish_fence(result.map_err(Error::from))?;
+                    }
                 }
             }
-            self.write_completions = writes;
+            self.completions = completions;
             if self.fence.is_some() && self.chains.is_empty() {
                 progress |= self.advance_fence()?;
             }
             self.delivery.flush();
-            if self.closing && self.writer.is_idle() && self.reader.in_flight() == 0 {
+            if self.closing && self.session.in_flight() == 0 {
                 return self.write_error.take().map_or(Ok(()), Err);
             }
             if !progress {
@@ -331,11 +323,11 @@ impl Worker {
                 if waiters.is_empty() {
                     return Ok(Started::Done);
                 }
-                let Some(stat) = self.reader.stat(&id) else {
+                let Some(stat) = self.session.stat(&id) else {
                     operation.miss();
                     return Ok(Started::Done);
                 };
-                *lsn = stat.lsn;
+                *lsn = stat.0;
                 if !waiters[0]
                     .permit
                     .as_mut()
@@ -344,54 +336,35 @@ impl Worker {
                 {
                     return Ok(Started::Retry(operation));
                 }
-                let token = self.next_read;
-                self.next_read = self
-                    .next_read
-                    .checked_add(1)
-                    .ok_or(Error::Invalid("read token space exhausted"))?;
-                match self.reader.get(self.queue.as_mut(), &id, range.clone(), token) {
-                    Ok(ReadOutcome::Submitted) => {
-                        self.reads.insert(token, id);
+                match self.session.read(id, range.clone()) {
+                    Ok(ticket) => {
+                        self.reads.insert(ticket.number(), id);
                         self.counters.reads.fetch_add(1, Ordering::Relaxed);
                         Ok(())
                     }
-                    Ok(ReadOutcome::Miss) => {
-                        operation.miss();
-                        return Ok(Started::Done);
-                    }
                     Err(error) => Err(error),
                 }
             }
-            Operation::Put { value, .. } => {
-                match self
-                    .writer
-                    .put(self.queue.as_mut(), id, value, PutOptions { overwrite: true })
-                {
-                    Ok(PutOutcome::Written { ticket, .. }) => {
-                        self.writes.insert(ticket, id);
-                        Ok(())
-                    }
-                    Ok(PutOutcome::Exists) => unreachable!("overwrite enabled"),
-                    Err(error) => Err(error),
+            Operation::Put { value, .. } => match self.session.write(id, Some(value)) {
+                Ok((ticket, lsn)) => {
+                    self.writes.insert(ticket.number(), (id, lsn));
+                    Ok(())
                 }
-            }
+                Err(error) => Err(error),
+            },
             Operation::Delete { expected_lsn, .. } => {
-                let Some(stat) = self.reader.stat(&id) else {
+                let Some(stat) = self.session.stat(&id) else {
                     operation.deleted(DeleteResult::Missing);
                     return Ok(Started::Done);
                 };
-                if expected_lsn.is_some_and(|expected| expected != stat.lsn) {
+                if expected_lsn.is_some_and(|expected| expected != stat.0) {
                     operation.deleted(DeleteResult::Changed);
                     return Ok(Started::Done);
                 }
-                match self.writer.delete(self.queue.as_mut(), &id) {
-                    Ok(DeleteOutcome::Deleted { ticket, .. }) => {
-                        self.writes.insert(ticket, id);
+                match self.session.write(id, None) {
+                    Ok((ticket, lsn)) => {
+                        self.writes.insert(ticket.number(), (id, lsn));
                         Ok(())
-                    }
-                    Ok(DeleteOutcome::Missing) => {
-                        operation.deleted(DeleteResult::Missing);
-                        return Ok(Started::Done);
                     }
                     Err(error) => Err(error),
                 }
@@ -399,7 +372,7 @@ impl Worker {
         };
         match result {
             Ok(()) => Ok(Started::Active(operation)),
-            Err(moat_engine::Error::Busy) => Ok(Started::Retry(operation)),
+            Err(storage::Error::Busy) => Ok(Started::Retry(operation)),
             Err(error) => {
                 let error = Error::from(error);
                 if !matches!(operation, Operation::Read { .. }) {
@@ -440,27 +413,19 @@ impl Worker {
                 });
                 return Ok(true);
             }
-            FenceReply::Flush(_) => self.writer.flush(self.queue.as_mut()).map(Some),
-            FenceReply::Close(_) => self.writer.seal(self.queue.as_mut()).map(Some),
-            FenceReply::Reclaim(_) => self.writer.reclaim(self.queue.as_mut()),
+            FenceReply::Flush(_) => self.session.flush(),
+            FenceReply::Close(_) => {
+                let result = self.session.seal().map_err(Error::from);
+                self.finish_fence(result)?;
+                return Ok(true);
+            }
         };
         match ticket {
-            Ok(Some(ticket)) => {
-                self.fence.as_mut().expect("fence").ticket = Some(ticket);
+            Ok(ticket) => {
+                self.fence.as_mut().expect("fence").ticket = Some(ticket.number());
                 Ok(true)
             }
-            Ok(None) => {
-                let fence = self.fence.take().expect("fence");
-                let FenceReply::Reclaim(reply) = fence.reply else {
-                    unreachable!()
-                };
-                self.delivery.push(move || {
-                    drop(fence._permit);
-                    let _ = reply.send(Ok(None));
-                });
-                Ok(true)
-            }
-            Err(moat_engine::Error::Busy) => Ok(false),
+            Err(storage::Error::Busy) => Ok(false),
             Err(error) => {
                 self.finish_fence(Err(error.into()))?;
                 Ok(true)
@@ -468,13 +433,13 @@ impl Worker {
         }
     }
 
-    fn finish_fence(&mut self, result: Result<Outcome>) -> Result<()> {
+    fn finish_fence(&mut self, result: Result<()>) -> Result<()> {
         let Fence {
             reply, _permit: permit, ..
         } = self.fence.take().expect("completed fence");
         match reply {
             FenceReply::Flush(reply) => {
-                let result = result.map(|_| ()).and(self.write_error.take().map_or(Ok(()), Err));
+                let result = result.and(self.write_error.take().map_or(Ok(()), Err));
                 self.delivery.push(move || {
                     drop(permit);
                     let _ = reply.send(result);
@@ -486,16 +451,6 @@ impl Worker {
                 self.closing = true;
                 result?;
             }
-            FenceReply::Reclaim(reply) => {
-                let result = result.and_then(|outcome| match outcome {
-                    Outcome::Reclaim(report) => Ok(Some(report)),
-                    _ => Err(Error::Invalid("unexpected reclaim completion")),
-                });
-                self.delivery.push(move || {
-                    drop(permit);
-                    let _ = reply.send(result);
-                });
-            }
             FenceReply::Inventory(_) => unreachable!("inventory has no engine ticket"),
         }
         Ok(())
@@ -504,18 +459,14 @@ impl Worker {
     fn finish(self, result: Result<()>) {
         let Self {
             mut delivery,
-            mut queue,
-            writer,
-            reader,
+            session,
             receiver,
             chains,
             fence,
             close_reply,
             ..
         } = self;
-        writer.detach(queue.as_mut());
-        reader.detach(queue.as_mut());
-        drop(queue);
+        drop(session);
         let error = result.clone().err().unwrap_or(Error::Closed);
         for (_, chain) in chains {
             if let Some(operation) = chain.active {
@@ -553,198 +504,97 @@ enum Started {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        io,
-        sync::atomic::AtomicBool,
-        time::{Duration, Instant},
-    };
-
-    use futures_channel::oneshot;
     use futures_executor::block_on;
-    use moat_common::{BufferPool, HugePages, PoolOptions, PooledBuf};
-    use moat_engine::{
-        Descriptor, Device, FormatOptions, MemDevice, QueueBackend, QueueOptions, blocking,
-        io::{Full, IoCompletion},
-    };
+    use moat_common::{HugePages, PoolOptions};
+    use moat_server::storage::{FormatOptions, FrameLimits, MemDevice, QueueBackend, QueueOptions};
 
     use super::*;
     use crate::{Request, budget::Budget};
 
-    // Hold completed reads in the queue's inbox while the worker keeps running.
-    // This tests overlap without depending on device timing or scheduler luck.
-    struct HoldReads {
-        inner: Box<dyn IoQueue>,
-        reader: Option<Descriptor>,
-        release: Arc<AtomicBool>,
-    }
-    impl IoQueue for HoldReads {
-        fn pool(&self) -> &Arc<BufferPool> {
-            self.inner.pool()
-        }
-        fn attach(&mut self, device: &Arc<dyn Device>) -> io::Result<Descriptor> {
-            self.inner.attach(device)
-        }
-        fn detach(&mut self, desc: Descriptor) {
-            self.inner.detach(desc);
-        }
-        fn read(
-            &mut self,
-            desc: Descriptor,
-            buf: PooledBuf,
-            len: usize,
-            offset: u64,
-            token: u64,
-        ) -> std::result::Result<(), PooledBuf> {
-            self.reader = Some(desc);
-            self.inner.read(desc, buf, len, offset, token)
-        }
-        fn write(
-            &mut self,
-            desc: Descriptor,
-            buf: PooledBuf,
-            len: usize,
-            offset: u64,
-            token: u64,
-        ) -> std::result::Result<(), PooledBuf> {
-            self.inner.write(desc, buf, len, offset, token)
-        }
-        fn fsync(&mut self, desc: Descriptor, token: u64) -> std::result::Result<(), Full> {
-            self.inner.fsync(desc, token)
-        }
-        fn submit(&mut self) -> io::Result<()> {
-            self.inner.submit()
-        }
-        fn poll(&mut self, wait: bool) -> io::Result<usize> {
-            self.inner.poll(wait)
-        }
-        fn take(&mut self, desc: Descriptor, out: &mut Vec<IoCompletion>) -> usize {
-            if self.reader == Some(desc) && !self.release.load(Ordering::Acquire) {
-                0
-            } else {
-                self.inner.take(desc, out)
-            }
-        }
-        fn in_flight(&self) -> usize {
-            self.inner.in_flight()
-        }
-        fn depth(&self) -> usize {
-            self.inner.depth()
-        }
-    }
-
-    fn wait_until(mut test: impl FnMut() -> bool) {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !test() {
-            assert!(Instant::now() < deadline, "worker failed to make progress");
-            thread::yield_now();
-        }
-    }
-
     #[test]
     fn independent_ids_overlap_and_inflight_followers_share_the_read() {
-        let device = Arc::new(MemDevice::new(17 << 20));
-        moat_engine::format(
+        let device = Arc::new(MemDevice::new(8 << 20));
+        storage::format(
             &*device,
             &FormatOptions {
+                device_id: [41; 16],
                 segment_size: 1 << 20,
-                chunk_max: 128 << 10,
-                disk_uuid: [42; 16],
+                limits: FrameLimits::new(128 << 10, 64 << 10).unwrap(),
             },
         )
         .unwrap();
-        let engine = moat_engine::open(
-            device,
-            moat_engine::Options {
-                index_capacity: 128,
-                ..Default::default()
-            },
-        )
-        .unwrap()
-        .0;
+        let disk = Disk::open(device, storage::Options::default()).unwrap();
         let options = Options {
             backend: QueueBackend::Sync,
             queue: QueueOptions {
                 depth: 8,
-                descriptors: 4,
                 pool: PoolOptions {
-                    bytes: 32 << 20,
+                    bytes: 16 << 20,
                     max_class: 1 << 20,
                     huge_pages: HugePages::Disabled,
                 },
             },
-            ..Default::default()
+            ..Options::default()
         };
-        let budget = Budget::new(32, 32 << 20, 16 << 20, 1, 1 << 20);
+        let budget = Budget::new(32, 32 << 20, 8 << 20, 1, 1 << 20);
         let counters = Arc::new(Counters::default());
-        let release = Arc::new(AtomicBool::new(false));
         let (sender, receiver) = mpsc::channel();
-        let (ready, started) = mpsc::channel();
-        let handle = thread::spawn({
-            let counters = counters.clone();
-            let release = release.clone();
-            move || {
-                let mut worker = Worker::new(0, engine, options, receiver, counters).unwrap();
-                for n in [1, 2] {
-                    worker
-                        .writer
-                        .put(
-                            worker.queue.as_mut(),
-                            ChunkId::from_u128(n),
-                            &[n as u8],
-                            PutOptions::default(),
-                        )
-                        .unwrap();
-                }
-                blocking::flush(worker.queue.as_mut(), &mut worker.writer).unwrap();
-                worker.queue = Box::new(HoldReads {
-                    inner: worker.queue,
-                    reader: None,
-                    release,
-                });
-                ready.send(()).unwrap();
-                let result = worker.run();
-                worker.finish(result);
-            }
-        });
-        started.recv_timeout(Duration::from_secs(5)).unwrap();
-        let read = |n| {
-            let (reply, receiver) = oneshot::channel();
-            sender
-                .send(Command::Read {
-                    id: ChunkId::from_u128(n),
-                    range: None,
-                    reply,
-                    permit: budget.reserve(1 << 20, Some(0)).unwrap(),
-                })
-                .unwrap();
+        let mut worker = Worker::new(0, disk, options, receiver, counters.clone()).unwrap();
+        for n in [1, 2] {
+            worker.session.write(ChunkId::from_u128(n), Some(&[n as u8])).unwrap();
+        }
+        let mut out = Vec::new();
+        while worker.session.in_flight() != 0 {
+            worker.session.poll(true, &mut out).unwrap();
+        }
+        for completion in out {
+            let Completion::Write { result, .. } = completion else {
+                unreachable!()
+            };
+            result.unwrap();
+        }
+        let read = |worker: &mut Worker, n| {
+            let (reply, receiver) = futures_channel::oneshot::channel();
+            worker.accept(Command::Read {
+                id: ChunkId::from_u128(n),
+                range: None,
+                reply,
+                permit: budget.reserve(0, Some(0)).unwrap(),
+            });
             Request { receiver }
         };
-        let first = read(1);
-        wait_until(|| counters.reads.load(Ordering::Relaxed) == 1);
-        let other = read(2);
-        wait_until(|| counters.reads.load(Ordering::Relaxed) == 2);
-        let follower = read(1);
-        wait_until(|| counters.coalesced.load(Ordering::Relaxed) == 1);
+        let first = read(&mut worker, 1);
+        let other = read(&mut worker, 2);
+        // Admit two independent reads before polling either completion. The
+        // synchronous backend retains completions until the owner drives poll.
+        while let Some(id) = worker.ready.pop_front() {
+            let mut chain = worker.chains.remove(&id).unwrap();
+            let Started::Active(operation) = worker.start(id, chain.pending.pop_front().unwrap()).unwrap() else {
+                panic!("read admission");
+            };
+            chain.active = Some(operation);
+            worker.chains.insert(id, chain);
+        }
+        assert_eq!(worker.session.in_flight(), 2);
+        let follower = read(&mut worker, 1);
         assert_eq!(counters.reads.load(Ordering::Relaxed), 2);
-        release.store(true, Ordering::Release);
+        assert_eq!(counters.coalesced.load(Ordering::Relaxed), 1);
+        sender
+            .send(Command::Fence {
+                reply: FenceReply::Close(None),
+                permit: None,
+            })
+            .unwrap();
+        let result = worker.run();
+        worker.finish(result.clone());
+        result.unwrap();
         let first = block_on(first).unwrap().unwrap();
         let other = block_on(other).unwrap().unwrap();
         let follower = block_on(follower).unwrap().unwrap();
         assert!(Arc::ptr_eq(&first, &follower));
         assert_eq!(&**first, &[1]);
         assert_eq!(&**other, &[2]);
-        drop(first);
-        drop(other);
-        drop(follower);
-        let (reply, receiver) = oneshot::channel();
-        sender
-            .send(Command::Fence {
-                reply: FenceReply::Close(Some(reply)),
-                permit: None,
-            })
-            .unwrap();
-        block_on(Request { receiver }).unwrap();
-        handle.join().unwrap();
+        drop((first, other, follower));
         assert_eq!(budget.snapshot().bytes, 0);
         assert_eq!(budget.snapshot().requests, 0);
     }

@@ -14,13 +14,14 @@
 
 //! Immutable, duplicated device geometry and allocation epochs.
 
+use moat_common::{AlignedBuf, PAGE_SIZE, is_aligned};
+
 use super::{Device, Error, Result};
 use crate::{
     codec::*,
     frame::FrameLimits,
     segment::{SegmentHeader, SegmentId},
 };
-use moat_common::{AlignedBuf, PAGE_SIZE, is_aligned};
 
 const MAGIC: [u8; 8] = *b"MOATDEV1";
 const VERSION: u32 = 1;

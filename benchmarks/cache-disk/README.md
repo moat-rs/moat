@@ -1,20 +1,23 @@
 Disk cache comparison
 =====================
 
-This standalone workspace compares engine v1, engine v2, and foyer pinned to
+This standalone workspace compares engine v2 and foyer pinned to
 [`dd46245c45071d1036331e4e2c48e15386017b96`](https://github.com/foyer-rs/foyer/tree/dd46245c45071d1036331e4e2c48e15386017b96).
 Foyer dependencies are confined to the comparison workspace.
 
+The [latest twenty-device v2 recheck](../../docs/experiments/cache-disk/2026-09-17-v2/REPORT.md)
+records the native engine after migration, with all samples and comparison limits.
+
 The common workload driver uses a synchronous `Backend` interface: submit
 writes or reads, poll completions, drain a write batch, and close. It runs one
-persistent caller thread per device. For v1/v2, request generation, engine calls,
-read validation, and buffer recycling all happen on that thread. Their phase
+persistent caller thread per device. For v2, request generation, engine calls,
+read validation, and buffer recycling all happen on that thread. Its phase
 commands cross threads only when starting or finishing a benchmark phase.
 
-`engine: "v1"` and `engine: "v2"` **do not create or enter a Tokio runtime**.
-They use registered io_uring buffers and return pooled read buffers without
+`engine: "v2"` **does not create or enter a Tokio runtime**.
+It uses registered io_uring buffers and returns pooled read buffers without
 copying into new value vectors. No request tasks, oneshots, completion drivers,
-or per-record channels surround either engine. The v2 crate remains independent
+or per-record channels surround the engine. The v2 crate remains independent
 of Tokio; this comparison executable links Tokio for foyer only.
 
 The foyer adapter is the sole runtime boundary. It creates a shared Tokio
@@ -26,9 +29,9 @@ completion batches instead of occupying CPUs in a polling loop. They run on
 `runtime_cpus`, sharing those CPUs with foyer's runtime,
 and its io_uring workers use `io_cpus`. Engine owner loops run on `io_cpus`.
 Report actual process CPU use as well as throughput: foyer uses more software
-threads and available application CPUs than the two native engine paths.
+threads and available application CPUs than the native engine path.
 
-All three adapters use the same keys, values, device placement, concurrency
+Both adapters use the same keys, values, device placement, concurrency
 budget, and workload loop. Full-key Xxh3 identity and weighted rendezvous
 placement happen **before timing**, producing one dataset per device. Random
 reads choose uniformly within each device's dataset. The global `clients`
@@ -56,8 +59,8 @@ initialization instead. This reserves no bytes and changes no foyer data-path co
 Engine reads use `moat_verify_reads` (default false); all writes retain checksums.
 These integrity and ownership semantics differ and are reported explicitly.
 
-`engine_segment_bytes` defaults to 2 GiB for v1/v2; foyer retains 16-MiB blocks.
-`moat_huge_pages: true` requests preferred huge pages for both engine pools.
+`engine_segment_bytes` defaults to 2 GiB for v2; foyer retains 16-MiB blocks.
+`moat_huge_pages: true` requests preferred huge pages for engine pools.
 Foyer's configured pool budget covers flush buffers and excludes its separate
 read allocations, so equal pool settings are not equal total-memory limits.
 
@@ -93,7 +96,7 @@ reruns all three engines with v2's device-limit splitting enabled. It retains
 45 prefills, 75 measured read phases, and phase-level io-wq observations.
 
 The [previous native twenty-device comparison](../../docs/experiments/cache-disk/2026-09-16-native/REPORT.md)
-uses the current polling adapters, with 45 prefills, 75 measured read phases,
+uses the historical v1/v2 polling adapters, with 45 prefills, 75 measured read phases,
 and separate CPU profiles. Its CSVs retain run identifiers, exact operation
 counts and durations, CPU costs, and physical I/O totals.
 

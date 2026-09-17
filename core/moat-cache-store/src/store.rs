@@ -24,8 +24,10 @@ use std::{
 
 use futures_channel::oneshot;
 use moat_common::ChunkId;
-use moat_engine::{Engine, QueueBackend, QueueOptions, ReclaimReport, Usage};
-use moat_server::{Placement, Target};
+use moat_server::{
+    Placement, Target,
+    storage::{self, Disk, QueueBackend, QueueOptions, Usage},
+};
 use parking_lot::RwLock;
 
 use crate::{
@@ -82,7 +84,7 @@ pub struct DiskInfo {
     pub segment_size: u64,
     /// Maximum encoded chunk size in bytes.
     pub chunk_max: u32,
-    /// Conservative live-entry budget that does not require index growth.
+    /// Default upper-layer live-entry limit; not a hard bound on v2 index memory.
     pub index_entries: usize,
 }
 
@@ -127,7 +129,7 @@ struct Admission {
 }
 struct Inner {
     admission: Vec<RwLock<Admission>>,
-    engines: Vec<Engine>,
+    engines: Vec<Disk>,
     info: Vec<DiskInfo>,
     placement: Placement,
     budget: Arc<Budget>,
@@ -174,12 +176,12 @@ impl Store {
         Arc::strong_count(&self.inner) == 1
     }
 
-    /// Acquires each engine's unique writer and starts its worker. Returns the
+    /// Acquires each disk's exclusive v2 session and starts its worker. Returns the
     /// recovered live inventory before any adapter request is admitted.
     ///
-    /// The caller owns device formatting and engine recovery configuration.
-    /// No other writer may mutate these engines while the store is open.
-    pub fn new(engines: Vec<Engine>, options: Options) -> Result<(Self, Vec<InventoryEntry>)> {
+    /// The caller owns formatting and passes disk handles. Recovery and pool
+    /// creation run on each owner thread; duplicate ownership is rejected.
+    pub fn new(engines: Vec<Disk>, options: Options) -> Result<(Self, Vec<InventoryEntry>)> {
         if engines.is_empty() {
             return Err(Error::Invalid("at least one engine is required"));
         }
@@ -198,18 +200,18 @@ impl Store {
         }
         let mut identities = HashSet::new();
         for engine in &engines {
-            if !identities.insert(engine.disk_uuid()) {
+            if !identities.insert(engine.layout().device_id()) {
                 return Err(Error::Invalid("duplicate disk UUID"));
             }
         }
         let info: Vec<_> = engines
             .iter()
             .map(|engine| DiskInfo {
-                uuid: engine.disk_uuid(),
-                capacity: engine.capacity(),
-                segment_size: engine.segment_size(),
-                chunk_max: engine.chunk_max(),
-                index_entries: engine.index_entries_without_growth(),
+                uuid: engine.layout().device_id(),
+                capacity: engine.layout().capacity(),
+                segment_size: engine.layout().segment_size() as u64,
+                chunk_max: engine.layout().limits().max_value_len(),
+                index_entries: engine.index_capacity(),
             })
             .collect();
         let placement = Placement::new(
@@ -290,16 +292,16 @@ impl Store {
         self.inner
             .engines
             .get(disk)
-            .map(Engine::usage)
+            .map(Disk::usage)
             .ok_or(Error::Invalid("disk index out of bounds"))
     }
-    /// Physical costs of a prospective write under this disk's engine options.
-    pub fn write_accounting(&self, disk: usize, len: u32) -> Result<moat_engine::WriteAccounting> {
+    /// Conservative append allocation cost, including frame/footer overhead.
+    pub fn write_cost(&self, disk: usize, len: u32) -> Result<u64> {
         self.inner
             .engines
             .get(disk)
             .ok_or(Error::Invalid("disk index out of bounds"))?
-            .write_accounting(len)
+            .write_cost(len)
             .map_err(Error::from)
     }
 
@@ -362,11 +364,7 @@ impl Store {
     pub fn put(&self, id: ChunkId, value: Arc<[u8]>) -> Request<u64> {
         let disk = self.disk_of(&id);
         if value.len() > self.inner.info[disk].chunk_max as usize {
-            return Request::ready(Err(moat_engine::Error::ValueTooLarge {
-                len: value.len() as u64,
-                max: self.inner.info[disk].chunk_max as u64,
-            }
-            .into()));
+            return Request::ready(Err(Error::Invalid("value exceeds the persisted chunk limit")));
         }
         self.submit(disk, value.len(), false, |reply, permit| Command::Put {
             id,
@@ -393,13 +391,15 @@ impl Store {
             permit: Some(permit),
         })
     }
-    /// Requests one physical GC pass after earlier operations on this disk.
-    /// Live chunks remain live; only upper-layer explicit deletes remove data.
-    pub fn reclaim(&self, disk: usize) -> Request<Option<ReclaimReport>> {
-        self.submit(disk, 0, false, |reply, permit| Command::Fence {
-            reply: FenceReply::Reclaim(reply),
-            permit: Some(permit),
-        })
+    /// v2 is append-only: physical reclamation is explicitly unsupported.
+    pub fn reclaim(&self, disk: usize) -> Request<()> {
+        let Some(gate) = self.inner.admission.get(disk) else {
+            return Request::ready(Err(Error::Invalid("disk index out of bounds")));
+        };
+        if gate.read().closed {
+            return Request::ready(Err(Error::Closed));
+        }
+        Request::ready(Err(storage::Error::Unsupported("segment reclamation").into()))
     }
 
     fn fences(&self, close: bool) -> Vec<Request<()>> {
@@ -449,7 +449,7 @@ impl Store {
     pub async fn flush(&self) -> Result<()> {
         wait_all(self.fences(false)).await
     }
-    /// Stops new admissions, drains accepted requests, seals and detaches every
+    /// Stops new admissions, drains accepted requests, seals and releases every
     /// worker, and returns the first failure after observing all workers.
     /// Subsequent close calls return Closed. Admission occurs on first poll.
     pub async fn close(&self) -> Result<()> {

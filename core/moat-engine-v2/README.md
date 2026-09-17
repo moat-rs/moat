@@ -1,8 +1,8 @@
 # moat-engine-v2
 
-Independent implementation of the [unified immutable frame proposal](../../docs/design/engine-frame-layout.md), developed alongside `moat-engine` for review before replacement. It does not depend on, wrap, or copy the old engine's pipelines. Shared primitives come from `moat-common`: chunk identifiers, alignment helpers, CRC32C generation and verification, and buffers. Frame assembly uses the common checksum iterator to write directly into the metadata area without allocating a checksum vector.
+The sole storage engine in this repository implements [unified immutable frames](../../docs/design/engine-frame-layout.md), owner-driven I/O, and an append-only multi-segment device lifecycle. Shared IDs, CRC32C, aligned memory, and pools come from `moat-common`.
 
-**Implemented: frame and segment codecs, a single-owner I/O pipeline, and an append-only multi-segment device engine.** `Engine<D, Q>` persists geometry, rebuilds one resident index, routes reads across allocations, and rolls over full segments. It reuses the existing pipeline and registered I/O path without adding locks. `Pipeline<Q>` remains available for a caller-managed single segment. The crate is not yet a drop-in replacement: physical reclamation, segment reuse, and integration with existing consumers remain separate work. See the [device lifecycle document](../../docs/design/engine-device-lifecycle.md).
+Server, cache-store, and cache use v2 through [`moat-server::storage`](../moat-server/src/storage/mod.rs). The old `moat-engine` implementation has been removed; v2 does not read its format. Physical reclamation and segment reuse remain unimplemented. See the [device lifecycle](../../docs/design/engine-device-lifecycle.md) and [migration guide](../../docs/design/v2-migration.md) for current boundaries.
 
 ## Usage
 
