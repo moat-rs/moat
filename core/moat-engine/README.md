@@ -1,14 +1,14 @@
-# moat-engine-v2
+# moat-engine
 
 The sole storage engine in this repository implements [unified immutable frames](../../docs/design/engine-frame-layout.md), owner-driven I/O, and an append-only multi-segment device lifecycle. Shared IDs, CRC32C, aligned memory, and pools come from `moat-common`.
 
-Server, cache-store, and cache use v2 through [`moat-server::storage`](../moat-server/src/storage/mod.rs). The old `moat-engine` implementation has been removed; v2 does not read its format. Physical reclamation and segment reuse remain unimplemented. See the [device lifecycle](../../docs/design/engine-device-lifecycle.md) and [migration guide](../../docs/design/v2-migration.md) for current boundaries.
+Server, cache-store, and cache use the engine through [`moat-server::storage`](../moat-server/src/storage/mod.rs). The legacy v1 implementation has been removed; the engine does not read its format. Physical reclamation and segment reuse remain unimplemented. See the [device lifecycle](../../docs/design/engine-device-lifecycle.md) and [migration guide](../../docs/design/engine-migration.md) for current boundaries.
 
 ## Usage
 
 ```rust
 use moat_common::{AlignedBuf, ChunkId};
-use moat_engine_v2::frame::{Frame, FrameBuilder, FrameLimits, FramePosition};
+use moat_engine::frame::{Frame, FrameBuilder, FrameLimits, FramePosition};
 
 // Format-wide bounds, not the runtime batching target.
 let limits = FrameLimits::new(8 << 20, 4 << 20)?;
@@ -22,7 +22,7 @@ let header = builder.encode_into(position, &mut buffer)?;
 let frame = Frame::decode(&buffer[..header.frame_len()], limits, position)?;
 assert_eq!(frame.value(0), Some(&b"hello"[..]));
 assert_eq!(frame.value(1), None); // Tombstone, distinct from empty data.
-# Ok::<(), moat_engine_v2::frame::Error>(())
+# Ok::<(), moat_engine::frame::Error>(())
 ```
 
 For a prepared value, allocate `PreparedFrame::required_len(limits, value_len)` bytes, borrow the buffer with `PreparedFrame::new`, fill `value_mut()`, then call `finish(position, key, lsn)`. The payload already occupies its final page-aligned region. Finishing computes checksums and writes metadata and padding without copying the payload. The caller's buffer remains available if finalization fails.
@@ -108,7 +108,7 @@ The footer contains each frame's original metadata rather than a separate record
 
 ```rust
 use moat_common::ChunkId;
-use moat_engine_v2::{
+use moat_engine::{
     frame::{FrameBuilder, FrameLimits, Metadata},
     segment::{Footer, SegmentBuilder, SegmentHeader, SegmentId},
 };
@@ -178,7 +178,7 @@ Create the pool and queue on the thread that drives I/O. `UringQueue` is neither
 # #[cfg(target_os = "linux")]
 # fn registered_queue(file: std::fs::File) -> std::io::Result<()> {
 use moat_common::{BufferPool, HugePages, PoolOptions};
-use moat_engine_v2::io::UringQueue;
+use moat_engine::io::UringQueue;
 
 let pool = BufferPool::new(PoolOptions {
     bytes: 64 << 20,
@@ -208,11 +208,11 @@ This stage does not fix the number of streams, encode Hot/Cold categories, or im
 Start with `src/frame/header.rs` and `record.rs` for the wire format, `builder.rs` for placement and buffer ownership, and `decode.rs` for validation. `tests/frame.rs` covers mixed layouts, multi-page directories, empty values and tombstones, prepared-buffer identity, deterministic admission boundaries, reordered values, partial checksums, truncation, and forged structures with recomputed CRCs. A golden header and metadata vector was generated with an independent bitwise CRC32C encoder.
 
 ```sh
-cargo test -p moat-engine-v2
-cargo clippy -p moat-engine-v2 --all-targets -- -D warnings
-cargo bench -p moat-engine-v2 --bench frame
+cargo test -p moat-engine
+cargo clippy -p moat-engine --all-targets -- -D warnings
+cargo bench -p moat-engine --bench frame
 ```
 
 The benchmark measures in-memory assembly, full validation, and prepared finalization. It does not measure device throughput, recovery, or end-to-end latency, and does not establish an improvement over the old engine.
 
-Pipeline functional checks can be run with `cargo test -p moat-engine-v2 --test pipeline -- --test-threads=1`. The [experiment archive](../../docs/experiments/README.md) preserves the measured revisions, complete samples, profiles, and ablation decisions. The active [engine driver](../../benchmarks/engine/README.md) and [application comparison](../../benchmarks/cache-disk/README.md) document their different measurement boundaries.
+Pipeline functional checks can be run with `cargo test -p moat-engine --test pipeline -- --test-threads=1`. The [experiment archive](../../docs/experiments/README.md) preserves the measured revisions, complete samples, profiles, and ablation decisions. The active [engine driver](../../benchmarks/engine/README.md) and [application comparison](../../benchmarks/cache-disk/README.md) document their different measurement boundaries.

@@ -111,7 +111,7 @@ fn validate(config: &Config) -> Result<()> {
         "invalid record size"
     );
     ensure!(config.bytes_per_disk.is_multiple_of(SEGMENT), "unaligned device window");
-    ensure!(matches!(config.engine.as_str(), "v2" | "foyer"), "unknown engine");
+    ensure!(matches!(config.engine.as_str(), "moat" | "foyer"), "unknown engine");
     ensure!(
         config.engine != "foyer" || !config.runtime_cpus.is_empty(),
         "foyer needs runtime CPUs"

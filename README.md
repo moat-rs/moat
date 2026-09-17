@@ -21,18 +21,18 @@ The design document lives at [`docs/design/chunkserver.md`](docs/design/chunkser
 | Crate | Responsibility | Status |
 |---|---|---|
 | [`moat-common`](core/moat-common) | Chunk IDs, CRC32C, aligned memory, and buffer pools | Available |
-| [`moat-engine-v2`](core/moat-engine-v2) | Frame/segment codecs, owner-driven I/O, allocation, recovery, and indexing | Sole engine; append-only, without physical reclamation or segment reuse |
-| [`moat-server`](core/moat-server) | Device discovery, routing, exclusive sessions, and workers | Migrated to v2; no network transport yet |
+| [`moat-engine`](core/moat-engine) | Frame/segment codecs, owner-driven I/O, allocation, recovery, and indexing | Sole engine; append-only, without physical reclamation or segment reuse |
+| [`moat-server`](core/moat-server) | Device discovery, routing, exclusive sessions, and workers | Exclusive engine sessions; no network transport yet |
 | [`moat-cache-memory`](core/moat-cache-memory) | Sharded memory cache and replacement policies | Available |
-| [`moat-cache-store`](core/moat-cache-store) | Bounded async requests, per-key ordering, and read coalescing | Migrated to v2 |
-| [`moat-cache`](core/moat-cache) | Hybrid cache, key identity, catalog, and shared views | Migrated to v2; writes stop when append headroom is exhausted |
+| [`moat-cache-store`](core/moat-cache-store) | Bounded async requests, per-key ordering, and read coalescing | Available |
+| [`moat-cache`](core/moat-cache) | Hybrid cache, key identity, catalog, and shared views | Writes stop when append headroom is exhausted |
 | `moat-transport`, `moat-client`, `moat-tools` | Networking, clients, and operational tools | Planned |
 
-The v1 implementation and entry points have been removed. V2 does not read the
+The v1 implementation and entry points have been removed. The engine does not read the
 old disk format; existing v1 data requires a separate migration or rebuild.
 The upper layers use a replaceable adapter in
 [`moat-server::storage`](core/moat-server/src/storage/mod.rs). See the
-[v2 migration guide](docs/design/v2-migration.md) for API changes, current
+[engine migration guide](docs/design/engine-migration.md) for API changes, current
 limitations, and future rebuild boundaries.
 
 ## Examples
@@ -41,14 +41,14 @@ limitations, and future rebuild boundaries.
 cargo run -p moat-cache-store --example chunks
 cargo run -p moat-cache --example hybrid
 cargo run -p moat-cache --example views
-cargo run -p moat-engine-v2 --example segment_io -- /path/to/new-example.img
+cargo run -p moat-engine --example segment_io -- /path/to/new-example.img
 ```
 
 The first three examples use memory devices. `segment_io` creates a new file
 and demonstrates frame-pipeline writes, recovery, and reads. See the
-[engine guide](core/moat-engine-v2/README.md) for the complete device API.
+[engine guide](core/moat-engine/README.md) for the complete device API.
 
-Each disk has one owner for its v2 engine, queue, and pool. `Auto` selects
+Each disk has one owner for its engine, queue, and pool. `Auto` selects
 io_uring on Linux and a synchronous queue on other Unix platforms; memory
 devices must explicitly select `Sync`. Synchronous I/O runs on the calling
 thread for local development and tests. Read CRC verification is disabled
@@ -57,7 +57,7 @@ and recovery retain checksum validation.
 
 Shared cache views remain readable after eviction, overwrite, and shutdown.
 The last holder releases their buffers and credits. Logical deletion and
-eviction do not free physical v2 segments; `reclaim` explicitly returns
+eviction do not free physical segments; `reclaim` explicitly returns
 unsupported. Sustained overwrite workloads require reclamation and reuse.
 
 ## Validation and benchmarks
@@ -65,15 +65,15 @@ unsupported. Sustained overwrite workloads require reclamation and reuse.
 ```sh
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
-cargo bench -p moat-engine-v2 --bench frame
+cargo bench -p moat-engine --bench frame
 ```
 
 Linux tests include real io_uring and registered-buffer paths. Allow at least
 64 MiB of locked memory for tests; CI configures this limit. Benchmark memory
 limits must accommodate the configured pool capacity per disk.
 
-The [engine benchmark](benchmarks/engine/README.md) runs v2 only;
-[disk comparisons](benchmarks/cache-disk/README.md) compare v2 with a pinned
+The [engine benchmark](benchmarks/engine/README.md) runs the engine directly;
+[disk comparisons](benchmarks/cache-disk/README.md) compare moat with a pinned
 foyer revision; [memory comparisons](benchmarks/cache-memory/README.md)
 measure resident cache policies. Direct-device tests overwrite the configured
 window and require explicitly assigned disposable devices.

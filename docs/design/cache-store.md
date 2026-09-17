@@ -1,8 +1,8 @@
 # Asynchronous chunk adapter
 
-The implementation uses v2; see the [migration guide](v2-migration.md) for API and resource boundaries. Small values are not batched across requests. A write-path failure requires closing and reopening the session before writes can resume.
+The implementation uses the engine; see the [migration guide](engine-migration.md) for API and resource boundaries. Small values are not batched across requests. A write-path failure requires closing and reopening the session before writes can resume.
 
-`moat-cache-store` turns moat engine pipelines into runtime-independent request futures. It owns one worker and an exclusive v2 session (engine, queue and pool) per disk. The adapter does not define logical cache keys, origin loading, admission/eviction policy, TTL, or a second physical storage format.
+`moat-cache-store` turns moat engine pipelines into runtime-independent request futures. It owns one worker and an exclusive session (engine, queue and pool) per disk. The adapter does not define logical cache keys, origin loading, admission/eviction policy, TTL, or a second physical storage format.
 
 ## Admission and ordering
 
@@ -76,13 +76,13 @@ the published comparison exercises populated disk hits.
 
 `flush` admits a barrier on every disk on first poll. The admission gates prevent new requests from interleaving with publication of those fences. All flush credits are reserved before any fence is published. The operation observes every disk and returns the first error. A worker also reports mutation failures since the previous flush; observing a flush consumes that recorded error. Engine completion and explicit flush retain the engine's configured durability semantics; they do not add a new power-loss guarantee.
 
-`reclaim(disk)` explicitly returns unsupported. V2 has no physical reclamation or segment reuse. The cache retains logical eviction and tracks append headroom, returning `NoSpace` when that headroom is exhausted.
+`reclaim(disk)` explicitly returns unsupported. The engine has no physical reclamation or segment reuse. The cache retains logical eviction and tracks append headroom, returning `NoSpace` when that headroom is exhausted.
 
 `close` stops admission, drains prior work, seals, and releases all sessions. It observes all disks even if one fails. Cancelling close after admission still leaves the workers shutting down. A second close returns Closed. Dropping the final Store handle performs background draining and sealing; explicit close is required to observe the result. Partial startup failure joins earlier workers before returning so an immediate retry can reacquire their sessions.
 
 ## Multiple disks
 
-Placement reuses moat-server's weighted rendezvous hashing over persistent disk UUIDs. Duplicate UUIDs are rejected before workers start. Reordering the same disk set preserves physical placement. Adding/removing disks requires explicit migration or rebuilding the cache; opening another list does not migrate existing chunks. The caller supplies v2 Disk handles; each owner thread builds a Session and recovers its index. Flush always requests durability. Normal reads keep engine `verify_reads` disabled; write checksums and recovery validation remain unchanged. Explicit diagnostic verification can still be enabled by the caller.
+Placement reuses moat-server's weighted rendezvous hashing over persistent disk UUIDs. Duplicate UUIDs are rejected before workers start. Reordering the same disk set preserves physical placement. Adding/removing disks requires explicit migration or rebuilding the cache; opening another list does not migrate existing chunks. The caller supplies storage::Disk handles; each owner thread builds a Session and recovers its index. Flush always requests durability. Normal reads keep engine `verify_reads` disabled; write checksums and recovery validation remain unchanged. Explicit diagnostic verification can still be enabled by the caller.
 
 ## Validation
 

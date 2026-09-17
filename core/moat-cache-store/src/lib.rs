@@ -14,7 +14,7 @@
 
 //! Bounded asynchronous chunk access over moat's engine pipelines.
 //!
-//! Each disk has a worker that exclusively owns a v2 session, queue and pool. Compatible
+//! Each disk has a worker that exclusively owns a session, queue and pool. Compatible
 //! reads share one physical operation and one reference-counted buffer. Reads,
 //! overwrites and deletions of a ChunkId follow admission order; unrelated IDs
 //! can be in flight together. No source loader, logical key codec or cache

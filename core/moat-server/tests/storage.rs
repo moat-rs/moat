@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Persistence and ownership contracts of the transitional v2 adapter.
+//! Persistence and ownership contracts of the transitional engine adapter.
 use std::sync::Arc;
 
 use moat_common::{ChunkId, HugePages, PoolOptions};
@@ -121,7 +121,7 @@ fn full_append_only_device_keeps_reads_available() {
     for _ in 0..1000 {
         match session.write(id, Some(&value)) {
             Ok(_) => drain(&mut session),
-            Err(storage::Error::Engine(moat_engine_v2::engine::Error::OutOfSpace)) => {
+            Err(storage::Error::Engine(moat_engine::engine::Error::OutOfSpace)) => {
                 filled = true;
                 break;
             }

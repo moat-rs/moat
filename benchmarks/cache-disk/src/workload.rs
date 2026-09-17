@@ -93,8 +93,8 @@ impl Workers {
                         };
                         moat_server::worker::pin_to_core(core)?;
                         match config.engine.as_str() {
-                            "v2" => worker(
-                                engines::v2::V2::new(&config, disk)?,
+                            "moat" => worker(
+                                engines::moat::Moat::new(&config, disk)?,
                                 &config,
                                 disk,
                                 &records,
@@ -497,7 +497,7 @@ mod tests {
     }
     fn config() -> Config {
         serde_json::from_value(serde_json::json!({
-            "host":"unused", "engine":"v2", "disks":[{"path":"unused","serial":""}],
+            "host":"unused", "engine":"moat", "disks":[{"path":"unused","serial":""}],
             "bytes_per_disk":1073741824_u64, "records_per_disk":43, "key_bytes":16, "value_bytes":100,
             "clients":17, "runtime_cpus":[], "io_cpus":[0], "seconds":1, "repeats":1,
             "pool_bytes_per_disk":67108864

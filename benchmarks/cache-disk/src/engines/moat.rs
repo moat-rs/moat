@@ -16,7 +16,7 @@ use super::{Backend, Data, Done, Put, Record};
 use crate::Config;
 use anyhow::Result;
 use moat_common::{BufferPool, HugePages, PoolOptions};
-use moat_engine_v2::{
+use moat_engine::{
     engine::{self, Device, Engine, Error},
     frame::{FrameBuilder, FrameLimits, PreparedFrame},
     io::{Buffer, UringQueue},
@@ -54,7 +54,7 @@ impl Device for Window {
         self.file.sync_data()
     }
 }
-pub(crate) struct V2 {
+pub(crate) struct Moat {
     engine: Engine<Window, UringQueue>,
     pool: Arc<BufferPool>,
     limits: FrameLimits,
@@ -64,7 +64,7 @@ pub(crate) struct V2 {
     lsn: u64,
     out: Vec<Completion>,
 }
-impl V2 {
+impl Moat {
     pub fn new(c: &Config, disk: usize) -> Result<Self> {
         let file = OpenOptions::new()
             .read(true)
@@ -108,7 +108,7 @@ impl V2 {
         })
     }
 }
-impl Backend for V2 {
+impl Backend for Moat {
     fn put(&mut self, batch: &mut VecDeque<Put>) -> Result<Option<(u64, usize)>> {
         let first = &batch[0];
         let prepared = first.value.len() >= 65536;
@@ -193,7 +193,7 @@ impl Backend for V2 {
                     buffers,
                 } => Done::Read(
                     ticket.number(),
-                    result.map(|range| Data::V2 { buffers, range }).map_err(Into::into),
+                    result.map(|range| Data::Moat { buffers, range }).map_err(Into::into),
                 ),
                 Completion::Flush { .. } => unreachable!("benchmark uses the common device sync boundary"),
             });

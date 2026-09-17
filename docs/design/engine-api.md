@@ -1,6 +1,6 @@
 # moat-engine: a non-blocking API over a shared I/O queue
 
-> Historical design: the v1 implementation has been removed. This document preserves the original design and milestones; shared readers/writers, legacy formats, GC, and implementation status described here do not represent the current code. See the [v2 migration guide](v2-migration.md) for current constraints.
+> Historical design: the v1 implementation has been removed. This document preserves the original design and milestones; shared readers/writers, legacy formats, GC, and implementation status described here do not represent the current code. See the [engine migration guide](engine-migration.md) for current constraints.
 
 > Status: implemented (`core/moat-engine`), with the worker runtime in
 > `core/moat-server`. Describes the public API of `moat-engine` and the

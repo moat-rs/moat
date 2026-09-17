@@ -605,7 +605,7 @@ dependencies = [
  "libc",
  "moat-cache",
  "moat-common",
- "moat-engine-v2",
+ "moat-engine",
  "moat-server",
  "serde",
  "serde_json",
@@ -630,7 +630,7 @@ dependencies = [
  "futures-channel",
  "futures-util",
  "moat-common",
- "moat-engine-v2",
+ "moat-engine",
  "moat-server",
  "parking_lot",
  "thiserror",
@@ -645,7 +645,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "moat-engine-v2"
+name = "moat-engine"
 version = "0.0.0"
 dependencies = [
  "io-uring",
@@ -660,7 +660,7 @@ version = "0.0.0"
 dependencies = [
  "libc",
  "moat-common",
- "moat-engine-v2",
+ "moat-engine",
  "parking_lot",
  "thiserror",
 ]

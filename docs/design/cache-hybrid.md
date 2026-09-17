@@ -1,6 +1,6 @@
 Hybrid cache
 
-> The current storage backend is v2. GC and sustained churn described here remain future goals; logical eviction does not free physical segments. See the [v2 migration guide](v2-migration.md) for the complete constraints.
+> The current storage backend is `moat-engine`. GC and sustained churn described here remain future goals; logical eviction does not free physical segments. See the [engine migration guide](engine-migration.md) for the complete constraints.
 ============
 
 `moat-cache` composes `moat-cache-memory` and `moat-cache-store` directly over

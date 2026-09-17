@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Threads driving exclusively owned v2 sessions.
+//! Threads driving exclusively owned sessions.
 
 use std::{
     io,
@@ -98,7 +98,7 @@ pub struct Context<'a> {
     pub worker: usize,
     /// Owned disks, each with its own engine and queue.
     pub disks: &'a mut [DiskSlot],
-    /// Native v2 completions tagged with node-wide disk IDs; drain on each call.
+    /// Native completions tagged with node-wide disk IDs; drain on each call.
     pub completions: &'a mut Vec<(DiskId, Completion)>,
 }
 impl Context<'_> {

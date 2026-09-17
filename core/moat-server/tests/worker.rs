@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Owner-only v2 workers, shutdown sealing and recovery.
+//! Owner-only engine workers, shutdown sealing and recovery.
 
 use std::{
     collections::HashMap,

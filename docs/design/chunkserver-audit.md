@@ -1,6 +1,6 @@
 Chunkserver implementation audit (2026-09-09)
 
-> Historical design: the v1 implementation has been removed. This document preserves the original design and milestones; shared readers/writers, legacy formats, GC, and implementation status described here do not represent the current code. See the [v2 migration guide](v2-migration.md) for current constraints.
+> Historical design: the v1 implementation has been removed. This document preserves the original design and milestones; shared readers/writers, legacy formats, GC, and implementation status described here do not represent the current code. See the [engine migration guide](engine-migration.md) for current constraints.
 
 The baseline for this audit is `3e481443fc170233e0312ed5f3603cbe6fc75024`. It focuses on data retention, failure retries, and recovery semantics in the implemented engine and node layers. The findings concern actual code; networking, migration, checkpoints, and scheduling described in the design documents are not treated as implemented guarantees. This is not a complete proof of concurrent memory ordering or power-loss consistency.
 

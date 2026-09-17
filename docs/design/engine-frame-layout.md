@@ -3,7 +3,7 @@
 The current [segment format](engine-segment-format.md) uses a separate allocation header and a footer trailer at the segment end. All alpha format versions are 1. The architectural discussion below provides the original context.
 
 Status: staged implementation in the independent
-[`moat-engine-v2` crate](../../core/moat-engine-v2/README.md). Stage 1 implements
+[`moat-engine` crate](../../core/moat-engine/README.md). Stage 1 implements
 the frame codec, construction, and validation. The existing `moat-engine`
 still writes Inline, Framed, and Large batches; its API and format are unchanged.
 
@@ -586,7 +586,7 @@ before enabling the writer. This documentation change formats no devices.
 
 1. **Independent frame crate:** implement field encodings, bounds, checksum
    coverage, Frame identity, mixed-value construction, prepared buffers, and
-   malformed-input tests in `moat-engine-v2`. Review this stage before adding
+   malformed-input tests in `moat-engine`. Review this stage before adding
    engine pipelines; keep the original crate available for comparison.
 2. **Writer and reader integration:** one ordinary builder per stream,
    sequential placement, actual-size metadata, prepared large Frames,

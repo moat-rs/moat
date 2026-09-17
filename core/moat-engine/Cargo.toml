@@ -13,7 +13,7 @@
 # limitations under the License.
 
 [package]
-name = "moat-engine-v2"
+name = "moat-engine"
 description = "Independent implementation of the unified immutable frame engine."
 version.workspace = true
 edition.workspace = true

@@ -28,7 +28,7 @@ results belong here instead of beside executable code.
 
 | Mechanism | Implementation or evidence | Scope |
 |---|---|---|
-| Unified immutable frames and mixed-size placement | [Frame design](../design/engine-frame-layout.md), [v2 crate](../../core/moat-engine-v2/README.md) | Fixed 8-byte value alignment and checksummed metadata/payload blocks are format contracts. The proposed gap-filling arrangement remains unimplemented. |
+| Unified immutable frames and mixed-size placement | [Frame design](../design/engine-frame-layout.md), [engine crate](../../core/moat-engine/README.md) | Fixed 8-byte value alignment and checksummed metadata/payload blocks are format contracts. The proposed gap-filling arrangement remains unimplemented. |
 | Bounded incremental frame admission | `FrameBuilder` and frame tests | Common admission uses a conservative constant-time bound with an exact fallback. Correct format limits are independent of the batching target. |
 | Direct range reads with optional verification | [Direct-read report](engine/2026-09-15-direct/REPORT.md) | The caller selects verification through `read(..., verify, ...)`. Checked reads and recovery retain validation. |
 | Single-owner index, requests, and publication | [I/O pipeline design](../design/engine-io-pipeline.md) | Ordering, backpressure, buffer lifetime, and failure propagation are correctness requirements. The native driver does not add per-request runtime/channel bridges. |

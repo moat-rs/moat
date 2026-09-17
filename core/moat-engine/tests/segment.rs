@@ -15,7 +15,7 @@
 //! Segment format, allocation accounting, and recovery fault cases.
 
 use moat_common::{ChunkId, Crc32c, PAGE_SIZE};
-use moat_engine_v2::{
+use moat_engine::{
     frame::{self, FrameBuilder, FrameLimits, FramePosition, Metadata, RecordKind},
     segment::{Error, Footer, FooterTrailer, Scanner, SegmentBuilder, SegmentHeader, SegmentId},
 };

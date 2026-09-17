@@ -18,7 +18,7 @@
 use std::{cell::RefCell, collections::VecDeque, fs::File, io as stdio, os::unix::fs::FileExt, rc::Rc};
 
 use moat_common::{AlignedBuf, ChunkId, PAGE_SIZE};
-use moat_engine_v2::{
+use moat_engine::{
     frame::{FrameBuilder, FrameLimits, PreparedFrame},
     io::{self, FileQueue, Operation, Queue, Request},
     pipeline::{Completion, Error, Pipeline, ReadBuffers},
@@ -698,7 +698,7 @@ fn assigned_segment_full_returns_input_without_submitting_a_write() {
     let rejected = pipeline.write(&input, buffer).unwrap_err();
     assert!(matches!(
         rejected.error,
-        Error::Segment(moat_engine_v2::segment::Error::Full { .. })
+        Error::Segment(moat_engine::segment::Error::Full { .. })
     ));
     assert!(rejected.input.iter().all(|&byte| byte == 0x44));
     assert_eq!(pipeline.in_flight(), 0);
@@ -723,7 +723,7 @@ fn small_values_already_in_metadata_use_one_read_and_no_copy() {
         Completion::Read { result, buffers, .. } => {
             assert_eq!(buffers.metadata.as_ref().unwrap().as_ptr(), address);
             let range = result.unwrap();
-            assert!(matches!(range, moat_engine_v2::pipeline::ReadRange::Metadata(_)));
+            assert!(matches!(range, moat_engine::pipeline::ReadRange::Metadata(_)));
             assert_eq!(buffers.view(range), b"inline");
         }
         _ => panic!("read"),
@@ -754,7 +754,7 @@ fn corrupt_inline_payload_is_rejected_without_a_second_read() {
     assert!(matches!(
         &out[0],
         Completion::Read {
-            result: Err(Error::Frame(moat_engine_v2::frame::Error::PayloadChecksum { .. })),
+            result: Err(Error::Frame(moat_engine::frame::Error::PayloadChecksum { .. })),
             ..
         }
     ));
@@ -995,7 +995,7 @@ fn verification_requires_metadata_and_direct_reads_return_it_untouched() {
     let rejected = pipeline.read(key(1), 0..5, true, ReadBuffers::new(value)).unwrap_err();
     assert!(matches!(
         rejected.error,
-        Error::Frame(moat_engine_v2::frame::Error::BufferTooSmall {
+        Error::Frame(moat_engine::frame::Error::BufferTooSmall {
             required: PAGE,
             available: 0,
         })

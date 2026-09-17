@@ -47,7 +47,7 @@ pub struct DiskOptions {
     /// Encoded live bytes per disk. None uses a quarter of non-reserved capacity.
     pub capacity: Option<u64>,
     /// Live entry limit per disk. None uses the adapter's configured default;
-    /// this does not bound v2's latest-version index or retained tombstones.
+    /// this does not bound the engine's latest-version index or retained tombstones.
     pub entries: Option<usize>,
     /// Cache victim selection, followed by explicit conditional deletion.
     pub policy: DiskPolicy,

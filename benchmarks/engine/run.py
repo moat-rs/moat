@@ -85,7 +85,7 @@ def main():
         require(before == (sys / "stat").read_text(), "device has active I/O")
         for repeat in range(args.repeats):
             for size in args.sizes:
-                engines = ["v2"]
+                engines = ["moat"]
                 for engine in engines:
                     name = f"engine-{repeat}-{size}-{engine}"
                     output = args.output / f"{name}.jsonl"

@@ -44,7 +44,7 @@ moat-cache = { path = "core/moat-cache" }
 moat-cache-memory = { path = "core/moat-cache-memory" }
 moat-cache-store = { path = "core/moat-cache-store" }
 moat-common = { path = "core/moat-common" }
-moat-engine-v2 = { path = "core/moat-engine-v2" }
+moat-engine = { path = "core/moat-engine" }
 moat-server = { path = "core/moat-server" }
 parking_lot = "0.12"
 slab = "0.4"

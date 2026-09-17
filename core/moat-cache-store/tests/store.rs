@@ -502,8 +502,8 @@ fn corruption_is_shared_with_waiters_and_does_not_leak_buffer_credits() {
     };
     assert!(matches!(
         &*a,
-        storage::Error::Engine(moat_engine_v2::engine::Error::Pipeline(
-            moat_engine_v2::pipeline::Error::Frame(_)
+        storage::Error::Engine(moat_engine::engine::Error::Pipeline(
+            moat_engine::pipeline::Error::Frame(_)
         ))
     ));
     assert!(Arc::ptr_eq(&a, &b));

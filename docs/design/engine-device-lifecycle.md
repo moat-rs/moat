@@ -1,6 +1,6 @@
 # Append-only device lifecycle
 
-`moat-engine-v2::engine::Engine<D, Q>` owns one device, one I/O queue, and an
+`moat-engine::engine::Engine<D, Q>` owns one device, one I/O queue, and an
 in-memory index spanning segments. Normal reads and writes use the asynchronous
 pipeline and registered buffers. Allocation, sealing, and recovery use synchronous
 positional I/O. Physical reclamation, segment reuse, and GC scheduling are not yet

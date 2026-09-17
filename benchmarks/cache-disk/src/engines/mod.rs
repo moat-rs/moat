@@ -16,7 +16,7 @@
 //! creates a Tokio runtime. No per-request channel or task wraps engine I/O.
 
 pub(super) mod foyer;
-pub(super) mod v2;
+pub(super) mod moat;
 
 use crate::{Config, Hasher};
 use anyhow::{Result, ensure};
@@ -31,9 +31,9 @@ pub(super) struct Record {
 }
 
 pub(super) enum Data {
-    V2 {
-        buffers: moat_engine_v2::pipeline::ReadBuffers,
-        range: moat_engine_v2::pipeline::ReadRange,
+    Moat {
+        buffers: moat_engine::pipeline::ReadBuffers,
+        range: moat_engine::pipeline::ReadRange,
     },
     Foyer(::foyer::HybridCacheEntry<Vec<u8>, Vec<u8>, Hasher>),
     #[cfg(test)]
@@ -42,7 +42,7 @@ pub(super) enum Data {
 impl Data {
     pub fn check(&self, record: &Record, len: usize) -> Result<()> {
         let bytes = match self {
-            Self::V2 { buffers, range } => buffers.view(range.clone()),
+            Self::Moat { buffers, range } => buffers.view(range.clone()),
             Self::Foyer(entry) => {
                 ensure!(entry.key().as_slice() == record.key.as_ref(), "full key mismatch");
                 return check_value(entry.value(), record.number, len);
