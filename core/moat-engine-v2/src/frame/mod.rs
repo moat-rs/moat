@@ -38,10 +38,10 @@ pub use record::{RecordDescriptor, RecordKind};
 pub const HEADER_LEN: usize = 64;
 /// Size of an encoded record descriptor.
 pub const DESCRIPTOR_LEN: usize = 64;
-/// Persistent format version, distinct from the original engine's version 1.
-pub const FORMAT_VERSION: u32 = 2;
+/// Persistent alpha format version.
+pub const FORMAT_VERSION: u32 = 1;
 /// Frame identification bytes. Legacy batch encodings are never accepted.
-pub const MAGIC: [u8; 8] = *b"MOATFRM2";
+pub const MAGIC: [u8; 8] = *b"MOATFRM1";
 
 // Fixed format invariant. The small-value CRC path can consume aligned u64
 // words without first processing an unaligned bytewise prefix.

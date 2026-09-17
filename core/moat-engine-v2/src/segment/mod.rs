@@ -27,21 +27,21 @@ mod recovery;
 
 pub use builder::SegmentBuilder;
 pub use error::{Error, Result};
-pub use footer::Footer;
+pub use footer::{Footer, FooterTrailer};
 pub use header::{SegmentHeader, SegmentId};
 pub use recovery::Scanner;
 
 /// Segment and footer format version, independent of the frame version.
-pub const FORMAT_VERSION: u32 = 2;
+pub const FORMAT_VERSION: u32 = 1;
 /// Identification bytes for the one-page segment header.
-pub const HEADER_MAGIC: [u8; 8] = *b"MOATSEG2";
+pub const HEADER_MAGIC: [u8; 8] = *b"MOATSEG1";
 /// Identification bytes for a sealed segment's metadata footer.
-pub const FOOTER_MAGIC: [u8; 8] = *b"MOATFTR2";
-/// Fixed footer prefix, followed by packed frame metadata and page padding.
-pub const FOOTER_HEADER_LEN: usize = 64;
+pub const FOOTER_MAGIC: [u8; 8] = *b"MOATFTR1";
+/// Fixed trailer at the end of a page-rounded footer.
+pub const FOOTER_TRAILER_LEN: usize = 64;
 
 const MIN_FRAME_METADATA_LEN: u64 = (crate::frame::HEADER_LEN + crate::frame::DESCRIPTOR_LEN) as u64;
 
 pub(super) fn footer_len(metadata_len: u64) -> u64 {
-    moat_common::align_up(FOOTER_HEADER_LEN as u64 + metadata_len, moat_common::PAGE_SIZE)
+    moat_common::align_up(FOOTER_TRAILER_LEN as u64 + metadata_len, moat_common::PAGE_SIZE)
 }

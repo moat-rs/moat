@@ -12,13 +12,86 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use moat_common::PAGE_SIZE;
+use moat_common::{Crc32c, PAGE_SIZE, is_aligned};
 
-use super::{Error, FOOTER_HEADER_LEN, FOOTER_MAGIC, Result, SegmentHeader, header::validate_prefix};
+use super::{
+    Error, FOOTER_MAGIC, FOOTER_TRAILER_LEN, MIN_FRAME_METADATA_LEN, Result, SegmentHeader, SegmentId, footer_len,
+    header::{Seal, validate_prefix},
+};
 use crate::{
     codec::*,
     frame::{FrameHeader, FrameLimits, Metadata},
 };
+
+/// Independently validated seal record at the end of a segment's final page.
+///
+/// Identity and generation must be compared with the allocation header before
+/// using its lengths or accepting any embedded metadata.
+#[derive(Debug, Clone, Copy)]
+pub struct FooterTrailer {
+    header: SegmentHeader,
+    checksum: u32,
+}
+
+impl FooterTrailer {
+    /// Decodes the final 64 bytes of a tail page against trusted segment geometry.
+    /// This does not validate the preceding footer bytes or allocation identity.
+    pub fn decode(tail: &[u8], segment_len: u32) -> Result<Self> {
+        let at = tail.len().checked_sub(FOOTER_TRAILER_LEN).ok_or(Error::Truncated {
+            required: FOOTER_TRAILER_LEN,
+            available: tail.len(),
+        })?;
+        let bytes = &tail[at..];
+        validate_prefix(bytes, FOOTER_MAGIC)?;
+        let id = SegmentId {
+            device_id: bytes[16..32].try_into().expect("fixed trailer length"),
+            segment_no: u32_at(bytes, 32),
+            sequence: u64_at(bytes, 40),
+        };
+        let mut header = SegmentHeader::new(id, segment_len).map_err(|_| Error::Corrupt("footer segment geometry"))?;
+        let seal = Seal {
+            data_end: u32_at(bytes, 36),
+            frame_count: u32_at(bytes, 48),
+            metadata_len: u32_at(bytes, 52),
+        };
+        let len = footer_len(seal.metadata_len as u64);
+        if seal.data_end < PAGE_SIZE as u32
+            || !is_aligned(seal.data_end as u64, PAGE_SIZE)
+            || !seal.metadata_len.is_multiple_of(4)
+            || len != u32_at(bytes, 56) as u64
+            || seal.data_end as u64 + len > segment_len as u64
+            || (seal.frame_count == 0) != (seal.data_end == PAGE_SIZE as u32)
+            || (seal.frame_count == 0) != (seal.metadata_len == 0)
+            || seal.frame_count as u64 * PAGE_SIZE > seal.data_end as u64 - PAGE_SIZE
+            || seal.frame_count as u64 * MIN_FRAME_METADATA_LEN > seal.metadata_len as u64
+            || seal.metadata_len as u64 > seal.data_end as u64 - PAGE_SIZE
+        {
+            return Err(Error::Corrupt("sealed footer geometry"));
+        }
+        header.seal = Some(seal);
+        Ok(Self {
+            header,
+            checksum: u32_at(bytes, 60),
+        })
+    }
+
+    /// Sealed in-memory segment view; compare its identity with the allocation.
+    pub fn header(self) -> SegmentHeader {
+        self.header
+    }
+}
+
+// Both CRC fields are zeroed in the complete footer checksum. The trailer CRC
+// is computed afterwards and also protects the stored complete-footer checksum.
+pub(super) fn checksum(bytes: &[u8]) -> u32 {
+    let at = bytes.len() - FOOTER_TRAILER_LEN;
+    Crc32c::new()
+        .update(&bytes[..at + 12])
+        .update(&[0; 4])
+        .update(&bytes[at + 16..at + 60])
+        .update(&[0; 4])
+        .finalize()
+}
 
 /// Validated sealed metadata, borrowing the footer without copying its directory.
 ///
@@ -44,24 +117,16 @@ impl<'a> Footer<'a> {
             required: len,
             available: bytes.len(),
         })?;
-        validate_prefix(bytes, FOOTER_MAGIC)?;
-        if bytes[16..32] != header.id.device_id
-            || u32_at(bytes, 32) != header.id.segment_no
-            || u32_at(bytes, 36) != seal.data_end
-            || u64_at(bytes, 40) != header.id.sequence
-            || u32_at(bytes, 48) != seal.frame_count
-            || u32_at(bytes, 52) != seal.metadata_len
-            || u32_at(bytes, 56) as usize != len
-            || u32_at(bytes, 60) != 0
-        {
-            return Err(Error::Corrupt("footer identity or geometry"));
+        let trailer = FooterTrailer::decode(bytes, header.segment_len)?;
+        if trailer.header != header || trailer.checksum != checksum(bytes) {
+            return Err(Error::Corrupt("footer identity, geometry, or checksum"));
         }
-        let end = FOOTER_HEADER_LEN + seal.metadata_len as usize;
-        if bytes[end..].iter().any(|&byte| byte != 0) {
+        let end = seal.metadata_len as usize;
+        if bytes[end..len - FOOTER_TRAILER_LEN].iter().any(|&byte| byte != 0) {
             return Err(Error::Corrupt("footer padding"));
         }
         let footer = Self {
-            bytes: &bytes[FOOTER_HEADER_LEN..end],
+            bytes: &bytes[..end],
             header,
             limits,
         };

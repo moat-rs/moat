@@ -17,7 +17,7 @@
 use moat_common::{ChunkId, Crc32c, PAGE_SIZE};
 use moat_engine_v2::{
     frame::{self, FrameBuilder, FrameLimits, FramePosition, Metadata, RecordKind},
-    segment::{Error, Footer, Scanner, SegmentBuilder, SegmentHeader, SegmentId},
+    segment::{Error, Footer, FooterTrailer, Scanner, SegmentBuilder, SegmentHeader, SegmentId},
 };
 
 const PAGE: usize = PAGE_SIZE as usize;
@@ -53,6 +53,15 @@ fn reseal(bytes: &mut [u8]) {
     put_u32(bytes, 12, crc(bytes));
 }
 
+fn reseal_footer(bytes: &mut [u8]) {
+    let at = bytes.len() - 64;
+    put_u32(&mut bytes[at..], 12, 0);
+    put_u32(&mut bytes[at..], 60, 0);
+    let sum = Crc32c::new().update(bytes).finalize();
+    put_u32(&mut bytes[at..], 60, sum);
+    reseal(&mut bytes[at..]);
+}
+
 fn append(builder: &mut SegmentBuilder, disk: &mut [u8], records: &[(u128, u64, Option<&[u8]>)]) -> u32 {
     let mut frame = FrameBuilder::new(limits());
     for &(key, lsn, value) in records {
@@ -81,10 +90,8 @@ fn fixture() -> (SegmentHeader, SegmentBuilder, Vec<u8>, u32) {
 }
 
 fn seal(builder: &mut SegmentBuilder, disk: &mut [u8]) -> SegmentHeader {
-    let at = builder.data_end() as usize;
-    let header = builder.seal_into(&mut disk[at..]).unwrap();
-    header.encode_into(disk).unwrap();
-    header
+    let at = disk.len() - builder.footer_len();
+    builder.seal_into(&mut disk[at..]).unwrap()
 }
 
 fn scan(header: SegmentHeader, disk: &[u8]) -> Result<Vec<(u128, u64, RecordKind)>, Error> {
@@ -224,7 +231,9 @@ fn short_seal_output_is_retryable_and_sealing_stops_admission() {
     assert!(short.iter().all(|&b| b == 0xab));
     assert!(builder.position(PAGE, 128).is_ok());
     let header = seal(&mut builder, &mut disk);
-    assert_eq!(decode_header(&disk, CAPACITY).unwrap(), header);
+    assert_eq!(decode_header(&disk, CAPACITY).unwrap(), active(CAPACITY));
+    assert_eq!(FooterTrailer::decode(&disk, CAPACITY).unwrap().header(), header);
+    assert!(header.encode_into(&mut disk).is_err());
     assert!(matches!(builder.position(PAGE, 128), Err(Error::Sealed)));
     assert!(matches!(builder.seal_into(&mut disk), Err(Error::Sealed)));
     assert!(matches!(SegmentBuilder::new(header), Err(Error::Sealed)));
@@ -254,8 +263,7 @@ fn footer_reuses_metadata_and_preserves_tombstones_empty_values_and_lsn_order() 
 fn empty_segments_can_seal_and_recover_without_frames() {
     let mut builder = SegmentBuilder::new(active(2 * PAGE as u32)).unwrap();
     let mut disk = vec![0; 2 * PAGE];
-    seal(&mut builder, &mut disk);
-    let header = decode_header(&disk, 2 * PAGE as u32).unwrap();
+    let header = seal(&mut builder, &mut disk);
     assert!(header.is_sealed());
     assert_eq!(
         Footer::decode(&disk[PAGE..], header, limits()).unwrap().frames().len(),
@@ -313,13 +321,15 @@ fn sealed_damage_is_an_error_even_when_footer_fallback_is_possible() {
 }
 
 #[test]
-fn complete_footer_with_active_header_does_not_claim_a_committed_seal() {
-    let (active_header, mut builder, mut disk, _) = fixture();
-    let at = builder.data_end() as usize;
-    builder.seal_into(&mut disk[at..]).unwrap();
-    let header = decode_header(&disk, CAPACITY).unwrap();
-    assert_eq!(header, active_header);
-    assert!(Footer::decode(&disk[at..], header, limits()).is_err());
+fn footer_without_its_trailer_does_not_claim_a_committed_seal() {
+    let (header, mut builder, mut disk, _) = fixture();
+    let at = disk.len() - builder.footer_len();
+    let sealed = builder.seal_into(&mut disk[at..]).unwrap();
+    let end = disk.len();
+    disk[end - 64..].fill(0);
+    assert_eq!(decode_header(&disk, CAPACITY).unwrap(), header);
+    assert!(FooterTrailer::decode(&disk, CAPACITY).is_err());
+    assert!(Footer::decode(&disk[at..], sealed, limits()).is_err());
     assert_eq!(scan(header, &disk).unwrap().len(), 4);
 }
 
@@ -409,21 +419,22 @@ fn forged_footer_cannot_skip_reorder_or_cross_the_sealed_boundary() {
     let header = seal(&mut builder, &mut disk);
     let range = header.footer_range().unwrap();
     let original = disk[range.start as usize..range.end as usize].to_vec();
-    for (at, value) in [(32, 10), (36, 4 * PAGE as u32), (48, 1), (52, 0), (56, 0), (60, 1)] {
+    for (at, value) in [(32, 10), (36, 4 * PAGE as u32), (48, 1), (52, 0), (56, 0)] {
         let mut bytes = original.clone();
-        put_u32(&mut bytes, at, value);
-        reseal(&mut bytes);
+        let tail = bytes.len() - 64;
+        put_u32(&mut bytes[tail..], at, value);
+        reseal_footer(&mut bytes);
         assert!(Footer::decode(&bytes, header, limits()).is_err(), "field {at}");
     }
     let mut bytes = original.clone();
-    put_u32(&mut bytes[64..], 24, 2 * PAGE as u32);
-    reseal(&mut bytes[64..64 + frame::HEADER_LEN]);
-    reseal(&mut bytes);
+    put_u32(&mut bytes, 24, 2 * PAGE as u32);
+    reseal(&mut bytes[..frame::HEADER_LEN]);
+    reseal_footer(&mut bytes);
     assert!(Footer::decode(&bytes, header, limits()).is_err());
     let mut bytes = original.clone();
-    let last = bytes.len() - 1;
-    bytes[last] = 1;
-    reseal(&mut bytes);
+    let padding = bytes.len() - 65;
+    bytes[padding] = 1;
+    reseal_footer(&mut bytes);
     assert!(Footer::decode(&bytes, header, limits()).is_err());
 }
 
@@ -431,28 +442,31 @@ fn forged_footer_cannot_skip_reorder_or_cross_the_sealed_boundary() {
 fn forged_sealed_summary_cannot_turn_missing_frames_into_a_clean_end() {
     let (_, mut builder, mut disk, _) = fixture();
     seal(&mut builder, &mut disk);
-    put_u32(&mut disk, 60, 1);
-    reseal(&mut disk[..PAGE]);
-    let header = decode_header(&disk, CAPACITY).unwrap();
+    let at = disk.len() - 64;
+    put_u32(&mut disk[at..], 48, 1);
+    reseal(&mut disk[at..]);
+    let header = FooterTrailer::decode(&disk, CAPACITY).unwrap().header();
     assert!(scan(header, &disk).is_err());
 }
 
 #[test]
 fn independent_crc_vectors_fix_header_and_footer_wire_fields() {
-    // Generated with a separate bitwise CRC32C implementation using polynomial
-    // 0x82f63b78, not the production CRC backend or its encoder.
+    // Constants come from a separate bitwise CRC32C encoder (0x82f63b78).
     let mut page = vec![0; PAGE];
     active(CAPACITY).encode_into(&mut page).unwrap();
-    assert_eq!(&page[..12], b"MOATSEG2\x02\x00\x00\x00");
-    assert_eq!(&page[12..16], &0x6777_5403u32.to_le_bytes());
+    assert_eq!(&page[..12], b"MOATSEG1\x01\x00\x00\x00");
+    assert_eq!(&page[12..16], &0xe0fa814u32.to_le_bytes());
     assert_eq!(&page[32..40], &[9, 0, 0, 0, 0, 0, 1, 0]);
     assert_eq!(&page[40..48], &123u64.to_le_bytes());
     let mut builder = SegmentBuilder::new(active(CAPACITY)).unwrap();
     let mut footer = vec![0; PAGE];
     let header = builder.seal_into(&mut footer).unwrap();
-    assert_eq!(&footer[12..16], &0xd05d_3728u32.to_le_bytes());
-    header.encode_into(&mut page).unwrap();
-    assert_eq!(&page[12..16], &0x1ddd_d2f7u32.to_le_bytes());
+    let trailer = &footer[PAGE - 64..];
+    assert_eq!(&trailer[..12], b"MOATFTR1\x01\x00\x00\x00");
+    assert_eq!(&trailer[12..16], &0xcb370fdeu32.to_le_bytes());
+    assert_eq!(&trailer[60..64], &0xbbad2e77u32.to_le_bytes());
+    assert_eq!(FooterTrailer::decode(&footer, CAPACITY).unwrap().header(), header);
+    assert_eq!(header.footer_range().unwrap(), CAPACITY - PAGE as u32..CAPACITY);
 }
 
 #[test]
@@ -473,18 +487,21 @@ fn forged_sealed_geometry_is_bounded_before_footer_access() {
     let (_, mut builder, mut disk, _) = fixture();
     seal(&mut builder, &mut disk);
     for (at, value) in [
-        (52, 0),
-        (52, PAGE as u32 + 1),
-        (52, CAPACITY),
+        (36, 0),
+        (36, PAGE as u32 + 1),
+        (36, CAPACITY),
         (56, u32::MAX),
-        (60, u32::MAX),
-        (64, u32::MAX),
-        (64, 0),
+        (48, u32::MAX),
+        (52, u32::MAX),
+        (52, 0),
     ] {
-        let mut bytes = disk[..PAGE].to_vec();
+        let mut bytes = disk[disk.len() - 64..].to_vec();
         put_u32(&mut bytes, at, value);
         reseal(&mut bytes);
-        assert!(decode_header(&bytes, CAPACITY).is_err(), "field {at}");
+        assert!(FooterTrailer::decode(&bytes, CAPACITY).is_err(), "field {at}");
+    }
+    for len in 0..64 {
+        assert!(FooterTrailer::decode(&disk[..len], CAPACITY).is_err());
     }
 }
 

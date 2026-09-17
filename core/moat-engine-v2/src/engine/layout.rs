@@ -22,7 +22,7 @@ use crate::{
 };
 use moat_common::{AlignedBuf, PAGE_SIZE, is_aligned};
 
-const MAGIC: [u8; 8] = *b"MOATDEV2";
+const MAGIC: [u8; 8] = *b"MOATDEV1";
 const VERSION: u32 = 1;
 const START: u64 = 2 * PAGE_SIZE;
 
@@ -43,7 +43,7 @@ pub struct FormatOptions {
     /// Fresh random 128-bit identity supplied by the application.
     /// Required even after an interrupted format to distinguish old frames.
     pub device_id: [u8; 16],
-    /// Physical allocation stride, including a separate seal-header page.
+    /// Physical allocation stride, including the allocation header and tail footer.
     pub segment_size: u32,
     /// Persistent frame/value bounds, independent of batching targets.
     pub limits: FrameLimits,
@@ -82,7 +82,7 @@ impl Layout {
     pub fn capacity(self) -> u64 {
         self.capacity
     }
-    /// Physical bytes per allocation, including the independent seal page.
+    /// Physical bytes per allocation, including its header and tail footer.
     pub fn segment_size(self) -> u32 {
         self.segment_size
     }
@@ -109,10 +109,10 @@ impl Layout {
                 segment_no: number,
                 sequence: self.sequence + number as u64,
             },
-            self.segment_size - PAGE_SIZE as u32,
+            self.segment_size,
         )?)
     }
-    pub(super) fn seal_offset(self, number: u32) -> Result<u64> {
+    pub(super) fn footer_tail_offset(self, number: u32) -> Result<u64> {
         Ok(self.segment_base(number)? + self.segment_size as u64 - PAGE_SIZE)
     }
     fn encode(self, page: &mut [u8]) {
@@ -186,11 +186,21 @@ pub fn format(device: &impl Device, options: FormatOptions) -> Result<Layout> {
             if old.id == options.device_id {
                 return Err(Error::InvalidArgument("format requires a fresh device identity"));
             }
-            old.sequence
-                .checked_add(old.segments as u64)
+            // Recovery trusts the allocation page's generation. Account for
+            // newer incarnations too, so reformat cannot reuse their frame IDs.
+            let mut last = old.sequence + old.segments as u64 - 1;
+            let mut page = AlignedBuf::zeroed(PAGE_SIZE as usize);
+            for number in 0..old.segments {
+                device.read_at(&mut page, old.segment_base(number)?)?;
+                if page.iter().any(|&byte| byte != 0) {
+                    let header = SegmentHeader::decode(&page, old.id, number, old.segment_size)?;
+                    last = last.max(header.id().sequence);
+                }
+            }
+            last.checked_add(1)
                 .ok_or(Error::InvalidArgument("allocation epoch exhausted"))?
         }
-        // With no surviving v2 identity, a fresh random UUID supplies the epoch.
+        // With no surviving device identity, a fresh random UUID supplies the epoch.
         Err(Error::NotFormatted) => (u64::from_le_bytes(options.device_id[..8].try_into().unwrap()) >> 1).max(1),
         Err(error) => return Err(error),
     };
@@ -202,7 +212,7 @@ pub fn format(device: &impl Device, options: FormatOptions) -> Result<Layout> {
     device.sync()?;
     for number in 0..layout.segments {
         device.write_at(&page, layout.segment_base(number)?)?;
-        device.write_at(&page, layout.seal_offset(number)?)?;
+        device.write_at(&page, layout.footer_tail_offset(number)?)?;
     }
     device.sync()?;
     layout.encode(&mut page);

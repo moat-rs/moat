@@ -1,5 +1,7 @@
 # Unified immutable frames for the chunk engine
 
+The current [segment format](engine-segment-format.md) uses a separate allocation header and a footer trailer at the segment end. All alpha format versions are 1. The architectural discussion below provides the original context.
+
 Status: staged implementation in the independent
 [`moat-engine-v2` crate](../../core/moat-engine-v2/README.md). Stage 1 implements
 the frame codec, construction, and validation. The existing `moat-engine`
@@ -162,7 +164,7 @@ All integers use an explicit little-endian encoding, not Rust struct layout.
 Stored value and checksum offsets are Frame-relative. Field offsets in the
 tables are relative to the start of the corresponding structure. Reserved bytes
 and padding are written as zero; unsupported flags and versions are rejected.
-The independent codec uses frame magic `MOATFRM2` and version `2`. The segment
+The independent codec uses frame magic `MOATFRM1` and version `1`. The segment
 encoding is specified [separately](engine-segment-format.md).
 Device encoding remains a later stage; these constants do not define a
 complete new device format.

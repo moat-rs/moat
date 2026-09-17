@@ -31,7 +31,7 @@ The codec accepts byte slices. The I/O layer must supply an aligned buffer addre
 
 ## Persistent encoding
 
-All integer fields are explicitly little-endian; there are no Rust layout casts or unsafe blocks. Frame starts and lengths are multiples of 4096 bytes. The magic is `MOATFRM2` and the version is `2`. The decoder rejects the original engine's batch encoding; this is not a migration reader. These constants identify frames; device superblocks have a separate magic and version.
+All integer fields are explicitly little-endian; there are no Rust layout casts or unsafe blocks. Frame starts and lengths are multiples of 4096 bytes. The magic is `MOATFRM1` and the version is `1`. The decoder rejects the original engine's batch encoding; this is not a migration reader. These constants identify frames; device superblocks have a separate magic and version.
 
 | Header offset | Bytes | Field |
 | ---: | ---: | --- |
@@ -102,7 +102,7 @@ Checksums detect corruption; they do not make writes atomic or durable. The segm
 
 The [segment format document](../../docs/design/engine-segment-format.md) specifies exact header/footer fields, admission costs, recovery rules, and remaining persistence work. Segment errors live separately in `src/segment/error.rs`.
 
-`SegmentHeader` binds device identity, segment number, and allocation incarnation. `SegmentBuilder::position` checks both the next frame and the growing footer; `append` records its validated metadata before I/O submission. This accounting includes allocated writes that have not completed. `seal_into` constructs a footer and sealed header; it does not submit or persist either one.
+`SegmentHeader` binds device identity, segment number, and allocation incarnation. `SegmentBuilder::position` checks both the next frame and the growing footer; `append` records its validated metadata before I/O submission. This accounting includes allocated writes that have not completed. `seal_into` constructs a tail-anchored footer with a 64-byte trailer and returns a sealed in-memory segment view; it does not submit I/O or overwrite the allocation header.
 
 The footer contains each frame's original metadata rather than a separate record summary. It reuses frame validation and retains the checksums needed by verified reads, at the cost of larger footer entries. `Footer::frames` returns borrowed metadata without reading payloads. `Scanner` validates payloads frame by frame, stops at a damaged active tail, and reports corruption before a sealed boundary. A bad footer can fall back to scanning with the sealed boundary preserved.
 
@@ -133,7 +133,7 @@ assert_eq!(footer.frames().next().unwrap().record(0).unwrap().descriptor().lsn, 
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-Segment codec tests use memory images; pipeline tests also use small temporary files and Linux io_uring. They establish validation, I/O ordering, and reservation behavior, not power-loss safety. `Engine` preserves the original allocation header and writes a separate seal header after persisting the footer. Lifecycle fault tests cover failed calls and torn metadata; they do not simulate hardware power loss.
+Segment codec tests use memory images; pipeline tests also use small temporary files and Linux io_uring. They establish validation, I/O ordering, and reservation behavior, not power-loss safety. `Engine` preserves the original allocation header, persists data and preceding footer pages, then writes and persists the final footer page containing its trailer. Recovery compares both allocation generations, reuses the initial tail-page read, and fetches only preceding bytes for a multi-page footer. Lifecycle tests cover failed calls, torn metadata, and discarding writes since the last simulated persistence barrier; they do not establish actual hardware power-loss behavior.
 
 ## Error contract
 

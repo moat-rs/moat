@@ -205,9 +205,8 @@ impl<Q: Queue> Pipeline<Q> {
             || h.position().offset() as u64 + h.frame_len() as u64
                 > self.extents[self.current]
                     .header
-                    .footer_range()
-                    .map_or(self.extents[self.current].header.segment_len(), |range| range.start)
-                    as u64
+                    .data_end()
+                    .unwrap_or(self.extents[self.current].header.segment_len()) as u64
         {
             return Err(Error::InvalidArgument(
                 "recovered frame is outside the assigned segment",
@@ -224,7 +223,7 @@ impl<Q: Queue> Pipeline<Q> {
 
     fn position_in(&self, segment: usize, offset: u32) -> Result<FramePosition> {
         let header = self.extents[segment].header;
-        let end = header.footer_range().map_or(header.segment_len(), |range| range.start);
+        let end = header.data_end().unwrap_or(header.segment_len());
         Ok(FramePosition::new(header.id().sequence, offset, end)?)
     }
 
