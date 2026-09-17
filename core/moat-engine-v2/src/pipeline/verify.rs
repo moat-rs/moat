@@ -14,14 +14,16 @@
 
 use std::ops::Range;
 
-use crate::io::Buffer;
 use moat_common::{ChunkId, PAGE_SIZE, align_up};
 
 use super::{
     Error, Pending, Pipeline, ReadBuffers, ReadExtent, ReadRange, ReadRequirements, Rejected, Result, Ticket,
     index::Location,
 };
-use crate::frame::{FrameHeader, FrameLimits, FramePosition, Metadata, RecordKind, verification_range};
+use crate::{
+    frame::{FrameHeader, FrameLimits, FramePosition, Metadata, RecordKind, verification_range},
+    io::Buffer,
+};
 
 pub(super) struct VerifiedRead {
     pub ticket: Ticket,

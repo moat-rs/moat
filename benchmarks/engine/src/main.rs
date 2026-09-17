@@ -12,9 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Destructive comparison of the legacy engine and the v2 device engine.
+//! Destructive benchmark of the v2 device engine.
 
-mod legacy;
 mod memory;
 mod unified;
 
@@ -54,13 +53,13 @@ impl Config {
         let args: Vec<_> = std::env::args().collect();
         assert!(
             args.len() >= 8 && (args.len() - 8).is_multiple_of(2),
-            "usage: moat-engine-compare PATH legacy|v2 SIZE|mixed PAYLOAD_MIB SECONDS QDS --overwrite-first-4g|--overwrite-entire-device [--verify true|false] [--range full|START:END] [--huge-pages disabled|preferred|required]"
+            "usage: moat-engine-compare PATH v2 SIZE|mixed PAYLOAD_MIB SECONDS QDS --overwrite-first-4g|--overwrite-entire-device [--verify true|false] [--range full|START:END] [--huge-pages disabled|preferred|required]"
         );
         assert!(matches!(
             args[7].as_str(),
             "--overwrite-first-4g" | "--overwrite-entire-device"
         ));
-        assert!(matches!(args[2].as_str(), "legacy" | "v2"));
+        assert_eq!(args[2], "v2", "only the v2 engine is supported");
         let path = fs::canonicalize(&args[1]).unwrap();
         let stat = PathBuf::from("/sys/class/block")
             .join(path.file_name().unwrap())
@@ -391,9 +390,5 @@ fn run(mut backend: impl Backend, config: &Config) {
 
 fn main() {
     let config = Config::parse();
-    match config.engine.as_str() {
-        "legacy" => run(legacy::Legacy::new(&config), &config),
-        "v2" => run(unified::Unified::new(&config), &config),
-        _ => unreachable!(),
-    }
+    run(unified::Unified::new(&config), &config);
 }

@@ -39,14 +39,19 @@ pub enum Error {
     Invalid(&'static str),
     /// A chunk engine operation failed.
     #[error(transparent)]
-    Engine(Arc<moat_engine::Error>),
+    Engine(Arc<moat_server::storage::Error>),
     /// Queue initialization or progress failed.
     #[error(transparent)]
     Io(Arc<std::io::Error>),
 }
-impl From<moat_engine::Error> for Error {
-    fn from(error: moat_engine::Error) -> Self {
+impl From<moat_server::storage::Error> for Error {
+    fn from(error: moat_server::storage::Error) -> Self {
         Self::Engine(Arc::new(error))
+    }
+}
+impl From<moat_engine_v2::pipeline::Error> for Error {
+    fn from(error: moat_engine_v2::pipeline::Error) -> Self {
+        moat_server::storage::Error::from(error).into()
     }
 }
 impl From<std::io::Error> for Error {

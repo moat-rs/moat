@@ -1,5 +1,7 @@
 Chunkserver implementation audit (2026-09-09)
 
+> Historical design: the v1 implementation has been removed. This document preserves the original design and milestones; shared readers/writers, legacy formats, GC, and implementation status described here do not represent the current code. See the [v2 migration guide](v2-migration.md) for current constraints.
+
 The baseline for this audit is `3e481443fc170233e0312ed5f3603cbe6fc75024`. It focuses on data retention, failure retries, and recovery semantics in the implemented engine and node layers. The findings concern actual code; networking, migration, checkpoints, and scheduling described in the design documents are not treated as implemented guarantees. This is not a complete proof of concurrent memory ordering or power-loss consistency.
 
 **Changes merged in PR #65**
@@ -19,7 +21,7 @@ Regression tests cover both GC corruption cases: returning an error, retaining t
 
    Recommendation: normal open should return an error when a segment's state is unknown. An explicit salvage mode must quarantine that space instead of reusing it. Quarantine alone does not prevent old versions from reappearing: the unreadable region may contain updates or tombstones. Incomplete recovery results must not be published as a normal serving view.
 
-   Code: [header recovery](../../core/moat-engine/src/engine.rs), [initial segment state](../../core/moat-engine/src/segments.rs), [writer free list](../../core/moat-engine/src/writer.rs).
+   Code: header recovery (`core/moat-engine/src/engine.rs`, historical v1 source), initial segment state (`core/moat-engine/src/segments.rs`, historical v1 source), writer free list (`core/moat-engine/src/writer.rs`, historical v1 source).
 
 2. **P1: Footer fallback scanning can truncate acknowledged data in sealed segments.**
 
@@ -27,7 +29,7 @@ Regression tests cover both GC corruption cases: returning an error, retaining t
 
    Recommendation: distinguish active-tail recovery from sealed-segment integrity checking. The latter must at least require the scan to cover the entire data range recorded in the header; corruption in the middle cannot be classified as an unacknowledged tail. Return an error and preserve the evidence before introducing explicit salvage. Media corruption in an active segment must not automatically be equated with an incomplete tail write either.
 
-   Code: [open / scan_segment / seal_segment_blocking](../../core/moat-engine/src/engine.rs).
+   Code: open / scan_segment / seal_segment_blocking (`core/moat-engine/src/engine.rs`, historical v1 source).
 
 3. **P1: Retrying a failed delete returns Missing, but the chunk reappears after restart.**
 
@@ -35,7 +37,7 @@ Regression tests cover both GC corruption cases: returning an error, retaining t
 
    Recommendation: separate the writer's pending-operation view from the readers' completed-operation view, publishing deletion when the tombstone completes and preserving retryable state on failure. Ordering among multiple puts and deletes of the same key, and GC dependencies on pending tombstones, must be handled together. A single index rollback is insufficient.
 
-   Code: [delete / fail_batch / untrack / apply_record](../../core/moat-engine/src/writer.rs).
+   Code: delete / fail_batch / untrack / apply_record (`core/moat-engine/src/writer.rs`, historical v1 source).
 
 4. **P1: Exists for duplicate PUTs conflates pending and completed writes.**
 
@@ -43,7 +45,7 @@ Regression tests cover both GC corruption cases: returning an error, retaining t
 
    Recommendation: return Exists only for a completed, existing chunk. A duplicate pending write should return a waitable dependency ticket, share the eventual result, or explicitly report a pending state. This issue belongs to the same operation state machine as failed deletes and should be fixed alongside them.
 
-   Code: [put / put_large / exists](../../core/moat-engine/src/writer.rs).
+   Code: put / put_large / exists (`core/moat-engine/src/writer.rs`, historical v1 source).
 
 5. **P1: Duplicate disk UUIDs are accepted and collapse multi-disk placement.**
 
@@ -51,7 +53,7 @@ Regression tests cover both GC corruption cases: returning an error, retaining t
 
    Recommendation: reject duplicate UUIDs before Node builds placement. Formatting should require an explicit unique identity, or a designated formatting entry point should generate and persist one. Do not regenerate identities on each open, which would change placement after restart.
 
-   Code: [FormatOptions](../../core/moat-engine/src/options.rs), [format](../../core/moat-engine/src/engine.rs), [Node::open](../../core/moat-server/src/node.rs), [Placement](../../core/moat-server/src/placement.rs).
+   Code: FormatOptions (`core/moat-engine/src/options.rs`, historical v1 source), format (`core/moat-engine/src/engine.rs`, historical v1 source), [Node::open](../../core/moat-server/src/node.rs), [Placement](../../core/moat-server/src/placement.rs).
 
 Six independent MemDevice reproductions confirmed the baseline behavior behind these five findings. PR #65 left them outstanding. The cache implementation branch subsequently added conservative header/sealed recovery, completed-state deletion, Busy responses for unacknowledged duplicates, and duplicate UUID rejection in `Node::open`, with regression tests. Active-tail media-corruption classification and non-PLP persistence ordering remain separate open questions. Formatting still accepts an explicit all-zero identity for single-device use; multi-disk node assembly requires unique persistent identities.
 

@@ -68,7 +68,7 @@ def main():
     capacity = int((sys / "size").read_text()) * 512
     if args.overwrite_entire_device:
         require(capacity == args.expected_capacity, "wrong device capacity")
-        # Conservative peak estimate covers both resident indexes, pool and input.
+        # Conservative peak estimate covers the resident index, pool and input.
         minimum_size = min(map(int, args.sizes))
         estimate = (capacity // minimum_size + 64) * 512 + (2 << 30)
         available = next(int(line.split()[1]) * 1024 for line in Path("/proc/meminfo").read_text().splitlines()
@@ -85,7 +85,7 @@ def main():
         require(before == (sys / "stat").read_text(), "device has active I/O")
         for repeat in range(args.repeats):
             for size in args.sizes:
-                engines = ["legacy", "v2"] if repeat % 2 == 0 else ["v2", "legacy"]
+                engines = ["v2"]
                 for engine in engines:
                     name = f"engine-{repeat}-{size}-{engine}"
                     output = args.output / f"{name}.jsonl"

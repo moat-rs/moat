@@ -14,7 +14,7 @@
 
 [package]
 name = "moat-server"
-description = "The chunkserver node: disk discovery, placement, worker threads that drive every disk's engine through one I/O queue."
+description = "The chunkserver node: disk discovery, placement, exclusive v2 owner threads with one I/O queue per disk."
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
@@ -28,7 +28,8 @@ rust-version.workspace = true
 [dependencies]
 libc = { workspace = true }
 moat-common = { workspace = true }
-moat-engine = { workspace = true }
+moat-engine-v2 = { workspace = true }
+parking_lot = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

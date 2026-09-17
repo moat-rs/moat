@@ -53,9 +53,11 @@ use std::{
 };
 
 #[cfg(target_os = "linux")]
-use moat_common::{PoolOptions, crc32c};
+use moat_common::{BufferPool, PoolOptions, crc32c};
 #[cfg(target_os = "linux")]
-use moat_engine::{Device, FileDevice, IoQueue, QueueOptions};
+use moat_engine_v2::io::{Operation, Queue, Request, UringQueue};
+#[cfg(target_os = "linux")]
+use moat_server::storage::{Device, FileDevice, QueueOptions};
 #[cfg(target_os = "linux")]
 use moat_server::{disk, worker::pin_to_core};
 
@@ -120,15 +122,14 @@ fn main() {
         })
         .collect();
     let options = QueueOptions {
-        depth: env("MOAT_BENCH_DEPTH", 1024) as u32,
-        descriptors: devices.len() as u32,
+        depth: env("MOAT_BENCH_DEPTH", 1024) as usize,
         pool: PoolOptions {
             bytes: (env("MOAT_BENCH_POOL_MB", 512) as usize) << 20,
             max_class: 8 << 20,
             huge_pages: pool::policy(),
         },
     };
-    assert!(bytes <= options.pool.max_class && inflight <= options.depth as usize);
+    assert!(bytes <= options.pool.max_class && inflight <= options.depth);
     let barrier = Arc::new(Barrier::new(workers));
     let reports = std::thread::scope(|scope| {
         let handles: Vec<_> = (0..workers)
@@ -137,15 +138,26 @@ fn main() {
                 let devices = &devices;
                 let core = cores[worker];
                 let crc_source = &crc_source;
+                let options = &options;
                 scope.spawn(move || {
                     pin_to_core(core).unwrap();
-                    let mut q = moat_engine::uring::UringQueue::new(&options).unwrap_or_else(|error| {
-                        // Peers may already be waiting at the startup barrier.
-                        eprintln!("queue setup failed on worker {worker}: {error}");
+                    let buffers = BufferPool::new(options.pool).unwrap_or_else(|error| {
+                        eprintln!("pool setup failed on worker {worker}: {error}");
                         std::process::exit(1);
                     });
-                    pool::inspect(q.pool(), worker);
-                    let descs: Vec<_> = devices.iter().map(|d| q.attach(d).unwrap()).collect();
+                    let mut queues: Vec<_> = devices
+                        .iter()
+                        .map(|device| {
+                            let file =
+                                std::fs::File::from(device.fd().expect("file device").try_clone_to_owned().unwrap());
+                            UringQueue::with_pool(file, options.depth, buffers.clone()).unwrap_or_else(|error| {
+                                eprintln!("queue setup failed on worker {worker}: {error}");
+                                std::process::exit(1);
+                            })
+                        })
+                        .collect();
+                    pool::inspect(&buffers, worker);
+                    let mut outstanding = 0;
                     let mut rng = 0x9e37_79b9_7f4a_7c15u64 ^ (worker as u64 + 1).wrapping_mul(0x1234_5678_9abc_def1);
                     let mut done = Vec::new();
                     let mut count = 0u64;
@@ -154,7 +166,7 @@ fn main() {
                     let mut outstanding_sum = 0u64;
                     let control: Vec<_> = (0..control_bytes / bytes)
                         .map(|_| {
-                            let mut buf = q.pool().alloc(bytes).unwrap();
+                            let mut buf = buffers.alloc(bytes).unwrap();
                             buf[..bytes].fill(0x5a);
                             buf
                         })
@@ -162,7 +174,7 @@ fn main() {
                     let memory: Vec<_> = if memory_only {
                         (0..inflight)
                             .map(|_| {
-                                let mut buf = q.pool().alloc(bytes).expect("memory control fits pool");
+                                let mut buf = buffers.alloc(bytes).expect("memory control fits pool");
                                 buf[..bytes].fill(0x5a);
                                 buf
                             })
@@ -184,32 +196,47 @@ fn main() {
                             }
                             continue;
                         }
-                        while !stop && q.in_flight() < inflight {
-                            let Some(buf) = q.pool().alloc(bytes) else { break };
+                        while !stop && outstanding < inflight {
+                            let Some(buf) = buffers.alloc(bytes) else { break };
                             rng ^= rng << 13;
                             rng ^= rng >> 7;
                             rng ^= rng << 17;
                             let d = if shard {
-                                worker % descs.len()
+                                worker % queues.len()
                             } else {
-                                (rng % descs.len() as u64) as usize
+                                (rng % queues.len() as u64) as usize
                             };
                             let at = offset + ((rng >> 20) % (span / bytes as u64)) * bytes as u64;
-                            q.read(descs[d], buf, bytes, at, 0).unwrap();
+                            if queues[d]
+                                .try_submit(Request {
+                                    token: 0,
+                                    operation: Operation::Read,
+                                    offset: at,
+                                    len: bytes,
+                                    buffer: Some(buf.into()),
+                                })
+                                .is_err()
+                            {
+                                break;
+                            }
+                            outstanding += 1;
                         }
-                        if stop && q.in_flight() == 0 {
+                        if stop && outstanding == 0 {
                             break;
                         }
-                        outstanding_sum += q.in_flight() as u64;
-                        let completed = q.poll(wait).unwrap();
-                        polls += 1;
-                        empty_polls += u64::from(completed == 0);
-                        for desc in &descs {
-                            q.take(*desc, &mut done);
+                        outstanding_sum += outstanding as u64;
+                        for queue in &mut queues {
+                            queue.poll(wait).unwrap();
+                            while let Some(completion) = queue.pop() {
+                                done.push(completion);
+                            }
                         }
+                        polls += 1;
+                        empty_polls += u64::from(done.is_empty());
                         for completion in done.drain(..) {
                             assert_eq!(completion.result.unwrap(), bytes);
-                            let buf = completion.buf.unwrap();
+                            let buf = completion.request.buffer.unwrap();
+                            outstanding -= 1;
                             if touch_stride > 0 {
                                 for at in (0..bytes).step_by(touch_stride) {
                                     black_box(buf[at]);
@@ -226,9 +253,7 @@ fn main() {
                         }
                     }
                     let elapsed = start.elapsed();
-                    for desc in descs {
-                        q.detach(desc);
-                    }
+                    drop(queues);
                     (count, elapsed, polls, empty_polls, outstanding_sum)
                 })
             })

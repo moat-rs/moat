@@ -1,0 +1,22 @@
+{
+  "old_commit": "a0aa85f016fe893220d328e4255bba48edb604fe",
+  "current": {
+    "head": "a512c3dd223e359fa8286a7e0e73da436961eee5",
+    "dirty": true,
+    "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)\nbinary: rustc\ncommit-hash: 88d9e12ae178fab0fb5cc050a94da85685d449ea\ncommit-date: 2026-08-18\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.0\nLLVM version: 22.1.8\n",
+    "rustflags": "-C target-cpu=x86-64-v3",
+    "binary_sha256": "b794d48dbcd5b5d8b51c078a0e9472f31b3b8b3faf15aee18031d08289555763",
+    "source_archive_sha256": "eb743e28e4af7d62efeed2c2d311f98f78ac14bcd221400adabf839adca542dc"
+  },
+  "rustflags": "-C target-cpu=x86-64-v3",
+  "binaries": {
+    "old": "7ffc46c0e5abf980593c9e83d3fe1fedea690621078117665b371bb3323ed7a8",
+    "current": "b794d48dbcd5b5d8b51c078a0e9472f31b3b8b3faf15aee18031d08289555763",
+    "long-old": "2a5d11a53319674c90bdb1adfa165a6264a2ca8316f02a24e0079fee26fabbeb",
+    "long-current": "9419089ea96071b396bfc3a14eb2d4aa8f267aee1090dab07784689b36c80f93",
+    "diag-old": "203348c692217a836ddbe4218d1e41ccc7ee25348109ce3814eda574f5e406d9",
+    "diag-current": "1ced462d7fd1a891298eec31eabfa119e7763a0da3ac9a43e75d451ee604fe37",
+    "mixed": "5dadef8ea22d62184dc127fa8bf663372087d924836c67cbd2a674bbb9dd21b5"
+  },
+  "mixed": "Historical harness and upper crates at a0aa85f, with only core/moat-engine-v2 replaced by the current source snapshot; original uninstrumented workload."
+}

@@ -589,7 +589,6 @@ dependencies = [
  "moat-cache-memory",
  "moat-cache-store",
  "moat-common",
- "moat-engine",
  "parking_lot",
  "thiserror",
  "xxhash-rust",
@@ -606,7 +605,6 @@ dependencies = [
  "libc",
  "moat-cache",
  "moat-common",
- "moat-engine",
  "moat-engine-v2",
  "moat-server",
  "serde",
@@ -632,7 +630,7 @@ dependencies = [
  "futures-channel",
  "futures-util",
  "moat-common",
- "moat-engine",
+ "moat-engine-v2",
  "moat-server",
  "parking_lot",
  "thiserror",
@@ -644,17 +642,6 @@ version = "0.0.0"
 dependencies = [
  "crc-fast",
  "libc",
-]
-
-[[package]]
-name = "moat-engine"
-version = "0.0.0"
-dependencies = [
- "io-uring",
- "libc",
- "moat-common",
- "parking_lot",
- "thiserror",
 ]
 
 [[package]]
@@ -673,7 +660,8 @@ version = "0.0.0"
 dependencies = [
  "libc",
  "moat-common",
- "moat-engine",
+ "moat-engine-v2",
+ "parking_lot",
  "thiserror",
 ]
 

@@ -16,148 +16,74 @@ designed to be correct first, fast second, and as small as those two allow.
 
 The design document lives at [`docs/design/chunkserver.md`](docs/design/chunkserver.md).
 
-## Status
+## Current status
 
-| Crate | Purpose | State |
+| Crate | Responsibility | Status |
 |---|---|---|
-| [`moat-common`](core/moat-common) | Chunk identifiers, CRC32C block checksums, page alignment, huge-page arenas and the buddy buffer pool | usable |
-| [`moat-engine`](core/moat-engine) | Single-disk engine: segments, index, GC, recovery; io_uring with registered buffers, zero-copy read and write paths | usable on raw devices, files and in memory |
-| `moat-transport` | RDMA (verbs) and TCP transports behind one protocol | planned |
-| [`moat-server`](core/moat-server) | Multi-disk node: NVMe discovery, placement, recovery and workers | usable without a network transport |
-| [`moat-cache-memory`](core/moat-cache-memory) | Sharded weighted resident cache, shared handles, FIFO/LRU/TinyLFU/S3FIFO/SIEVE | implemented; [design and contracts](docs/design/cache-memory.md) |
-| [`moat-cache-store`](core/moat-cache-store) | Bounded async engine adapter and physical read coalescing | implemented; [design and contracts](docs/design/cache-store.md) |
-| [`moat-cache`](core/moat-cache) | Hybrid cache, stable key identity, disk catalog and conditional population | implemented; [design and contracts](docs/design/cache-hybrid.md) |
-| `moat-client` | Node routing, connection management, large-object striping | planned |
-| `moat-tools` | `format`, `fsck`, `dump`, `bench` | planned |
+| [`moat-common`](core/moat-common) | Chunk IDs, CRC32C, aligned memory, and buffer pools | Available |
+| [`moat-engine-v2`](core/moat-engine-v2) | Frame/segment codecs, owner-driven I/O, allocation, recovery, and indexing | Sole engine; append-only, without physical reclamation or segment reuse |
+| [`moat-server`](core/moat-server) | Device discovery, routing, exclusive sessions, and workers | Migrated to v2; no network transport yet |
+| [`moat-cache-memory`](core/moat-cache-memory) | Sharded memory cache and replacement policies | Available |
+| [`moat-cache-store`](core/moat-cache-store) | Bounded async requests, per-key ordering, and read coalescing | Migrated to v2 |
+| [`moat-cache`](core/moat-cache) | Hybrid cache, key identity, catalog, and shared views | Migrated to v2; writes stop when append headroom is exhausted |
+| `moat-transport`, `moat-client`, `moat-tools` | Networking, clients, and operational tools | Planned |
 
-`moat-cache::Cache` returns owned key/value views over shared read buffers.
-Views remain readable after eviction, overwrite and shutdown; callers control
-their lifetime by retaining or dropping entry/field handles. See the
-[view API and retention limits](docs/design/cache-views.md), or run
-`cargo run -p moat-cache --example views`.
+The v1 implementation and entry points have been removed. V2 does not read the
+old disk format; existing v1 data requires a separate migration or rebuild.
+The upper layers use a replaceable adapter in
+[`moat-server::storage`](core/moat-server/src/storage/mod.rs). See the
+[v2 migration guide](docs/design/v2-migration.md) for API changes, current
+limitations, and future rebuild boundaries.
 
-## Trying the engine
-
-```rust
-use std::sync::Arc;
-use moat_common::ChunkId;
-use moat_engine::{
-    FileDevice, FormatOptions, Options, PutOptions, QueueBackend, QueueOptions, blocking,
-};
-
-let device = Arc::new(FileDevice::create("disk.img", 64 << 30, /* direct */ false)?);
-moat_engine::format(&*device, &FormatOptions::default())?;
-
-let (engine, _) = moat_engine::open(device, Options::default())?;
-let mut queue = QueueOptions::default().build(QueueBackend::Auto)?;
-let mut writer = engine.writer(queue.as_mut())?;
-let mut reader = engine.reader(queue.as_mut())?;
-
-let id = ChunkId::from_u128(1);
-writer.put(queue.as_mut(), id, b"hello", PutOptions::default())?;
-blocking::flush(queue.as_mut(), &mut writer)?;
-assert_eq!(
-    blocking::get(queue.as_mut(), &mut reader, &id, None)?.as_deref(),
-    Some(&b"hello"[..]),
-);
-blocking::seal(queue.as_mut(), &mut writer)?;
-writer.detach(queue.as_mut());
-reader.detach(queue.as_mut());
-```
-
-On Linux, each worker owns an io_uring queue and registered buffers. Its readers
-and writers share that queue across disks; each disk has a single writer.
-Values move between buffers and the device without copies
-(`Writer::prepare_large` / `put_large` for writes,
-`ChunkData` for reads). `cargo bench -p moat-engine` measures throughput and
-latency on a file or, with `MOAT_BENCH_DEVICE`, a raw device (which it
-**formats**).
-
-`cargo test --workspace` runs the unit tests plus the engine's crash-injection,
-reclaim and randomized model tests, including file-backed io_uring tests on
-Linux. Allow at least 64 MiB of locked memory for the Linux test process;
-registered buffer pools need headroom while queues close and reopen. CI sets
-this limit explicitly. Benchmarks need a limit sized for their configured
-per-worker pools.
-
-Server-side payload CRC verification is disabled by default
-(`Options::verify_reads = false`). Set it to `true` to verify the record header
-and every 64 KiB checksum block touched by each read. Unchecked reads cover
-only the requested pages. Checksum generation and recovery/reclaim validation
-are unchanged.
-Client-side transport and verification are not implemented yet.
-
-## Local development on macOS
-
-macOS uses regular files and synchronous I/O for functional development and
-testing. To try it:
+## Examples
 
 ```sh
-cargo run -p moat-engine --example local
+cargo run -p moat-cache-store --example chunks
+cargo run -p moat-cache --example hybrid
+cargo run -p moat-cache --example views
+cargo run -p moat-engine-v2 --example segment_io -- /path/to/new-example.img
+```
+
+The first three examples use memory devices. `segment_io` creates a new file
+and demonstrates frame-pipeline writes, recovery, and reads. See the
+[engine guide](core/moat-engine-v2/README.md) for the complete device API.
+
+Each disk has one owner for its v2 engine, queue, and pool. `Auto` selects
+io_uring on Linux and a synchronous queue on other Unix platforms; memory
+devices must explicitly select `Sync`. Synchronous I/O runs on the calling
+thread for local development and tests. Read CRC verification is disabled
+by default and can be enabled with `storage::Options::verify_reads`; writes
+and recovery retain checksum validation.
+
+Shared cache views remain readable after eviction, overwrite, and shutdown.
+The last holder releases their buffers and credits. Logical deletion and
+eviction do not free physical v2 segments; `reclaim` explicitly returns
+unsupported. Sustained overwrite workloads require reclamation and reuse.
+
+## Validation and benchmarks
+
+```sh
 cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo bench -p moat-engine-v2 --bench frame
 ```
 
-The example writes and reads a 4 KiB chunk, reopens the temporary file to
-verify recovery, and removes the file on exit.
-`QueueOptions::build(QueueBackend::Auto)` selects io_uring on Linux and
-`SyncQueue` on macOS; `QueueBackend::resolve()` reports the selection.
-Initialization errors on Linux are returned directly. Explicitly selecting
-`Uring` on macOS returns `Unsupported`; `MemDevice` on Linux requires an
-explicit `Sync` selection.
+Linux tests include real io_uring and registered-buffer paths. Allow at least
+64 MiB of locked memory for tests; CI configures this limit. Benchmark memory
+limits must accommodate the configured pool capacity per disk.
 
-The synchronous backend performs blocking I/O on the caller's thread and
-delivers results through the same `poll`/completion interface. It is intended
-for development, not the performance path. Reader, Writer, and the disk format
-are shared by both backends.
-On macOS, use `FileDevice::create/open(..., false)`. Explicit requests for
-direct I/O, CPU pinning, or required huge pages return `Unsupported`.
-The default huge-page policy falls back to plain mappings. Workers default to
-`Auto`, without CPU pinning, and sleep when idle.
-NVMe discovery remains Linux-only; macOS callers supply file devices explicitly.
+The [engine benchmark](benchmarks/engine/README.md) runs v2 only;
+[disk comparisons](benchmarks/cache-disk/README.md) compare v2 with a pinned
+foyer revision; [memory comparisons](benchmarks/cache-memory/README.md)
+measure resident cache policies. Direct-device tests overwrite the configured
+window and require explicitly assigned disposable devices.
 
-## Benchmarking
-
-The [disk cache comparison](benchmarks/cache-disk/README.md) compares engine v1,
-engine v2, and pinned foyer. The [experiment archive](docs/experiments/README.md)
-retains the original application tests, native polling comparisons, profiles,
-and ablations, with their measured revisions and workload limits. Raw host
-inventories, device identities, and local profiling artifacts are not published.
-The [memory comparison](benchmarks/cache-memory/README.md) covers resident hit
-cost across replacement policies and key sizes.
-Run the engine benchmark without additional configuration to use a temporary
-4 GiB file. The benchmark enables `O_DIRECT` when the backing filesystem
-supports it and falls back to buffered I/O otherwise.
-
-```sh
-cargo bench -p moat-engine
-```
-
-To benchmark a block device, pass its path explicitly:
-
-```sh
-MOAT_BENCH_DEVICE=/path/to/block-device \
-MOAT_BENCH_BYTES=$((64 << 30)) \
-cargo bench -p moat-engine
-```
-
-**The benchmark formats `MOAT_BENCH_DEVICE` and destroys data on it. Never use
-a system disk or a device containing data you need.** Device paths are examples
-only and must not be committed as project configuration.
-
-The workload can be adjusted with the following environment variables:
-
-| Variable | Purpose | Default |
-|---|---|---|
-| `MOAT_BENCH_BYTES` | Bytes exercised by the benchmark | 4 GiB |
-| `MOAT_BENCH_READERS` | Concurrent reader threads | 1 |
-| `MOAT_BENCH_LARGE` | Large-value size in bytes | 1 MiB |
-| `MOAT_BENCH_SMALL` | Small-value size in bytes | 4 KiB |
-| `MOAT_BENCH_VERIFY` | Enable CRC verification on every read in the engine and node benchmarks | unset |
-| `MOAT_BENCH_SYNC` | Use the blocking queue instead of io_uring when set | unset |
-
-Benchmark results are hardware-specific. Published results should include the
-CPU, storage device, kernel, filesystem or raw-device mode, benchmark variables,
-and the corresponding `fio` configuration when making comparisons.
+The server `node` benchmark accesses only disks owned by its worker, each with
+an independent queue and pool. Its historical cross-worker readers, index
+prefetching, and precomputed write checksums are removed. Historical results
+are not performance guarantees for the current topology. The
+[experiment archive](docs/experiments/README.md) retains original revisions,
+measurements, profiles, and interpretation limits.
 
 ## Development
 

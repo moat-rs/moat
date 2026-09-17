@@ -14,13 +14,14 @@
 
 //! Bounded device recovery with immutable allocation headers and optional seals.
 
+use moat_common::{AlignedBuf, PAGE_SIZE};
+
 use super::{Device, Engine, Error, Result};
 use crate::{
     frame::FrameHeader,
     io::Queue,
     segment::{self, Footer, FooterTrailer, Scanner, SegmentHeader},
 };
-use moat_common::{AlignedBuf, PAGE_SIZE};
 
 impl<D: Device, Q: Queue> Engine<D, Q> {
     pub(super) fn recover(&mut self) -> Result<()> {

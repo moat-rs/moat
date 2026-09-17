@@ -615,13 +615,13 @@ CRC/placement CPU, peak memory, throughput, p50/p99 latency, recovery time,
 and relocation traffic. No performance improvement is claimed until those
 measurements and the engine correctness checks pass.
 
-## Current implementation references
+## Historical v1 implementation references
 
-- [Layout and geometry](../../core/moat-engine/src/layout.rs)
-- [Options](../../core/moat-engine/src/options.rs)
-- [Batch builder](../../core/moat-engine/src/writer/batch.rs)
-- [Writer](../../core/moat-engine/src/writer.rs)
-- [Reader](../../core/moat-engine/src/reader.rs) and [index](../../core/moat-engine/src/index.rs)
-- [Scanner](../../core/moat-engine/src/scan.rs) and [recovery](../../core/moat-engine/src/engine.rs)
-- [Sealing](../../core/moat-engine/src/writer/sealing.rs) and [reclaim](../../core/moat-engine/src/writer/reclaim.rs)
-- [Device contract](../../core/moat-engine/src/device.rs) and [queue API](../../core/moat-engine/src/io.rs)
+- Layout and geometry (`core/moat-engine/src/layout.rs`, historical v1 source)
+- Options (`core/moat-engine/src/options.rs`, historical v1 source)
+- Batch builder (`core/moat-engine/src/writer/batch.rs`, historical v1 source)
+- Writer (`core/moat-engine/src/writer.rs`, historical v1 source)
+- Reader (`core/moat-engine/src/reader.rs`, historical v1 source) and index (`core/moat-engine/src/index.rs`, historical v1 source)
+- Scanner (`core/moat-engine/src/scan.rs`, historical v1 source) and recovery (`core/moat-engine/src/engine.rs`, historical v1 source)
+- Sealing (`core/moat-engine/src/writer/sealing.rs`, historical v1 source) and reclaim (`core/moat-engine/src/writer/reclaim.rs`, historical v1 source)
+- Device contract (`core/moat-engine/src/device.rs`, historical v1 source) and queue API (`core/moat-engine/src/io.rs`, historical v1 source)

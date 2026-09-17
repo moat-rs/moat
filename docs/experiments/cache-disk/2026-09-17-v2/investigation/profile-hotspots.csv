@@ -1,0 +1,11 @@
+variant,category,sampled_user_cycles_pct
+old,payload_copy,49.84
+old,value_initialization_and_padding,16.58
+old,crc32_avx512,6.71
+old,metadata_crc,1.9
+old,malloc,1.53
+current,payload_copy,51.08
+current,value_initialization_and_padding,16.45
+current,crc32_avx512,5.94
+current,metadata_crc,2.03
+current,malloc,1.47

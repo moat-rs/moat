@@ -1,5 +1,7 @@
 # Engine write layout: open inline pages and unified value extents
 
+> Historical design: the v1 implementation has been removed. This document preserves the original design and milestones; shared readers/writers, legacy formats, GC, and implementation status described here do not represent the current code. See the [v2 migration guide](v2-migration.md) for current constraints.
+
 Status: earlier proposal and executable recovery model. The
 [unified immutable Frame proposal](engine-frame-layout.md) supersedes this
 document's recommended default. This document remains a reference for the
@@ -265,11 +267,11 @@ The tests passed during proposal development. They model byte images, not device
 5. Wire deadlines into every worker and blocking helper before removing unconditional small-batch submission from `poll()`.
 6. Exercise crash/reopen, concurrent range reads during inline rewrites, failed writes, overwrites, deletion, reclaim, barriers, and full segments in engine tests. Run the full workspace checks and device-backed measurements before switching defaults.
 
-## Current-code references
+## Historical v1 implementation references
 
-- [Device contract](../../core/moat-engine/src/device.rs)
-- [Current batch encoding](../../core/moat-engine/src/writer/batch.rs)
-- [Writer polling, placement, and completion](../../core/moat-engine/src/writer.rs)
-- [Barriers and sealing](../../core/moat-engine/src/writer/sealing.rs)
-- [Layout](../../core/moat-engine/src/layout.rs), [scanning](../../core/moat-engine/src/scan.rs), and [recovery](../../core/moat-engine/src/engine.rs)
-- [Index](../../core/moat-engine/src/index.rs) and [reader](../../core/moat-engine/src/reader.rs)
+- Device contract (`core/moat-engine/src/device.rs`, historical v1 source)
+- Current batch encoding (`core/moat-engine/src/writer/batch.rs`, historical v1 source)
+- Writer polling, placement, and completion (`core/moat-engine/src/writer.rs`, historical v1 source)
+- Barriers and sealing (`core/moat-engine/src/writer/sealing.rs`, historical v1 source)
+- Layout (`core/moat-engine/src/layout.rs`, historical v1 source), scanning (`core/moat-engine/src/scan.rs`, historical v1 source), and recovery (`core/moat-engine/src/engine.rs`, historical v1 source)
+- Index (`core/moat-engine/src/index.rs`, historical v1 source) and reader (`core/moat-engine/src/reader.rs`, historical v1 source)

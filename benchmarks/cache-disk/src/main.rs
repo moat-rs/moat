@@ -20,13 +20,11 @@ mod workload;
 use std::{
     fs,
     hash::{BuildHasherDefault, DefaultHasher},
-    io,
-    os::{fd::BorrowedFd, unix::fs::FileTypeExt},
+    os::unix::fs::FileTypeExt,
     path::Path,
 };
 
 use anyhow::{Context, Result, ensure};
-use moat_engine::{Device, FileDevice};
 use serde::{Deserialize, Serialize};
 
 type Hasher = BuildHasherDefault<DefaultHasher>;
@@ -113,10 +111,7 @@ fn validate(config: &Config) -> Result<()> {
         "invalid record size"
     );
     ensure!(config.bytes_per_disk.is_multiple_of(SEGMENT), "unaligned device window");
-    ensure!(
-        matches!(config.engine.as_str(), "v1" | "v2" | "foyer"),
-        "unknown engine"
-    );
+    ensure!(matches!(config.engine.as_str(), "v2" | "foyer"), "unknown engine");
     ensure!(
         config.engine != "foyer" || !config.runtime_cpus.is_empty(),
         "foyer needs runtime CPUs"
@@ -198,33 +193,7 @@ fn validate(config: &Config) -> Result<()> {
     }
     Ok(())
 }
-struct Window {
-    inner: FileDevice,
-    bytes: u64,
-}
-impl Device for Window {
-    fn capacity(&self) -> u64 {
-        self.bytes
-    }
-    fn read_at(&self, bytes: &mut [u8], offset: u64) -> io::Result<()> {
-        if offset + bytes.len() as u64 > self.bytes {
-            return Err(io::ErrorKind::InvalidInput.into());
-        }
-        self.inner.read_at(bytes, offset)
-    }
-    fn write_at(&self, bytes: &[u8], offset: u64) -> io::Result<()> {
-        if offset + bytes.len() as u64 > self.bytes {
-            return Err(io::ErrorKind::InvalidInput.into());
-        }
-        self.inner.write_at(bytes, offset)
-    }
-    fn sync(&self) -> io::Result<()> {
-        self.inner.sync()
-    }
-    fn fd(&self) -> Option<BorrowedFd<'_>> {
-        self.inner.fd()
-    }
-}
+
 #[derive(Serialize)]
 struct Cpu {
     user: f64,

@@ -19,6 +19,8 @@ results belong here instead of beside executable code.
 | [Native polling adapters](cache-disk/2026-09-16-native/REPORT.md), [profiles](cache-disk/2026-09-16-native/PROFILING.md) | Drives v1/v2 on their owning threads, with Tokio used only by foyer. Retains 45 prefills and 75 measured read phases. The adapter changes more than lock overhead. |
 | [io-wq boundary investigation](cache-disk/2026-09-16-native/IO_WQ.md) | Reproduces offload at the device request byte limit and validates the actual split queue. Huge pages do not remove that byte limit. Probe results establish behavior, not throughput. |
 | [Twenty-device request splitting](cache-disk/2026-09-16-split/REPORT.md) | Reruns all three engines after v2 splits oversized requests. Retains 45 prefills, 75 reads, phase observations, and the weaker results. |
+| [V2 twenty-device migration recheck](cache-disk/2026-09-17-v2/REPORT.md) | Measures native v2 after migration: 15 prefills and 25 reads, historical comparison, write variability, and explicit cache API and SMART coverage limits. |
+| [Write-regression investigation](cache-disk/2026-09-17-v2/investigation/REPORT.md) | Rechecks all five sizes with order controls, longer writes, per-owner timing, expanded unique inserts, engine/harness isolation, and profiles; preserves the unresolved smaller 64-KiB result. |
 | [V2 ablation and cleanup](engine/2026-09-16-ablation/REPORT.md) | Removes one feature at a time, brackets treatments with fresh controls, and records the resulting implementation decisions. |
 | [Footer recovery ablation](engine/2026-09-17-footer-ablation/REPORT.md) | Removes route over-reservation and bulky baseline attachments; retains measured allocation/read savings and fault coverage. |
 

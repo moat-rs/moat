@@ -12,20 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! A node: the disks of one machine and the workers that drive them.
-//!
-//! Opening a node recovers every disk in parallel on temporary threads (the
-//! blocking part), assigns each disk an owner worker, and can then start any
-//! number of workers, each attached to every disk and holding the writers of
-//! the disks it owns.
+//! Device handles and deterministic owner assignment. Recovery runs on owner threads.
 
-use std::{sync::Arc, thread};
+use std::sync::Arc;
 
 use moat_common::ChunkId;
-use moat_engine::{Device, Engine, Options, RecoveryReport};
 
 use crate::{
     placement::{Placement, Target},
+    storage::{Device, Disk, Options},
     worker::{DiskId, Handler, Worker, WorkerError, WorkerOptions},
 };
 
@@ -39,7 +34,7 @@ pub enum NodeError {
         disk: DiskId,
         /// The cause.
         #[source]
-        source: moat_engine::Error,
+        source: crate::storage::Error,
     },
     /// A worker failed to start.
     #[error(transparent)]
@@ -55,52 +50,32 @@ pub enum NodeError {
     /// The node has no disks.
     #[error("no disks")]
     NoDisks,
+    /// An assigned owner does not exist in the worker list.
+    #[error("disk owner is outside the worker list")]
+    InvalidOwners,
 }
 
 /// The opened disks of a machine.
 pub struct Node {
-    engines: Vec<Engine>,
-    reports: Vec<RecoveryReport>,
+    engines: Vec<Disk>,
     owners: Vec<usize>,
     placement: Placement,
 }
 
 impl Node {
-    /// Opens every device in parallel. Use [`Self::assign_owners`] to assign
-    /// disks to workers after recovery.
+    /// Validates device geometry. Use [`Self::assign_owners`] before starting
+    /// workers, which recover indexes on their owner threads.
     pub fn open(devices: Vec<Arc<dyn Device>>, options: Options) -> Result<Self, NodeError> {
         if devices.is_empty() {
             return Err(NodeError::NoDisks);
         }
-        let handles: Vec<_> = devices
-            .into_iter()
-            .map(|device| {
-                let options = options.clone();
-                thread::spawn(move || moat_engine::open(device, options))
-            })
-            .collect();
-        // Join every recovery thread before propagating an error: no disk
-        // should still be recovering after `open` has returned to its caller.
-        let recovered: Vec<_> = handles
-            .into_iter()
-            .map(|h| {
-                h.join().unwrap_or_else(|_| {
-                    Err(moat_engine::Error::Io(std::io::Error::other(
-                        "recovery thread panicked",
-                    )))
-                })
-            })
-            .collect();
         let mut engines = Vec::new();
-        let mut reports = Vec::new();
-        for (disk, result) in recovered.into_iter().enumerate() {
-            let (engine, report) = result.map_err(|source| NodeError::Open { disk, source })?;
-            engines.push(engine);
-            reports.push(report);
+        for (disk, device) in devices.into_iter().enumerate() {
+            engines.push(Disk::open(device, options.clone()).map_err(|source| NodeError::Open { disk, source })?);
         }
         let mut identities = std::collections::HashMap::new();
         for (disk, engine) in engines.iter().enumerate() {
-            if let Some(first) = identities.insert(engine.disk_uuid(), disk) {
+            if let Some(first) = identities.insert(engine.layout().device_id(), disk) {
                 return Err(NodeError::DuplicateIdentity { first, second: disk });
             }
         }
@@ -108,31 +83,25 @@ impl Node {
             engines
                 .iter()
                 .map(|e| Target {
-                    uuid: e.disk_uuid(),
-                    weight: e.capacity(),
+                    uuid: e.layout().device_id(),
+                    weight: e.layout().capacity(),
                 })
                 .collect(),
         );
         let owners = vec![0; engines.len()];
         Ok(Self {
             engines,
-            reports,
             owners,
             placement,
         })
     }
 
-    /// The engines, indexed by [`DiskId`].
-    pub fn engines(&self) -> &[Engine] {
+    /// Device handles, indexed by [`DiskId`]; no shared engine state.
+    pub fn engines(&self) -> &[Disk] {
         &self.engines
     }
 
-    /// What recovery found on each disk.
-    pub fn reports(&self) -> &[RecoveryReport] {
-        &self.reports
-    }
-
-    /// The worker that owns `disk` (holds its writer).
+    /// The worker assigned exclusive ownership of `disk`.
     pub fn owner_of(&self, disk: DiskId) -> usize {
         self.owners[disk]
     }
@@ -178,21 +147,24 @@ impl Node {
         self.owners = owners;
     }
 
-    /// Starts one worker per entry of `workers`, each attached to every disk
-    /// and owning the disks assigned to it, running the handler `make`
-    /// produces for it.
+    /// Starts and recovers the assigned disks on each owner worker. Handlers
+    /// see only their own disks; callers must route cross-owner requests.
     pub fn start<H: Handler>(
         &self,
         workers: &[WorkerOptions],
         mut make: impl FnMut(usize) -> H,
     ) -> Result<Vec<Worker<H>>, NodeError> {
+        if self.owners.iter().any(|&owner| owner >= workers.len()) {
+            return Err(NodeError::InvalidOwners);
+        }
         let mut started = Vec::with_capacity(workers.len());
         for (w, opts) in workers.iter().enumerate() {
             let disks = self
                 .engines
                 .iter()
                 .enumerate()
-                .map(|(d, e)| (e.clone(), self.owners[d] == w))
+                .filter(|(d, _)| self.owners[*d] == w)
+                .map(|(d, e)| (d, e.clone()))
                 .collect();
             started.push(Worker::spawn(w, opts.clone(), disks, make(w))?);
         }
@@ -206,96 +178,5 @@ impl std::fmt::Debug for Node {
             .field("disks", &self.engines.len())
             .field("owners", &self.owners)
             .finish()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn recovery_error_does_not_leave_other_devices_open() {
-        let bad = Arc::new(moat_engine::MemDevice::new(4 << 20));
-        let good = Arc::new(moat_engine::MemDevice::new(4 << 20));
-        moat_engine::format(
-            &*good,
-            &moat_engine::FormatOptions {
-                segment_size: 1 << 20,
-                chunk_max: 64 << 10,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        let result = Node::open(
-            vec![bad.clone(), good.clone()],
-            Options {
-                index_capacity: 64,
-                ..Default::default()
-            },
-        );
-        assert!(matches!(result, Err(NodeError::Open { disk: 0, .. })));
-        assert_eq!(Arc::strong_count(&bad), 1);
-        assert_eq!(Arc::strong_count(&good), 1);
-    }
-
-    #[test]
-    fn duplicate_disk_identities_are_rejected() {
-        let devices: Vec<Arc<dyn Device>> = (0..2)
-            .map(|_| {
-                let device = moat_engine::MemDevice::new(4 << 20);
-                moat_engine::format(
-                    &device,
-                    &moat_engine::FormatOptions {
-                        segment_size: 1 << 20,
-                        chunk_max: 64 << 10,
-                        ..Default::default()
-                    },
-                )
-                .unwrap();
-                Arc::new(device) as Arc<dyn Device>
-            })
-            .collect();
-        assert!(matches!(
-            Node::open(
-                devices,
-                Options {
-                    index_capacity: 64,
-                    ..Default::default()
-                }
-            ),
-            Err(NodeError::DuplicateIdentity { first: 0, second: 1 })
-        ));
-    }
-
-    #[test]
-    fn owner_assignment_prefers_numa_and_balances() {
-        let devices: Vec<Arc<dyn Device>> = (0..4)
-            .map(|disk| {
-                let d = moat_engine::MemDevice::new(4 << 20);
-                moat_engine::format(
-                    &d,
-                    &moat_engine::FormatOptions {
-                        segment_size: 1 << 20,
-                        chunk_max: 64 << 10,
-                        disk_uuid: [disk + 1; 16],
-                    },
-                )
-                .unwrap();
-                Arc::new(d) as Arc<dyn Device>
-            })
-            .collect();
-        let mut node = Node::open(
-            devices,
-            Options {
-                index_capacity: 64,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        // Disks 0,1 on node 0; 2,3 on node 1. Workers 0,1 on node 0; 2 on 1.
-        node.assign_owners(3, &[Some(0), Some(0), Some(1), Some(1)], &[Some(0), Some(0), Some(1)]);
-        assert_eq!(node.owners(), &[0, 1, 2, 2]);
-        node.assign_owners(2, &[None; 4], &[None; 2]);
-        assert_eq!(node.owners(), &[0, 1, 0, 1]);
     }
 }

@@ -1,0 +1,40 @@
+--- a/benchmarks/cache-disk/src/workload.rs
++++ b/benchmarks/cache-disk/src/workload.rs
+@@ -179,12 +179,23 @@
+     for phase in commands {
+         let stats = match phase {
+             Phase::Write => {
+-                let stats = prefill(&mut backend, c, records, share(c.prefill_batch, c.disks.len(), disk))?;
++                let begin = Instant::now();
++                let before = thread_usage();
++                let mut stats = Stats::default();
++                let passes = if c.value_bytes >= 4 << 20 { 4 } else { 32 };
++                for _ in 0..passes {
++                    stats.operations += prefill(&mut backend, c, records, share(c.prefill_batch, c.disks.len(), disk))?.operations;
++                }
++                let write_seconds = begin.elapsed().as_secs_f64();
++                let sync_begin = Instant::now();
+                 std::fs::OpenOptions::new()
+                     .read(true)
+                     .write(true)
+                     .open(&c.disks[disk].path)?
+                     .sync_data()?;
++                let sync_seconds = sync_begin.elapsed().as_secs_f64();
++                let after = thread_usage();
++                println!("WRITE_WORKER {}", serde_json::json!({"disk":disk,"passes":passes,"operations":stats.operations,"write_seconds":write_seconds,"sync_seconds":sync_seconds,"user_seconds":after.0-before.0,"system_seconds":after.1-before.1,"minor_faults":after.2-before.2,"major_faults":after.3-before.3}));
+                 stats
+             }
+             Phase::Verify => reads(&mut backend, records, c.value_bytes, 128, None, 1)?,
+@@ -561,3 +572,12 @@
+         }
+     }
+ }
++
++// Diagnostic only: per-owner CPU/fault accounting around the write phase.
++fn thread_usage() -> (f64, f64, i64, i64) {
++    let mut u: libc::rusage = unsafe { std::mem::zeroed() };
++    assert_eq!(unsafe { libc::getrusage(libc::RUSAGE_THREAD, &mut u) }, 0);
++    (u.ru_utime.tv_sec as f64 + u.ru_utime.tv_usec as f64 / 1e6,
++     u.ru_stime.tv_sec as f64 + u.ru_stime.tv_usec as f64 / 1e6,
++     u.ru_minflt, u.ru_majflt)
++}

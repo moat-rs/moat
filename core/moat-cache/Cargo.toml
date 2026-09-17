@@ -33,12 +33,12 @@ hashbrown = { workspace = true }
 moat-cache-memory = { workspace = true }
 moat-cache-store = { workspace = true }
 moat-common = { workspace = true }
-moat-engine = { workspace = true }
 parking_lot = { workspace = true }
 thiserror = { workspace = true }
 xxhash-rust = { workspace = true }
 
 [dev-dependencies]
+moat-server = { workspace = true }
 tempfile = { workspace = true }
 
 [lints]

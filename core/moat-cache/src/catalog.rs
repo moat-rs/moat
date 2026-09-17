@@ -26,7 +26,7 @@ use std::{
 use futures_channel::oneshot;
 use futures_util::lock::{Mutex as AsyncMutex, MutexGuard as AsyncGuard};
 use moat_cache_store::{DeleteResult, InventoryEntry, Store};
-use moat_common::{ChunkId, PAGE_SIZE};
+use moat_common::ChunkId;
 use parking_lot::Mutex;
 
 use crate::{Error, Result};
@@ -46,12 +46,12 @@ pub enum DiskPolicy {
 pub struct DiskOptions {
     /// Encoded live bytes per disk. None uses a quarter of non-reserved capacity.
     pub capacity: Option<u64>,
-    /// Live entry limit per disk. None uses the engine's index budget that
-    /// avoids growth; an explicit limit cannot exceed that budget.
+    /// Live entry limit per disk. None uses the adapter's configured default;
+    /// this does not bound v2's latest-version index or retained tombstones.
     pub entries: Option<usize>,
     /// Cache victim selection, followed by explicit conditional deletion.
     pub policy: DiskPolicy,
-    /// Free-segment headroom used for deletion, in-flight packing, and GC.
+    /// Never-allocated segment headroom for deletion and in-flight writes.
     /// Must be at least four; this is not a live-data eviction policy in engine.
     pub reserve_segments: u32,
 }
@@ -76,7 +76,6 @@ struct Slot {
 struct Active {
     extra: u64,
     new: bool,
-    live: u64,
     allocation: u64,
 }
 struct State {
@@ -88,7 +87,6 @@ struct State {
     active: HashMap<ChunkId, Active>,
     extra: u64,
     new: usize,
-    live: u64,
     allocation: u64,
     waiters: Vec<oneshot::Sender<()>>,
 }
@@ -151,7 +149,6 @@ impl State {
         let active = self.active.remove(&id).expect("reserved slot");
         self.extra -= active.extra;
         self.new -= usize::from(active.new);
-        self.live -= active.live;
         self.allocation -= active.allocation;
         std::mem::take(&mut self.waiters)
     }
@@ -161,7 +158,6 @@ struct Disk {
     control: AsyncMutex<()>,
     capacity: u64,
     entries: usize,
-    physical_live: u64,
     reserve: u64,
     segment_size: u64,
     policy: DiskPolicy,
@@ -181,7 +177,7 @@ impl Catalog {
         for (index, info) in store.disks().iter().enumerate() {
             let usage = store.usage(index)?;
             if usage.segments <= options.reserve_segments + 2 {
-                return Err(Error::Invalid("disk has too few segments for cache GC headroom"));
+                return Err(Error::Invalid("disk has too few segments for append headroom"));
             }
             if usage.free_segments < 2 {
                 return Err(Error::NoSpace);
@@ -195,9 +191,7 @@ impl Catalog {
             }
             let entries = options.entries.unwrap_or(info.index_entries);
             if entries == 0 || entries > info.index_entries {
-                return Err(Error::Invalid(
-                    "disk entry limit exceeds the engine index admission budget",
-                ));
+                return Err(Error::Invalid("disk entry limit exceeds the configured adapter limit"));
             }
             disks.push(Arc::new(Disk {
                 state: Mutex::new(State {
@@ -209,14 +203,12 @@ impl Catalog {
                     active: HashMap::new(),
                     extra: 0,
                     new: 0,
-                    live: 0,
                     allocation: 0,
                     waiters: Vec::new(),
                 }),
                 control: AsyncMutex::new(()),
                 capacity,
                 entries,
-                physical_live: usable / 2,
                 reserve: options.reserve_segments as u64 * info.segment_size,
                 segment_size: info.segment_size,
                 policy: options.policy,
@@ -299,13 +291,9 @@ impl Catalog {
         for disk in 0..self.disks.len() {
             let _control = self.control(disk).await;
             loop {
-                let usage = self.store.usage(disk)?;
                 let selected = {
                     let mut state = self.disks[disk].state.lock();
-                    if state.bytes <= self.disks[disk].capacity
-                        && state.slots.len() <= self.disks[disk].entries
-                        && usage.live_bytes <= self.disks[disk].physical_live
-                    {
+                    if state.bytes <= self.disks[disk].capacity && state.slots.len() <= self.disks[disk].entries {
                         break;
                     }
                     state.victim(self.disks[disk].policy, None).ok_or(Error::NoSpace)?
@@ -319,13 +307,11 @@ impl Catalog {
     pub async fn write(&self, id: ChunkId, value: Arc<[u8]>) -> Result<u64> {
         let disk_index = self.store.disk_of(&id);
         let disk = &self.disks[disk_index];
-        let accounting = self.store.write_accounting(disk_index, value.len() as u32)?;
-        let allocation = accounting.batch_bytes.saturating_mul(2).saturating_add(3 * PAGE_SIZE);
-        if value.len() as u64 > disk.capacity || accounting.record_bytes > disk.physical_live {
+        let allocation = self.store.write_cost(disk_index, value.len() as u32)?;
+        if value.len() as u64 > disk.capacity {
             return Err(Error::NoSpace);
         }
         let control = self.control(disk_index).await;
-        let mut gc_passes = 0;
         let reservation = loop {
             let usage = self.store.usage(disk_index)?;
             let action = {
@@ -337,27 +323,13 @@ impl Catalog {
                 let extra = (value.len() as u64).saturating_sub(old_len);
                 let new = !state.slots.contains_key(&id);
                 let fits = state.bytes + state.extra + extra <= disk.capacity
-                    && state.slots.len() + state.new + usize::from(new) <= disk.entries
-                    && usage
-                        .live_bytes
-                        .saturating_add(state.live)
-                        .saturating_add(accounting.record_bytes)
-                        <= disk.physical_live;
+                    && state.slots.len() + state.new + usize::from(new) <= disk.entries;
                 let headroom = usage.free_segments as u64 * disk.segment_size
                     >= disk.reserve.saturating_add(state.allocation).saturating_add(allocation);
                 if fits && headroom {
-                    state.active.insert(
-                        id,
-                        Active {
-                            extra,
-                            new,
-                            live: accounting.record_bytes,
-                            allocation,
-                        },
-                    );
+                    state.active.insert(id, Active { extra, new, allocation });
                     state.extra += extra;
                     state.new += usize::from(new);
-                    state.live += accounting.record_bytes;
                     state.allocation += allocation;
                     Action::Reserved(Reservation {
                         disk: disk.clone(),
@@ -365,7 +337,15 @@ impl Catalog {
                         len: value.len() as u32,
                         done: false,
                     })
-                } else if !fits {
+                } else if !headroom {
+                    // Logical eviction cannot recover append capacity. Do not
+                    // delete live entries merely to discover that GC is unavailable.
+                    if !state.active.is_empty() {
+                        Action::Wait(state.wait())
+                    } else {
+                        return Err(Error::NoSpace);
+                    }
+                } else {
                     if let Some((victim, lsn)) = state.victim(disk.policy, Some(id)) {
                         Action::Evict(victim, lsn)
                     } else if !state.active.is_empty() {
@@ -373,10 +353,6 @@ impl Catalog {
                     } else {
                         return Err(Error::NoSpace);
                     }
-                } else if !state.active.is_empty() {
-                    Action::Wait(state.wait())
-                } else {
-                    Action::Reclaim
                 }
             };
             match action {
@@ -384,12 +360,6 @@ impl Catalog {
                 Action::Evict(id, lsn) => self.evict(disk_index, id, lsn).await?,
                 Action::Wait(wait) => {
                     let _ = wait.await;
-                }
-                Action::Reclaim => {
-                    gc_passes += 1;
-                    if gc_passes > usage.segments.saturating_mul(2) || self.store.reclaim(disk_index).await?.is_none() {
-                        return Err(Error::NoSpace);
-                    }
                 }
             }
         };
@@ -406,7 +376,6 @@ enum Action {
     Reserved(Reservation),
     Evict(ChunkId, u64),
     Wait(oneshot::Receiver<()>),
-    Reclaim,
 }
 struct Reservation {
     disk: Arc<Disk>,

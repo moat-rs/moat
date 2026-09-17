@@ -12,13 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::io::Buffer;
 use moat_common::ChunkId;
 
 use super::{Pending, Pipeline, Rejected, Result, Ticket, Write, index};
 use crate::{
     frame::{FrameBuilder, FrameLimits, FramePosition, Metadata, PreparedFrame},
-    io::{Operation, Queue},
+    io::{Buffer, Operation, Queue},
     segment::SegmentBuilder,
 };
 

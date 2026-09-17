@@ -62,7 +62,7 @@ jobs:
           fi
           cargo test --workspace
       - name: Local example
-        run: cargo run -p moat-engine --example local
+        run: cargo run -p moat-cache-store --example chunks
       - name: Docs
         run: cargo doc --workspace --no-deps
         env:

@@ -1,9 +1,6 @@
-# Engine pipeline comparison
+# Engine pipeline benchmark
 
-This standalone crate compares `moat-engine` and `moat-engine-v2` on the same
-Linux direct-I/O device. Neither engine depends on this harness or on the other
-engine. The v2 side exercises its append-only multi-segment engine. This is not
-a comparison of complete storage services.
+This standalone workspace measures the sole v2 engine with Linux direct I/O: append writes, multi-segment allocation, recovered indexes, and random reads. The current runner accepts only `v2`; reproduce historical v1/legacy comparisons at the revisions recorded in their reports.
 
 The [2026-09-15 report](../../docs/experiments/engine/2026-09-15/REPORT.md) includes three repetitions,
 fresh fio baselines, numeric samples and independent CPU profiles. That report
@@ -43,7 +40,7 @@ The raw-device runner **destroys contents in the first 4 GiB**. Use only an
 explicitly assigned, idle scratch device. It requires the expected serial,
 checks for partitions, mounts, signatures, holders and observed activity, and
 uses an advisory lock to exclude another instance. It needs raw device access
-and sufficient memlock for the legacy engine's registered 1-GiB buffer pool.
+and sufficient memlock for the engine's registered 1-GiB buffer pool.
 It does not require sudo or discard/format the entire NVMe namespace.
 
 ```sh
@@ -54,12 +51,7 @@ python3 benchmarks/engine/run.py \
   --repeats 3 --seconds 10 --payload-mib 512 --overwrite-first-4g
 ```
 
-Both engines use 2-GiB segment slots. Legacy reserves its first segment-sized
-region for device metadata; v2 places two 4-KiB superblocks before its slots
-and reserves an independent seal page in each slot. Each formatter sees only
-the selected device extent. Every run uses a fresh random identity. The current
-v2 adapter uses `Engine`, including persisted geometry, allocation and rollover.
-Historical single-segment reports retain their original source and methodology.
+The engine uses 2-GiB segments after two 4-KiB device superblocks. Each segment has an allocation header and a footer trailer at its tail. Formatting, allocation, and recovery stay within the configured device window, and every run uses a fresh random device identity.
 
 ### Whole-device mode
 
@@ -75,18 +67,18 @@ python3 benchmarks/engine/run.py \
   --cpu NUMA_LOCAL_CPU --sizes 4194304 --repeats 1 --seconds 60
 ```
 
-Each engine writes distinct consecutive keys until admission reports no free
+The engine writes distinct consecutive keys until admission reports no free
 segments, drains writes, flushes, and seals the final segment. The harness
 requires all available segments to have been allocated. Progress is emitted to
 stderr every 30 seconds. The measured write interval includes rollover and
-sealing. Both indexes reserve capacity before timing in this mode.
+sealing. The index reserves capacity before timing in this mode.
 
 Random reads select from the entire written key range, including all allocated
 segments. They do not mean that every record is read during a timed phase.
 Logical payload occupancy is less than raw capacity because of metadata,
 page padding, space too small for another record, and a trailing partial slot.
 This is one complete append-only fill, not a steady-state overwrite/GC workload
-or a claim of device preconditioning. One repeat is one full fill per engine;
+or a claim of device preconditioning. One repeat is one full fill;
 additional repeats repeat the full fill and must be budgeted accordingly.
 
 Distinct-key full-device workloads currently require values of at least 64 KiB.
@@ -107,21 +99,20 @@ target/engine-compare/x86_64-unknown-linux-gnu/release/moat-engine-compare \
 ## Matched workload
 
 - One thread, fixed CPU, io_uring depth 64, direct I/O. No SQPOLL or IOPOLL.
-- Both engines register their pool arenas and files and request `SINGLE_ISSUER`
-  with `DEFER_TASKRUN`. Both use a 1-GiB common pool with an 8-MiB maximum class.
-  `--huge-pages disabled|preferred|required` selects the same policy for both;
+- The engine registers its pool arenas and file and requests `SINGLE_ISSUER`
+  with `DEFER_TASKRUN`. It uses a 1-GiB common pool with an 8-MiB maximum class.
+  `--huge-pages disabled|preferred|required` selects the pool policy;
   the default is `preferred`. Keep policies in separate output directories.
   Registration errors stop the run. No system huge-page reservation is changed.
 - Uniform records: 100 B, 1 KiB, 4 KiB, 64 KiB and 4 MiB. Mixed records cycle
   through 100 B, 4 KiB, 64 KiB and 300 B in that order, at equal record counts.
 - Writes generate consecutive distinct keys. Groups contain 64 records for
-  small/mixed workloads and 16 for uniform large workloads. Both sides poll
+  small/mixed workloads and 16 for uniform large workloads. The driver polls
   after each group and reap on backpressure. V2 puts a small/mixed group in one
-  frame; uniform large values use a prepared frame each. Legacy retains its
-  existing packing and large-record policy.
+  frame; uniform large values use a prepared frame each.
 - The write interval includes copying values, computing CRCs, index publication,
   completion processing and the final durable flush. No precomputed checksums
-  are passed to the legacy prepared-write path. Allocation of initial I/O
+  are passed to the prepared-write path. Allocation of initial I/O
   buffers, input patterns, formatting and opening occur before the timer.
 - In bounded mode, each dataset contains at most 512 MiB of payload, rounded down to complete
   groups, with a minimum of one group. This is **burst write throughput**, not
@@ -129,7 +120,7 @@ target/engine-compare/x86_64-unknown-linux-gnu/release/moat-engine-compare \
 - Uniform random full-value reads use logical concurrency 1 and 64; 4-MiB
   records also use concurrency 16. Each phase warms for two seconds, measures
   for ten seconds by default, and drains accepted requests before stopping.
-- Both sides use the same verification policy: `--verify false` (default) or
+- The engine uses the selected verification policy: `--verify false` (default) or
   `--verify true`. Writes always compute CRCs and end with a durable flush.
   Reads additionally check length, the first eight returned bytes and the last
   byte against the deterministic input pattern. The key prefix is checked only
@@ -140,7 +131,7 @@ target/engine-compare/x86_64-unknown-linux-gnu/release/moat-engine-compare \
   Use `--sizes` on the runner to select values large enough to contain it, for
   example `--sizes 65536 4194304 --range 4096:8192`. Range reads use concurrency
   1 and 64. Keep different range/mode runs in separate output directories.
-- The runner defaults to three fresh write/read repetitions and alternates engine order. Read selection
+- The runner defaults to three fresh write/read repetitions using v2. Read selection
   uses the same fixed random seed. Latency samples cover one request in 16,
   from read admission through delivery to the common verification callback.
 
@@ -172,12 +163,7 @@ If a pool mapping merges with unrelated memory, these observations are `null`
 rather than attributing unrelated huge pages to the pool. `Transparent` alone
 means a successful hint, not guaranteed promotion.
 
-The two implementations retain differences: legacy uses a preallocated
-concurrent index; v2 uses a single-owner hash table. In bounded mode, initial
-legacy index allocation is outside the timer and v2 index growth is inside it.
-Whole-device mode reserves both indexes before timing. The v2 builder
-and completion metadata allocate in the measured write path. These results compare the current code,
-and do not isolate only the on-disk format or the benefit of removing locks.
+V2 uses an owner-local hash index. Bounded-dataset runs include index growth, frame construction, and completion metadata allocation in write timing; full-device runs reserve index capacity before timing. Historical v1 comparisons remain in the experiment archive, and the current runner contains no legacy implementation.
 
 The bounded data window is small and repeatedly accessed. Direct I/O bypasses the OS
 page cache but does not eliminate device-side caching or prove cold-media

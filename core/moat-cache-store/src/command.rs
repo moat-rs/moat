@@ -15,8 +15,7 @@
 use std::{ops::Range, sync::Arc};
 
 use futures_channel::oneshot;
-use moat_common::ChunkId;
-use moat_engine::{ChunkData, Outcome, ReclaimReport};
+use moat_common::{ChunkId, PooledBuf};
 
 use crate::{Chunk, DeleteResult, Error, InventoryEntry, Result, budget::Permit};
 
@@ -72,7 +71,6 @@ impl Command {
 pub(crate) enum FenceReply {
     Flush(Reply<()>),
     Inventory(Reply<Vec<InventoryEntry>>),
-    Reclaim(Reply<Option<ReclaimReport>>),
     Close(Option<Reply<()>>),
 }
 impl FenceReply {
@@ -82,9 +80,6 @@ impl FenceReply {
                 let _ = reply.send(Err(error));
             }
             Self::Inventory(reply) => {
-                let _ = reply.send(Err(error));
-            }
-            Self::Reclaim(reply) => {
                 let _ = reply.send(Err(error));
             }
             Self::Close(Some(reply)) => {
@@ -122,12 +117,12 @@ pub(crate) enum Operation {
     },
 }
 impl Operation {
-    pub fn read_done(self, result: Result<ChunkData>) {
+    pub fn read_done(self, result: Result<(PooledBuf, Range<usize>)>) {
         let Self::Read { lsn, mut waiters, .. } = self else {
             unreachable!("read ticket")
         };
         let result = result.map(|data| {
-            let (buf, range) = data.into_raw();
+            let (buf, range) = data;
             let mut permit = waiters[0].permit.take().expect("leader byte credit");
             permit.resize(buf.len());
             permit.finish_request();
@@ -153,22 +148,15 @@ impl Operation {
             let _ = waiter.reply.send(Ok(None));
         }
     }
-    pub fn write_done(self, result: Result<Outcome>) {
+    pub fn write_done(self, result: Result<u64>) {
         match self {
             Self::Put { reply, permit, .. } => {
                 drop(permit);
-                let result = result.and_then(|outcome| match outcome {
-                    Outcome::Put { lsn } => Ok(lsn),
-                    _ => Err(Error::Invalid("unexpected put completion")),
-                });
                 let _ = reply.send(result);
             }
             Self::Delete { reply, permit, .. } => {
                 drop(permit);
-                let result = result.and_then(|outcome| match outcome {
-                    Outcome::Delete { lsn } => Ok(DeleteResult::Deleted(lsn)),
-                    _ => Err(Error::Invalid("unexpected delete completion")),
-                });
+                let result = result.map(DeleteResult::Deleted);
                 let _ = reply.send(result);
             }
             Self::Read { .. } => unreachable!("write ticket"),

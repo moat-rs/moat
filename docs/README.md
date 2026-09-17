@@ -5,9 +5,8 @@
 | Path | Contents |
 |---|---|
 | `core/moat-common` | Identifiers, checksums, memory alignment, and buffer pools |
-| `core/moat-engine` | Single-disk log storage, indexing, recovery, and reclaim |
-| `core/moat-engine-v2` | Independent unified-frame engine with a single-owner I/O pipeline |
-| `core/moat-server` | Disk discovery, placement, and workers |
+| `core/moat-engine-v2` | Sole frame engine, owner-driven I/O, allocation, and recovery |
+| `core/moat-server` | Device discovery, routing, v2 session adaptation, and exclusive workers |
 | `core/moat-cache-memory` | Resident cache and eviction policies |
 | `core/moat-cache-store` | Async engine adapter, request budgets, and read coalescing |
 | `core/moat-cache` | Memory and disk cache coordination, key identity, and data views |
@@ -24,34 +23,15 @@ and run instructions; they are not included in the root workspace tests.
 
 ## Reading the storage engine
 
-For the new implementation, start with the [v2 crate guide](../core/moat-engine-v2/README.md)
-and [experiment archive](experiments/README.md). The sequence below describes
-the existing engine used by current consumers.
+Start with the [v2 guide](../core/moat-engine-v2/README.md) and [migration boundaries](design/v2-migration.md):
 
-1. [Engine API](../core/moat-engine/src/lib.rs) and
-   [local example](../core/moat-engine/examples/local.rs): how queues, engines,
-   and read/write pipelines fit together.
-2. [Disk layout](../core/moat-engine/src/layout.rs) and
-   [open and recovery](../core/moat-engine/src/engine.rs): how persisted data
-   maps to in-memory state.
-3. [Write path](../core/moat-engine/src/writer.rs): request admission, submission
-   ordering, and completion handling.
-4. [Read path](../core/moat-engine/src/reader.rs) and
-   [index](../core/moat-engine/src/index.rs): record lookup, data reads, and
-   concurrent access constraints.
-5. [Engine integration tests](../core/moat-engine/tests/engine.rs): edge cases
-   covered by crash injection, out-of-order completions, reclaim, and model tests.
+1. [Frame codecs](../core/moat-engine-v2/src/frame/mod.rs) and the [segment format](design/engine-segment-format.md).
+2. [Pipeline](../core/moat-engine-v2/src/pipeline/mod.rs): requests, buffer ownership, and completion ordering.
+3. [Device engine](../core/moat-engine-v2/src/engine/mod.rs): geometry, recovery, segment routing, and rollover.
+4. [Application adapter](../core/moat-server/src/storage/mod.rs): exclusive leases, queues/pools, LSNs, and request conversion.
+5. [Cache-store worker](../core/moat-cache-store/src/worker.rs): per-key ordering, read coalescing, fences, and shutdown.
 
-The write implementation is split by responsibility, with state owned by a
-single `Writer`:
-
-| File | Responsibility |
-|---|---|
-| [writer.rs](../core/moat-engine/src/writer.rs) | Write admission, batch submission, index updates, and auxiliary I/O completion dispatch |
-| [writer/types.rs](../core/moat-engine/src/writer/types.rs) | Write options, tickets, completions, and large-value buffers |
-| [writer/batch.rs](../core/moat-engine/src/writer/batch.rs) | Small-record packing and inline/framed batch encoding |
-| [writer/sealing.rs](../core/moat-engine/src/writer/sealing.rs) | Segment allocation, sealing, and durability barriers |
-| [writer/reclaim.rs](../core/moat-engine/src/writer/reclaim.rs) | Victim selection, window scanning, and live-record relocation |
+The v1 designs and experiments explain historical decisions. V2 and the migration guide define the current format and interfaces.
 
 ## Design documents
 
@@ -59,7 +39,8 @@ single `Writer`:
 |---|---|
 | [Chunkserver design](design/chunkserver.md) | Overall architecture and goals |
 | [Chunkserver audit](design/chunkserver-audit.md) | Design review and constraints |
-| [Engine API](design/engine-api.md) | Queue and read/write pipeline interfaces |
+| [V2 migration guide](design/v2-migration.md) | Current interfaces, transition boundaries, missing capabilities, and rebuild priorities |
+| [Historical engine API](design/engine-api.md) | Removed v1 shared-queue design |
 | [Unified Frame layout proposal](design/engine-frame-layout.md) | Immutable frames, mixed-value placement, read/write paths, recovery, and tradeoffs |
 | [Earlier engine write layout proposal](design/engine-write-layout.md) | Open inline pages, unified value extents, and a recovery validation model |
 | [Memory cache](design/cache-memory.md) | Resident cache, shared handles, and eviction policies |

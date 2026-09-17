@@ -1,5 +1,7 @@
 # A Chunkserver for Many Large NVMe Drives (design v0)
 
+> Historical design: the v1 implementation has been removed. This document preserves the original design and milestones; shared readers/writers, legacy formats, GC, and implementation status described here do not represent the current code. See the [v2 migration guide](v2-migration.md) for current constraints.
+
 > Status: design document. `moat-common` and `moat-engine` implement sections 3
 > and 4 on files and in-memory devices. `moat-server` implements disk discovery,
 > placement, recovery and workers; network transports and the client remain planned.

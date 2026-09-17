@@ -23,7 +23,6 @@ use std::{
 };
 
 use io_uring::{IoUring, types};
-
 use moat_common::{BufferPool, PAGE_SIZE, align_down, is_aligned};
 
 use super::{Buffer, Completion, Queue, Request, check_depth};

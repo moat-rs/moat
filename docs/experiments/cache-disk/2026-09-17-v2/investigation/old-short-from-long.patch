@@ -1,0 +1,48 @@
+--- a/benchmarks/cache-disk/src/workload.rs
++++ b/benchmarks/cache-disk/src/workload.rs
+@@ -188,10 +188,11 @@
+     for phase in commands {
+         let stats = match phase {
+             Phase::Write => {
++                let start_ns = monotonic_ns();
+                 let begin = Instant::now();
+                 let before = thread_usage();
+                 let mut stats = Stats::default();
+-                let passes = if c.value_bytes >= 4 << 20 { 4 } else { 32 };
++                let passes = 1;
+                 for _ in 0..passes {
+                     stats.operations += prefill(&mut backend, c, records, share(c.prefill_batch, c.disks.len(), disk))?.operations;
+                 }
+@@ -200,7 +201,7 @@
+                 FileDevice::open(&c.disks[disk].path, true)?.sync()?;
+                 let sync_seconds = sync_begin.elapsed().as_secs_f64();
+                 let after = thread_usage();
+-                println!("WRITE_WORKER {}", serde_json::json!({"disk":disk,"passes":passes,"operations":stats.operations,"write_seconds":write_seconds,"sync_seconds":sync_seconds,"user_seconds":after.0-before.0,"system_seconds":after.1-before.1,"minor_faults":after.2-before.2,"major_faults":after.3-before.3}));
++                println!("WRITE_WORKER {}", serde_json::json!({"disk":disk,"begin_ns":start_ns,"end_ns":monotonic_ns(),"passes":passes,"operations":stats.operations,"write_seconds":write_seconds,"sync_seconds":sync_seconds,"user_seconds":after.0-before.0,"system_seconds":after.1-before.1,"minor_faults":after.2-before.2,"major_faults":after.3-before.3}));
+                 stats
+             }
+             Phase::Verify => reads(&mut backend, records, c.value_bytes, 128, None, 1)?,
+@@ -380,10 +381,13 @@
+     let workers = Workers::new(&c, records(&c)?)?;
+     let before_disk = diskstats(&c)?;
+     let before_cpu = cpu();
++    let start_ns = monotonic_ns();
+     let begin = Instant::now();
+     workers.start(Phase::Write)?;
+     let stats = workers.finish()?;
+     let elapsed = begin.elapsed().as_secs_f64();
++    let end_ns = monotonic_ns();
++    println!("WRITE_WINDOW {}", serde_json::json!({"begin_ns":start_ns,"end_ns":end_ns}));
+     let after_cpu = cpu();
+     let after_disk = diskstats(&c)?;
+     println!(
+@@ -565,3 +569,9 @@
+      u.ru_stime.tv_sec as f64 + u.ru_stime.tv_usec as f64 / 1e6,
+      u.ru_minflt, u.ru_majflt)
+ }
++
++fn monotonic_ns() -> u64 {
++    let mut t: libc::timespec = unsafe { std::mem::zeroed() };
++    assert_eq!(unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut t) }, 0);
++    t.tv_sec as u64 * 1_000_000_000 + t.tv_nsec as u64
++}

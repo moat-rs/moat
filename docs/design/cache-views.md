@@ -1,4 +1,6 @@
 Owned KV views
+
+> The current storage backend is v2. GC and sustained churn described here remain future goals; logical eviction does not free physical segments. See the [v2 migration guide](v2-migration.md) for the complete constraints.
 ==============
 
 `Cache` exposes a bytes KV API over the hybrid generation checks, catalog,

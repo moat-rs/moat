@@ -16,7 +16,6 @@
 //! creates a Tokio runtime. No per-request channel or task wraps engine I/O.
 
 pub(super) mod foyer;
-pub(super) mod v1;
 pub(super) mod v2;
 
 use crate::{Config, Hasher};
@@ -32,7 +31,6 @@ pub(super) struct Record {
 }
 
 pub(super) enum Data {
-    V1(moat_engine::ChunkData),
     V2 {
         buffers: moat_engine_v2::pipeline::ReadBuffers,
         range: moat_engine_v2::pipeline::ReadRange,
@@ -44,7 +42,6 @@ pub(super) enum Data {
 impl Data {
     pub fn check(&self, record: &Record, len: usize) -> Result<()> {
         let bytes = match self {
-            Self::V1(data) => &data[..],
             Self::V2 { buffers, range } => buffers.view(range.clone()),
             Self::Foyer(entry) => {
                 ensure!(entry.key().as_slice() == record.key.as_ref(), "full key mismatch");
