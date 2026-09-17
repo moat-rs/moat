@@ -48,6 +48,7 @@ impl<'a> Metadata<'a> {
         let mut checksum_at = HEADER_LEN + header.record_count() as usize * DESCRIPTOR_LEN;
         let mut previous_end = header.metadata_len();
         let mut ordered = true;
+        let mut value_count = 0;
         for ordinal in 0..header.record_count() {
             let descriptor = metadata.decode_descriptor(ordinal)?;
             if descriptor.value_len > limits.max_value_len() {
@@ -82,16 +83,19 @@ impl<'a> Metadata<'a> {
             }
             ordered &= start >= previous_end;
             previous_end = end as usize;
+            value_count += 1;
         }
         if checksum_at != header.metadata_len() {
             return Err(Error::Corrupt("unreferenced checksum bytes"));
         }
         if !ordered {
-            let mut ranges: Vec<_> = metadata
-                .records()
-                .filter(|record| record.descriptor.value_len != 0)
-                .map(|record| (record.descriptor.value_offset, record.descriptor.value_len))
-                .collect();
+            let mut ranges = Vec::with_capacity(value_count);
+            ranges.extend(
+                metadata
+                    .records()
+                    .filter(|record| record.descriptor.value_len != 0)
+                    .map(|record| (record.descriptor.value_offset, record.descriptor.value_len)),
+            );
             ranges.sort_unstable_by_key(|&(start, _)| start);
             if ranges
                 .windows(2)

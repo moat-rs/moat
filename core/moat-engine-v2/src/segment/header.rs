@@ -16,13 +16,13 @@ use std::ops::Range;
 
 use moat_common::{PAGE_SIZE, is_aligned};
 
-use super::{Error, FORMAT_VERSION, HEADER_MAGIC, MIN_FRAME_METADATA_LEN, Result, footer_len};
+use super::{Error, FORMAT_VERSION, HEADER_MAGIC, Result, footer_len};
 use crate::{codec::*, frame::FramePosition};
 
 /// Physical segment identity, including the allocation incarnation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SegmentId {
-    /// Device identity from the future device superblock.
+    /// Device identity from the device superblock.
     pub device_id: [u8; 16],
     /// Segment number within the device.
     pub segment_no: u32,
@@ -39,8 +39,8 @@ pub(super) struct Seal {
 
 /// Validated segment identity, geometry, and optional sealed boundary.
 ///
-/// An active header carries no speculative tail. Its durable prefix is found
-/// by scanning frames. A sealed header commits to an exact data/footer boundary.
+/// The on-disk allocation header is immutable and carries no speculative tail.
+/// A validated footer trailer adds a sealed boundary to this in-memory view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SegmentHeader {
     pub(super) id: SegmentId,
@@ -81,41 +81,20 @@ impl SegmentHeader {
             segment_no,
             sequence: u64_at(bytes, 40),
         };
-        let mut header = Self::new(id, segment_len).map_err(|_| Error::Corrupt("segment geometry"))?;
-        if bytes[68..].iter().any(|&byte| byte != 0) {
-            return Err(Error::Corrupt("reserved segment header bytes"));
-        }
-        match u32_at(bytes, 48) {
-            0 if bytes[52..68].iter().all(|&byte| byte == 0) => {}
-            1 => {
-                let seal = Seal {
-                    data_end: u32_at(bytes, 52),
-                    frame_count: u32_at(bytes, 60),
-                    metadata_len: u32_at(bytes, 64),
-                };
-                let len = footer_len(seal.metadata_len as u64);
-                if seal.data_end < PAGE_SIZE as u32
-                    || !is_aligned(seal.data_end as u64, PAGE_SIZE)
-                    || !seal.metadata_len.is_multiple_of(4)
-                    || len != u32_at(bytes, 56) as u64
-                    || seal.data_end as u64 + len > segment_len as u64
-                    || (seal.frame_count == 0) != (seal.data_end == PAGE_SIZE as u32)
-                    || (seal.frame_count == 0) != (seal.metadata_len == 0)
-                    || seal.frame_count as u64 * PAGE_SIZE > (seal.data_end as u64 - PAGE_SIZE)
-                    || seal.frame_count as u64 * MIN_FRAME_METADATA_LEN > seal.metadata_len as u64
-                    || seal.metadata_len as u64 > seal.data_end as u64 - PAGE_SIZE
-                {
-                    return Err(Error::Corrupt("sealed segment geometry"));
-                }
-                header.seal = Some(seal);
-            }
-            _ => return Err(Error::Corrupt("segment state or active seal fields")),
+        let header = Self::new(id, segment_len).map_err(|_| Error::Corrupt("segment geometry"))?;
+        if bytes[48..].iter().any(|&byte| byte != 0) {
+            return Err(Error::Corrupt("reserved allocation header bytes"));
         }
         Ok(header)
     }
 
-    /// Writes one header page, zeroing all reserved bytes.
+    /// Writes an unsealed allocation page, zeroing all reserved bytes.
     pub fn encode_into(self, bytes: &mut [u8]) -> Result<()> {
+        if self.is_sealed() {
+            return Err(Error::InvalidArgument(
+                "seal state is encoded only in the footer trailer",
+            ));
+        }
         let available = bytes.len();
         let bytes = bytes.get_mut(..PAGE_SIZE as usize).ok_or(Error::BufferTooSmall {
             required: PAGE_SIZE as usize,
@@ -128,13 +107,6 @@ impl SegmentHeader {
         put_u32(bytes, 32, self.id.segment_no);
         put_u32(bytes, 36, self.segment_len);
         put_u64(bytes, 40, self.id.sequence);
-        if let Some(seal) = self.seal {
-            put_u32(bytes, 48, 1);
-            put_u32(bytes, 52, seal.data_end);
-            put_u32(bytes, 56, footer_len(seal.metadata_len as u64) as u32);
-            put_u32(bytes, 60, seal.frame_count);
-            put_u32(bytes, 64, seal.metadata_len);
-        }
         put_u32(bytes, 12, crc_with_zeroed_checksum(bytes));
         Ok(())
     }
@@ -157,7 +129,12 @@ impl SegmentHeader {
     /// Segment-relative footer extent, present only for sealed headers.
     pub fn footer_range(self) -> Option<Range<u32>> {
         self.seal
-            .map(|seal| seal.data_end..seal.data_end + footer_len(seal.metadata_len as u64) as u32)
+            .map(|seal| self.segment_len - footer_len(seal.metadata_len as u64) as u32..self.segment_len)
+    }
+
+    /// End of committed frame data, excluding the gap before the footer.
+    pub fn data_end(self) -> Option<u32> {
+        self.seal.map(|seal| seal.data_end)
     }
 
     pub(super) fn position(self, offset: u32) -> crate::frame::Result<FramePosition> {

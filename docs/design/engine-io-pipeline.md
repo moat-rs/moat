@@ -23,7 +23,7 @@ an active header or an open file descriptor.
 
 Segment selection and rollover remain with the upper layer. This stage does
 not format device superblocks, allocate incarnations, merge indexes across
-segments, execute reclamation, or implement a crash-safe sealed-header update.
+segments, execute reclamation, or commit a footer trailer.
 It does not reopen an active tail for new writes or overwrite a segment header.
 
 ## Bounded I/O and buffer ownership

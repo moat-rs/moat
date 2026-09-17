@@ -160,12 +160,12 @@ impl<Q: Queue> Pipeline<Q> {
         {
             return Err(Error::InvalidArgument("invalid queue, extent, or I/O frame limit"));
         }
-        let mut pipeline = Self::empty(queue, limits)?;
+        let mut pipeline = Self::empty(queue, limits, 1)?;
         pipeline.extents.push(Extent { header, base });
         Ok(pipeline)
     }
 
-    pub(crate) fn empty(queue: Q, limits: FrameLimits) -> Result<Self> {
+    pub(crate) fn empty(queue: Q, limits: FrameLimits, segment_capacity: usize) -> Result<Self> {
         if queue.depth() == 0
             || queue.depth() > 32768
             || queue.vacant() != queue.depth()
@@ -176,7 +176,7 @@ impl<Q: Queue> Pipeline<Q> {
         let depth = queue.depth();
         Ok(Self {
             queue,
-            extents: Vec::new(),
+            extents: Vec::with_capacity(segment_capacity),
             current: 0,
             limits,
             segment: None,
@@ -205,9 +205,8 @@ impl<Q: Queue> Pipeline<Q> {
             || h.position().offset() as u64 + h.frame_len() as u64
                 > self.extents[self.current]
                     .header
-                    .footer_range()
-                    .map_or(self.extents[self.current].header.segment_len(), |range| range.start)
-                    as u64
+                    .data_end()
+                    .unwrap_or(self.extents[self.current].header.segment_len()) as u64
         {
             return Err(Error::InvalidArgument(
                 "recovered frame is outside the assigned segment",
@@ -224,7 +223,7 @@ impl<Q: Queue> Pipeline<Q> {
 
     fn position_in(&self, segment: usize, offset: u32) -> Result<FramePosition> {
         let header = self.extents[segment].header;
-        let end = header.footer_range().map_or(header.segment_len(), |range| range.start);
+        let end = header.data_end().unwrap_or(header.segment_len());
         Ok(FramePosition::new(header.id().sequence, offset, end)?)
     }
 

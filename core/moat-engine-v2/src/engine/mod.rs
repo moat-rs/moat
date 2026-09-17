@@ -59,7 +59,7 @@ impl<D: Device, Q: Queue> Engine<D, Q> {
     /// accelerate recovery; active segments are scanned with payload validation.
     pub fn open(device: D, queue: Q) -> Result<Self> {
         let layout = Layout::read(&device)?;
-        let pipeline = Pipeline::empty(queue, layout.limits())?;
+        let pipeline = Pipeline::empty(queue, layout.limits(), layout.segment_count() as usize)?;
         let mut engine = Self {
             device,
             layout,
@@ -249,9 +249,9 @@ impl<D: Device, Q: Queue> Engine<D, Q> {
         Ok(())
     }
 
-    /// Writes the footer, persists data/footer, then persists an independent seal
-    /// header at the end of the physical slot. The original active header stays
-    /// unchanged. An interrupted seal can therefore recover by scanning frames.
+    /// Persists data and preceding footer pages, then commits the final footer
+    /// page containing the trailer. The allocation header remains unchanged.
+    /// An interrupted seal can therefore recover by scanning frames.
     /// Requires a drained pipeline. A lifecycle I/O failure prevents further writes.
     pub fn seal(&mut self) -> Result<()> {
         self.check_idle()?;
@@ -261,15 +261,16 @@ impl<D: Device, Q: Queue> Engine<D, Q> {
         let mut builder = self.pipeline.take_segment()?.expect("active allocation has a builder");
         self.active = None;
         let result = (|| -> Result<()> {
-            let offset = builder.data_end();
             let mut footer = AlignedBuf::zeroed(builder.footer_len());
             let header = builder.seal_into(&mut footer)?;
-            self.device
-                .write_at(&footer, self.layout.segment_base(number)? + offset as u64)?;
+            let range = header.footer_range().expect("newly sealed segment");
+            let base = self.layout.segment_base(number)? + range.start as u64;
+            let split = footer.len() - PAGE_SIZE as usize;
+            if split != 0 {
+                self.device.write_at(&footer[..split], base)?;
+            }
             self.device.sync()?;
-            let mut page = AlignedBuf::zeroed(PAGE_SIZE as usize);
-            header.encode_into(&mut page)?;
-            self.device.write_at(&page, self.layout.seal_offset(number)?)?;
+            self.device.write_at(&footer[split..], base + split as u64)?;
             self.device.sync()?;
             Ok(())
         })();

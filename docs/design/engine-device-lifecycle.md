@@ -1,36 +1,29 @@
 # Append-only device lifecycle
 
-`moat-engine-v2::engine::Engine<D, Q>` owns one device, one I/O queue, and one
-resident index across all allocated segments. The owner serializes mutation
-through `&mut self`; ordinary reads and writes use the existing asynchronous
-pipeline and registered buffers. No background thread, new mutex, or atomic
-index coordination is introduced.
+`moat-engine-v2::engine::Engine<D, Q>` owns one device, one I/O queue, and an
+in-memory index spanning segments. Normal reads and writes use the asynchronous
+pipeline and registered buffers. Allocation, sealing, and recovery use synchronous
+positional I/O. Physical reclamation, segment reuse, and GC scheduling are not yet
+exposed.
 
-## Physical layout
+## Device layout
 
 ```text
-0             4096          8192
-+-------------+-------------+-----------------------------------------------+
-| superblock  | superblock  | fixed-stride segment slots ...                |
-| copy A      | copy B      | trailing incomplete slot is unused            |
-+-------------+-------------+-----------------------------------------------+
+0               4096            8192
+| Superblock A  | Superblock B  | Fixed-stride segment slots ... |
 
-One physical slot (segment_size bytes):
-+-------------+-----------------------+--------------------+----------------+
-| allocation  | immutable frames      | footer at seal     | seal header    |
-| header, 4K  | grows forward         | then unused space  | final 4K       |
-+-------------+-----------------------+--------------------+----------------+
-|<----- logical SegmentHeader.segment_len = segment_size - 4096 ---------->|
+One slot, S = segment_size:
+| Allocation header | Frames ... | Unused gap | Metadata | Padding | Trailer |
+| 4 KiB             |            |            |<------- Footer ----------->|
 ```
 
-The logical extent excludes the final seal page. Existing frame and segment
-encodings are unchanged. The footer is a **segment footer** containing each
-frame's original metadata; frames do not have their own footer. Admission
-reserves enough space for the growing footer before accepting a frame.
+`SegmentHeader::segment_len()` is the complete physical stride, including header
+and footer. The footer ends at the segment boundary, with its trailer in the last
+64 bytes. See the [segment format](engine-segment-format.md) for fields and dual
+CRC rules. Footers retain original frame metadata in full.
 
-The immutable superblocks use magic `MOATDEV2`, version `1`, and a CRC32C over
-the entire 4096-byte page with its checksum field zeroed. Fields are explicitly
-little-endian:
+Superblocks use magic `MOATDEV1`, version `1`, and a whole-page CRC32C calculated
+with its own field zeroed. All integers are explicitly little-endian.
 
 | Offset | Bytes | Field |
 | ---: | ---: | --- |
@@ -44,85 +37,76 @@ little-endian:
 | 48 | 4 | Maximum encoded frame length |
 | 52 | 4 | Maximum value length |
 | 56 | 8 | First allocation sequence |
-| 64 | 4032 | Reserved, zero |
+| 64 | 4032 | Reserved, all zero |
 
-Either intact copy can restore geometry. Two valid copies must agree. Unknown
-versions, conflicting geometry, and device truncation are errors. Format first
-invalidates both roots and syncs, clears all allocation/seal pages and syncs,
-then commits and syncs each root independently. It does not erase payloads or
-issue discard. Formatting is destructive and requires exclusive device access.
+Either valid copy can recover geometry; two valid copies must agree. Unsupported
+versions, conflicting copies, and device truncation are errors. Formatting first
+zeros and syncs both superblocks, then zeros and syncs each slot's allocation and
+final pages, and finally writes and syncs each superblock separately. It neither
+erases all payload nor issues discard. All alpha format versions are 1, with no
+migration from previous layouts.
 
-Every format requires a fresh identity. With a readable prior layout, the new
-sequence range begins after the old range. Without one, the first sequence is
-derived from the fresh random identity. Callers must supply a fresh random
-128-bit identity, including after an interrupted format; a deterministic or
-reused identity can collide with old frame incarnations. Slot `n` uses the
-persisted first sequence plus `n`. This version never reuses a slot.
+Formatting requires a fresh random 128-bit device identity. If an old layout is
+readable, the new sequence range starts beyond both its reserved range and the
+largest sequence in existing allocation headers. Invalid old allocation pages
+cause an error before modifying the device. Without a readable layout, the fresh
+identity determines the initial sequence. New slot `n` currently uses the initial
+sequence plus `n`; slots are not reused. A future reuse protocol must keep sequences
+unique across allocations. A valid footer CRC alone cannot establish ownership.
 
 ## Allocation and sealing
 
-1. Drain outstanding operations and deliver their completions.
-2. To seal, write the footer and sync the device, persisting preceding frames.
-3. Write the independent seal header and sync again. Keep the original active
-   allocation header unchanged.
-4. To allocate, write and sync a fresh allocation header before submitting any
-   frame in the new slot.
+Before allocating a slot, the engine drains pending operations and seals the
+current segment. The new allocation header must be written and synced before
+submitting frames for that segment. It remains immutable for that allocation.
 
-An I/O failure during allocation or sealing prevents further writes from that
-owner. Already published records remain readable where the queue is healthy.
-Reopen determines the recoverable state. A torn seal can fall back to scanning
-using the unchanged allocation header. A valid seal preserves its committed
-boundary even if its footer is damaged; scanning damage before that boundary
-is an error.
+Sealing drains frame I/O, writes any footer prefix, syncs, writes the final page,
+and syncs again. The final page contains both metadata and the trailer; there is
+no separate seal-header page. The first sync makes data durable before the seal
+record; the second makes that record durable before reporting success.
 
-Lifecycle operations use synchronous positional I/O. `rollover`, `rollover_to`,
-and `seal` require a drained pipeline, returning backpressure otherwise. Normal
-writes attempt rollover when the next frame does not fit; rejected inputs retain
-their original allocation. `OutOfSpace` means no unused slot remains. A frame
-that cannot fit an empty segment is rejected without consuming more segments.
+Lifecycle I/O failure disables further writes by that owner. The existing index
+can still serve reads through a healthy queue; reopening determines recoverable
+state. `Device` and `Queue` must refer to the same exclusively owned device, and
+`Device::sync` must persist completed queue writes.
 
-This deliberately keeps cold transitions simple. Each transition incurs sync
-latency and pauses admission; full-device throughput includes this overhead.
-It does not offer an asynchronous rollover latency guarantee. `Device` and
-`Queue` must address the same exclusively owned storage, and `Device::sync`
-must order and persist completed queue writes.
+`rollover`, `rollover_to`, and `seal` require a drained pipeline, otherwise they
+return backpressure. Normal writes attempt rollover when a frame will not fit;
+rejected inputs retain buffer ownership and contents. `OutOfSpace` means no unused
+slot remains. Lifecycle operations pause admission and incur synchronous latency.
 
-## Index, routing, and recovery
+## Indexing, recovery, and verification
 
-The index is a single-owner hash table mapping a full key to its latest LSN,
-record kind, segment route, frame position, ordinal, value range, and metadata
-length. Values stay on storage. A tombstone remains indexed to suppress older
-versions during recovery. Physical scan order cannot override a newer LSN.
-Each route stores its absolute base and allocation header, so a verified read
-uses the original segment identity even after the writer has rolled over.
+Full keys map to their latest LSN, kind, segment route, frame, and value location.
+Tombstones remain indexed so older values cannot reappear. Physical traversal order
+cannot override a higher LSN. The complete index resides in memory; `reserve_index`
+reserves capacity without establishing a memory admission budget. Segment route
+capacity is reserved when opening the device.
 
-All indexed latest versions reside in memory. There is no paged disk index.
-`reserve_index` reserves hash-table capacity but does not impose an admission
-budget. Memory scales with distinct keys and tombstones, not only device bytes;
-a device full of tiny distinct records can exceed available RAM.
+Every slot requires its allocation header and final 4 KiB. Recovery validates
+allocation identity before comparing trailer generations. A valid same-generation
+footer rebuilds the index directly. An older footer is ignored while current
+allocation frames are scanned. A future generation or wrong identity is an error.
+A single-page footer needs no third read; a larger footer uses one exact allocation
+and reads only the prefix preceding the already loaded final page.
 
-Opening scans allocation and seal pages. Valid sealed footers rebuild the index
-without reading payloads. Active allocations and damaged footers use the frame
-scanner with payload CRC validation. Recovery accepts a valid active prefix and
-never appends to its old tail. Subsequent writes allocate an unused slot. This
-can leave unused capacity in recovered tails; exhausting all slots requires a
-future explicit reclamation mechanism, not implicit overwriting.
+A torn trailer falls back to scanning with the immutable allocation header. If a
+valid same-generation trailer accompanies a corrupt complete footer, recovery
+retains the sealed `data_end`; corruption cannot silently downgrade the segment
+to an active tail. Frame scanning verifies full payload CRCs. Active scanning stops
+at incomplete or stale frames. Subsequent writes select a new unused slot instead
+of appending to a recovered active slot.
 
-`read(key, range, verify, buffers)` retains the existing policy: `false` trusts
-the published location and reads requested pages without CRC or metadata I/O;
-`true` validates metadata and intersecting logical checksum blocks. Writes and
-active-tail recovery still compute or validate CRCs.
+`read(..., verify=false, ...)` trusts the index and reads the necessary data pages;
+`verify=true` validates original frame metadata and intersecting logical checksum
+blocks. Footer recovery is not a full payload integrity scan. This change neither
+alters flush durability semantics nor introduces a device commit log.
 
-## Policy boundary and validation
+## Validation scope
 
-Default rollover selects the next unused slot. `rollover_to(number)` permits
-caller-selected unused slots and rejects occupied slots before sealing the
-current one. There is no victim selection, segment recycling, or GC scheduler.
-An upper layer remains responsible for placement and maintenance policy.
-
-Small-file tests cover routing, registered prepared writes, both read policies,
-nonmonotonic slot selection, LSN ordering and tombstones, reopen, full-device
-rejection, pending reads, torn seal/footer recovery, and failure at every format,
-allocation, and sealing I/O boundary. Failure injection and file corruption are
-functional checks; they do not establish behavior of a particular device during
-physical power loss.
+Temporary-file and in-memory-image tests cover header/footer layouts, both
+checksums, page-boundary accounting, exact read sequences, LSN and tombstone
+recovery, stale generations, future-generation rejection, I/O failures, torn tail
+pages, sealed scan boundaries, and crashes that discard writes since the last
+successful sync. Linux io_uring tests exercise registered buffers. Simulated
+failures do not constitute physical power-loss certification.

@@ -18,10 +18,10 @@
 use moat_common::{AlignedBuf, ChunkId, PAGE_SIZE};
 use moat_engine_v2::{
     engine::{self, Device, Engine, Error, FormatOptions, Layout},
-    frame::{FrameBuilder, FrameLimits, PreparedFrame},
+    frame::{FrameBuilder, FrameLimits, FramePosition, PreparedFrame},
     io::{FileQueue, Queue},
     pipeline::{self, Completion, ReadBuffers},
-    segment::SegmentHeader,
+    segment::{FooterTrailer, SegmentHeader},
 };
 use std::{
     cell::{Cell, RefCell},
@@ -41,6 +41,9 @@ struct Disk {
     fail_at: Rc<Cell<usize>>,
     calls: Rc<Cell<usize>>,
     log: Rc<RefCell<Vec<(bool, u64)>>>,
+    reads: Rc<RefCell<Vec<(u64, usize)>>>,
+    fail_read: Rc<Cell<Option<u64>>>,
+    durable: Rc<RefCell<Vec<u8>>>,
 }
 impl Disk {
     fn before(&self, write: bool, offset: u64) -> io::Result<()> {
@@ -57,6 +60,10 @@ impl Disk {
         self.fail_at.set(at);
         self.log.borrow_mut().clear();
     }
+    fn crash(&self) {
+        self.file.write_all_at(&self.durable.borrow(), 0).unwrap();
+        self.file.sync_data().unwrap();
+    }
     fn open(&self) -> engine::Result<Store> {
         Engine::open(self.clone(), FileQueue::new(self.file.try_clone().unwrap(), 4).unwrap())
     }
@@ -66,6 +73,10 @@ impl Device for Disk {
         Ok(self.file.metadata()?.len())
     }
     fn read_at(&self, bytes: &mut [u8], offset: u64) -> io::Result<()> {
+        self.reads.borrow_mut().push((offset, bytes.len()));
+        if self.fail_read.get() == Some(offset) {
+            return Err(io::Error::other("injected read failure"));
+        }
         self.file.read_exact_at(bytes, offset)
     }
     fn write_at(&self, bytes: &[u8], offset: u64) -> io::Result<()> {
@@ -74,7 +85,9 @@ impl Device for Disk {
     }
     fn sync(&self) -> io::Result<()> {
         self.before(false, 0)?;
-        self.file.sync_data()
+        self.file.sync_data()?;
+        self.file.read_exact_at(&mut self.durable.borrow_mut(), 0)?;
+        Ok(())
     }
 }
 fn options(id: u8) -> FormatOptions {
@@ -92,6 +105,12 @@ fn disk(segments: u64) -> Disk {
         fail_at: Rc::new(Cell::new(usize::MAX)),
         calls: Rc::new(Cell::new(0)),
         log: Rc::new(RefCell::new(Vec::new())),
+        reads: Rc::new(RefCell::new(Vec::new())),
+        fail_read: Rc::new(Cell::new(None)),
+        durable: Rc::new(RefCell::new(vec![
+            0;
+            (2 * PAGE_SIZE + segments * STRIDE as u64) as usize
+        ])),
     };
     engine::format(&disk, options(7)).unwrap();
     disk
@@ -269,12 +288,7 @@ fn seal_order_never_overwrites_the_allocation_header() {
     store.seal().unwrap();
     assert_eq!(
         &*disk.log.borrow(),
-        &[
-            (true, base + 2 * PAGE_SIZE),
-            (false, 0),
-            (true, base + STRIDE as u64 - PAGE_SIZE),
-            (false, 0)
-        ]
+        &[(false, 0), (true, base + STRIDE as u64 - PAGE_SIZE), (false, 0)]
     );
     let mut after = vec![0; PAGE];
     disk.read_at(&mut after, base).unwrap();
@@ -283,7 +297,7 @@ fn seal_order_never_overwrites_the_allocation_header() {
 
 #[test]
 fn every_seal_failure_stops_writes_and_preserves_previously_flushed_data() {
-    for failure in 1..=4 {
+    for failure in 1..=3 {
         let disk = disk(3);
         let mut store = disk.open().unwrap();
         put(&mut store, 1, 1, Some(b"durable"));
@@ -313,9 +327,9 @@ fn torn_seal_and_bad_footer_recover_without_rewriting_headers() {
         drop(store);
         let base = layout.segment_base(0).unwrap();
         let offset = if damage == "seal" {
-            base + STRIDE as u64 - PAGE_SIZE + 17
+            base + STRIDE as u64 - 64 + 17
         } else {
-            base + 2 * PAGE_SIZE + 17
+            base + STRIDE as u64 - PAGE_SIZE + 17
         };
         disk.file.write_all_at(&[0xff], offset).unwrap();
         let mut store = disk.open().unwrap();
@@ -331,7 +345,9 @@ fn sealed_damage_remains_an_error_when_footer_fallback_scans_frames() {
     store.seal().unwrap();
     let base = store.layout().segment_base(0).unwrap();
     drop(store);
-    disk.file.write_all_at(&[0xff], base + 2 * PAGE_SIZE + 17).unwrap();
+    disk.file
+        .write_all_at(&[0xff], base + STRIDE as u64 - PAGE_SIZE + 17)
+        .unwrap();
     disk.file.write_all_at(&[0xff], base + PAGE_SIZE + 17).unwrap();
     assert!(matches!(disk.open(), Err(Error::Segment(_))));
 }
@@ -392,7 +408,7 @@ fn fresh_allocation_header_must_be_durable_before_frames_are_submitted() {
 }
 
 #[test]
-fn sealed_header_is_stored_outside_the_logical_segment_extent() {
+fn footer_trailer_is_stored_in_the_final_page_of_the_segment() {
     let disk = disk(1);
     let mut store = disk.open().unwrap();
     put(&mut store, 1, 1, Some(b"x"));
@@ -401,9 +417,10 @@ fn sealed_header_is_stored_outside_the_logical_segment_extent() {
     let base = layout.segment_base(0).unwrap();
     let mut page = vec![0; PAGE];
     disk.read_at(&mut page, base + STRIDE as u64 - PAGE_SIZE).unwrap();
-    let header = SegmentHeader::decode(&page, layout.device_id(), 0, STRIDE - PAGE as u32).unwrap();
+    let header = FooterTrailer::decode(&page, STRIDE).unwrap().header();
     assert!(header.is_sealed());
-    assert!(header.footer_range().unwrap().end <= header.segment_len());
+    assert_eq!(header.footer_range().unwrap().end, STRIDE);
+    assert_eq!(header.data_end(), Some(2 * PAGE as u32));
 }
 
 #[cfg(target_os = "linux")]
@@ -477,4 +494,320 @@ fn interrupted_format_never_commits_partial_allocation_reset() {
             Err(error) => panic!("unexpected recovery error: {error}"),
         }
     }
+}
+
+fn put_batch(store: &mut Store, count: u32) {
+    let mut frame = FrameBuilder::new(store.layout().limits());
+    for n in 0..count {
+        frame.push(key(n as u128), n as u64, b"x").unwrap();
+    }
+    store.write(&frame, AlignedBuf::zeroed(frame.encoded_len())).unwrap();
+    drain(store);
+}
+
+fn repair_header_crc(bytes: &mut [u8]) {
+    let crc = moat_common::Crc32c::new()
+        .update(&bytes[..12])
+        .update(&[0; 4])
+        .update(&bytes[16..])
+        .finalize();
+    bytes[12..16].copy_from_slice(&crc.to_le_bytes());
+}
+
+#[test]
+fn recovery_reads_small_footer_once_and_only_the_prefix_of_large_footer() {
+    for (records, footer_pages) in [(1, 1), (70, 2), (180, 4)] {
+        let disk = disk(1);
+        let mut store = disk.open().unwrap();
+        put_batch(&mut store, records);
+        store.seal().unwrap();
+        let base = store.layout().segment_base(0).unwrap();
+        drop(store);
+        disk.reads.borrow_mut().clear();
+        let mut store = disk.open().unwrap();
+        let mut expected = vec![
+            (0, PAGE),
+            (PAGE_SIZE, PAGE),
+            (base, PAGE),
+            (base + STRIDE as u64 - PAGE_SIZE, PAGE),
+        ];
+        if footer_pages > 1 {
+            expected.push((
+                base + STRIDE as u64 - (footer_pages * PAGE) as u64,
+                (footer_pages - 1) * PAGE,
+            ));
+        }
+        assert_eq!(*disk.reads.borrow(), expected);
+        assert_eq!(store.indexed_versions(), records as usize);
+        for n in 0..records {
+            assert_eq!(get(&mut store, n as u128, 1, true), b"x");
+        }
+    }
+}
+
+#[test]
+fn multipage_seal_persists_prefix_before_committing_the_tail_page() {
+    let disk = disk(1);
+    let mut store = disk.open().unwrap();
+    put_batch(&mut store, 70);
+    let base = store.layout().segment_base(0).unwrap();
+    disk.fail(usize::MAX);
+    store.seal().unwrap();
+    assert_eq!(
+        *disk.log.borrow(),
+        vec![
+            (true, base + STRIDE as u64 - 2 * PAGE_SIZE),
+            (false, 0),
+            (true, base + STRIDE as u64 - PAGE_SIZE),
+            (false, 0),
+        ]
+    );
+}
+
+#[test]
+fn every_multipage_seal_failure_preserves_previously_flushed_records() {
+    for failure in 1..=4 {
+        let disk = disk(1);
+        let mut store = disk.open().unwrap();
+        put_batch(&mut store, 70);
+        store.flush().unwrap();
+        drain(&mut store);
+        disk.fail(failure);
+        assert!(matches!(store.seal(), Err(Error::Io(_))));
+        assert!(matches!(store.rollover(), Err(Error::Failed)));
+        drop(store);
+        disk.fail(usize::MAX);
+        let mut store = disk.open().unwrap();
+        assert_eq!(store.indexed_versions(), 70);
+        assert_eq!(get(&mut store, 69, 1, true), b"x");
+    }
+}
+
+#[test]
+fn older_footer_is_ignored_after_allocation_generation_changes() {
+    let disk = disk(1);
+    let mut store = disk.open().unwrap();
+    put(&mut store, 1, 1, Some(b"old"));
+    put(&mut store, 2, 2, Some(b"stale"));
+    store.seal().unwrap();
+    let layout = store.layout();
+    let base = layout.segment_base(0).unwrap();
+    drop(store);
+    let mut page = vec![0; PAGE];
+    disk.read_at(&mut page, base).unwrap();
+    let old = SegmentHeader::decode(&page, layout.device_id(), 0, STRIDE).unwrap();
+    let new = SegmentHeader::new(
+        moat_engine_v2::segment::SegmentId {
+            sequence: old.id().sequence + 1,
+            ..old.id()
+        },
+        STRIDE,
+    )
+    .unwrap();
+    new.encode_into(&mut page).unwrap();
+    disk.write_at(&page, base).unwrap();
+    disk.sync().unwrap();
+    // Allocation alone must not resurrect either old record.
+    assert_eq!(disk.open().unwrap().indexed_versions(), 0);
+    let mut frame = FrameBuilder::new(layout.limits());
+    frame.push(key(99), 99, b"fresh").unwrap();
+    let mut bytes = AlignedBuf::zeroed(frame.encoded_len());
+    frame
+        .encode_into(
+            FramePosition::new(new.id().sequence, PAGE as u32, STRIDE).unwrap(),
+            &mut bytes,
+        )
+        .unwrap();
+    disk.write_at(&bytes, base + PAGE_SIZE).unwrap();
+    disk.sync().unwrap();
+    let mut store = disk.open().unwrap();
+    assert_eq!(store.indexed_versions(), 1);
+    assert_eq!(get(&mut store, 99, 5, true), b"fresh");
+    assert!(!store.contains(&key(1)));
+    assert!(!store.contains(&key(2)));
+}
+
+#[test]
+fn future_footer_and_wrong_allocation_identity_are_errors() {
+    for field in [16, 32, 40] {
+        let disk = disk(1);
+        let mut store = disk.open().unwrap();
+        put(&mut store, 1, 1, Some(b"x"));
+        store.seal().unwrap();
+        let base = store.layout().segment_base(0).unwrap();
+        drop(store);
+        let at = base + STRIDE as u64 - 64;
+        let mut trailer = vec![0; 64];
+        disk.read_at(&mut trailer, at).unwrap();
+        if field == 40 {
+            let sequence = u64::from_le_bytes(trailer[40..48].try_into().unwrap());
+            trailer[40..48].copy_from_slice(&(sequence + 1).to_le_bytes());
+        } else {
+            trailer[field] ^= 1;
+        }
+        repair_header_crc(&mut trailer);
+        disk.file.write_all_at(&trailer, at).unwrap();
+        assert!(matches!(disk.open(), Err(Error::Corrupt(_))));
+    }
+}
+
+#[test]
+fn valid_footer_cannot_hide_a_corrupt_allocation_header() {
+    let disk = disk(1);
+    let mut store = disk.open().unwrap();
+    put(&mut store, 1, 1, Some(b"x"));
+    store.seal().unwrap();
+    let base = store.layout().segment_base(0).unwrap();
+    drop(store);
+    disk.file.write_all_at(&[0xff], base + 12).unwrap();
+    assert!(matches!(disk.open(), Err(Error::Segment(_))));
+}
+
+#[test]
+fn torn_tail_page_recovers_with_partial_metadata_or_partial_trailer() {
+    for records in [1, 70] {
+        let disk = disk(1);
+        let mut store = disk.open().unwrap();
+        put_batch(&mut store, records);
+        store.flush().unwrap();
+        drain(&mut store);
+        store.seal().unwrap();
+        let at = store.layout().segment_base(0).unwrap() + STRIDE as u64 - PAGE_SIZE;
+        drop(store);
+        let mut tail = vec![0; PAGE];
+        disk.read_at(&mut tail, at).unwrap();
+        let cuts = [
+            0,
+            1,
+            511,
+            512,
+            1024,
+            2048,
+            3584,
+            PAGE - 65,
+            PAGE - 64,
+            PAGE - 63,
+            PAGE - 52,
+            PAGE - 48,
+            PAGE - 4,
+            PAGE - 1,
+            PAGE,
+        ];
+        for cut in cuts {
+            for keep_prefix in [false, true] {
+                let mut torn = tail.clone();
+                if keep_prefix {
+                    torn[cut..].fill(0);
+                } else {
+                    torn[..cut].fill(0);
+                }
+                disk.file.write_all_at(&torn, at).unwrap();
+                let mut reopened = disk.open().unwrap();
+                assert_eq!(
+                    reopened.indexed_versions(),
+                    records as usize,
+                    "cut={cut}, prefix={keep_prefix}"
+                );
+                assert_eq!(get(&mut reopened, (records - 1) as u128, 1, true), b"x");
+            }
+        }
+    }
+}
+
+#[test]
+fn same_generation_bad_footer_keeps_the_committed_frame_boundary() {
+    let disk = disk(1);
+    let mut store = disk.open().unwrap();
+    put_batch(&mut store, 70);
+    store.seal().unwrap();
+    let base = store.layout().segment_base(0).unwrap();
+    drop(store);
+    // Damage the first footer page while retaining the independently valid trailer.
+    disk.file
+        .write_all_at(&[0xff], base + STRIDE as u64 - 2 * PAGE_SIZE)
+        .unwrap();
+    assert_eq!(disk.open().unwrap().indexed_versions(), 70);
+    disk.file.write_all_at(&[0xff], base + PAGE_SIZE + 12).unwrap();
+    assert!(matches!(disk.open(), Err(Error::Segment(_))));
+}
+
+#[test]
+fn recovery_read_errors_are_not_treated_as_missing_footers() {
+    let disk = disk(1);
+    let mut store = disk.open().unwrap();
+    put_batch(&mut store, 70);
+    store.seal().unwrap();
+    let base = store.layout().segment_base(0).unwrap();
+    drop(store);
+    for at in [
+        base,
+        base + STRIDE as u64 - PAGE_SIZE,
+        base + STRIDE as u64 - 2 * PAGE_SIZE,
+    ] {
+        disk.fail_read.set(Some(at));
+        assert!(matches!(disk.open(), Err(Error::Io(_))));
+    }
+}
+
+#[test]
+fn seal_crash_discards_unsynced_writes_without_losing_durable_records() {
+    for (records, operations) in [(1, 3), (70, 4)] {
+        for failure in 1..=operations {
+            let disk = disk(1);
+            let mut store = disk.open().unwrap();
+            put_batch(&mut store, records);
+            disk.sync().unwrap();
+            disk.fail(failure);
+            assert!(matches!(store.seal(), Err(Error::Io(_))));
+            drop(store);
+            disk.crash();
+            disk.fail(usize::MAX);
+            let mut reopened = disk.open().unwrap();
+            assert_eq!(reopened.indexed_versions(), records as usize);
+            assert_eq!(get(&mut reopened, (records - 1) as u128, 1, true), b"x");
+        }
+    }
+}
+
+#[test]
+fn reformat_advances_beyond_recovered_allocation_generations() {
+    let disk = disk(1);
+    let layout = Layout::read(&disk).unwrap();
+    let mut store = disk.open().unwrap();
+    put(&mut store, 1, 1, Some(b"old"));
+    let base = layout.segment_base(0).unwrap();
+    drop(store);
+    let mut page = vec![0; PAGE];
+    disk.read_at(&mut page, base).unwrap();
+    let old = SegmentHeader::decode(&page, layout.device_id(), 0, STRIDE).unwrap();
+    let newer = SegmentHeader::new(
+        moat_engine_v2::segment::SegmentId {
+            sequence: old.id().sequence + 1,
+            ..old.id()
+        },
+        STRIDE,
+    )
+    .unwrap();
+    newer.encode_into(&mut page).unwrap();
+    disk.write_at(&page, base).unwrap();
+    let mut frame = FrameBuilder::new(layout.limits());
+    frame.push(key(2), 2, b"stale").unwrap();
+    let mut bytes = AlignedBuf::zeroed(frame.encoded_len());
+    frame
+        .encode_into(
+            FramePosition::new(newer.id().sequence, 2 * PAGE as u32, STRIDE).unwrap(),
+            &mut bytes,
+        )
+        .unwrap();
+    disk.write_at(&bytes, base + 2 * PAGE_SIZE).unwrap();
+    disk.sync().unwrap();
+    engine::format(&disk, options(8)).unwrap();
+    let mut store = disk.open().unwrap();
+    put(&mut store, 99, 99, Some(b"fresh"));
+    disk.sync().unwrap();
+    drop(store);
+    let mut store = disk.open().unwrap();
+    assert_eq!(store.indexed_versions(), 1);
+    assert_eq!(get(&mut store, 99, 5, true), b"fresh");
+    assert!(!store.contains(&key(2)));
 }

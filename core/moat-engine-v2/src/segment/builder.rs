@@ -15,7 +15,7 @@
 use moat_common::{PAGE_SIZE, is_aligned};
 
 use super::{
-    Error, FOOTER_HEADER_LEN, FOOTER_MAGIC, FORMAT_VERSION, MIN_FRAME_METADATA_LEN, Result, SegmentHeader, footer_len,
+    Error, FOOTER_MAGIC, FOOTER_TRAILER_LEN, FORMAT_VERSION, MIN_FRAME_METADATA_LEN, Result, SegmentHeader, footer_len,
     header::Seal,
 };
 use crate::{
@@ -115,8 +115,9 @@ impl SegmentBuilder {
     /// Encodes the footer and stops further admission, returning the sealed header.
     ///
     /// This only constructs bytes. After successful frame writes, the caller
-    /// writes this footer at `data_end`, persists data and footer, then writes and
-    /// persists the returned header. Never publish a sealed header first.
+    /// places the footer at the segment end. Persist data and preceding footer
+    /// pages before writing and persisting the final page containing the trailer.
+    /// The returned sealed header is an in-memory view, never an allocation write.
     /// A short output buffer leaves both the builder and destination unchanged.
     pub fn seal_into(&mut self, bytes: &mut [u8]) -> Result<SegmentHeader> {
         if self.header.is_sealed() {
@@ -129,17 +130,22 @@ impl SegmentBuilder {
             available,
         })?;
         bytes.fill(0);
-        bytes[..8].copy_from_slice(&FOOTER_MAGIC);
-        put_u32(bytes, 8, FORMAT_VERSION);
-        bytes[16..32].copy_from_slice(&self.header.id.device_id);
-        put_u32(bytes, 32, self.header.id.segment_no);
-        put_u32(bytes, 36, self.data_end);
-        put_u64(bytes, 40, self.header.id.sequence);
-        put_u32(bytes, 48, self.frame_count);
-        put_u32(bytes, 52, self.metadata.len() as u32);
-        put_u32(bytes, 56, len as u32);
-        bytes[FOOTER_HEADER_LEN..FOOTER_HEADER_LEN + self.metadata.len()].copy_from_slice(&self.metadata);
-        put_u32(bytes, 12, crc_with_zeroed_checksum(bytes));
+        bytes[..self.metadata.len()].copy_from_slice(&self.metadata);
+        let at = len - FOOTER_TRAILER_LEN;
+        let trailer = &mut bytes[at..];
+        trailer[..8].copy_from_slice(&FOOTER_MAGIC);
+        put_u32(trailer, 8, FORMAT_VERSION);
+        trailer[16..32].copy_from_slice(&self.header.id.device_id);
+        put_u32(trailer, 32, self.header.id.segment_no);
+        put_u32(trailer, 36, self.data_end);
+        put_u64(trailer, 40, self.header.id.sequence);
+        put_u32(trailer, 48, self.frame_count);
+        put_u32(trailer, 52, self.metadata.len() as u32);
+        put_u32(trailer, 56, len as u32);
+        let checksum = super::footer::checksum(bytes);
+        put_u32(&mut bytes[at..], 60, checksum);
+        let checksum = crc_with_zeroed_checksum(&bytes[at..]);
+        put_u32(&mut bytes[at..], 12, checksum);
         self.header.seal = Some(Seal {
             data_end: self.data_end,
             frame_count: self.frame_count,
