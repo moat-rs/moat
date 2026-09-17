@@ -96,12 +96,12 @@ version = "0.0.0"
 dependencies = [
  "libc",
  "moat-common",
- "moat-engine-v2",
+ "moat-engine",
  "serde_json",
 ]
 
 [[package]]
-name = "moat-engine-v2"
+name = "moat-engine"
 version = "0.0.0"
 dependencies = [
  "io-uring",

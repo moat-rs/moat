@@ -55,7 +55,7 @@ use std::{
 #[cfg(target_os = "linux")]
 use moat_common::{BufferPool, PoolOptions, crc32c};
 #[cfg(target_os = "linux")]
-use moat_engine_v2::io::{Operation, Queue, Request, UringQueue};
+use moat_engine::io::{Operation, Queue, Request, UringQueue};
 #[cfg(target_os = "linux")]
 use moat_server::storage::{Device, FileDevice, QueueOptions};
 #[cfg(target_os = "linux")]

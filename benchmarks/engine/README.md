@@ -1,12 +1,12 @@
 # Engine pipeline benchmark
 
-This standalone workspace measures the sole v2 engine with Linux direct I/O: append writes, multi-segment allocation, recovered indexes, and random reads. The current runner accepts only `v2`; reproduce historical v1/legacy comparisons at the revisions recorded in their reports.
+This standalone workspace measures the moat engine with Linux direct I/O: append writes, multi-segment allocation, recovered indexes, and random reads. The current runner accepts only `moat`; reproduce historical v1/legacy comparisons at the revisions recorded in their reports.
 
 The [2026-09-15 report](../../docs/experiments/engine/2026-09-15/REPORT.md) includes three repetitions,
 fresh fio baselines, numeric samples and independent CPU profiles. That report
 used `--verify true`; use the same flag to reproduce its read policy. Historical
 reports identify their source revision; the current harness adds registered
-buffers to v2 and defaults to `--huge-pages preferred`.
+buffers to the engine and defaults to `--huge-pages preferred`.
 
 The [direct-read follow-up](../../docs/experiments/engine/2026-09-15-direct/REPORT.md) remeasures both
 engines with `--verify false`, adds partial ranges, and separates user/system CPU
@@ -93,7 +93,7 @@ and never creates or truncates a file. Direct I/O must be supported.
 ```sh
 truncate -s 4G /path/to/new-disposable.img
 target/engine-compare/x86_64-unknown-linux-gnu/release/moat-engine-compare \
-  /path/to/new-disposable.img v2 mixed 64 1 1,64 --overwrite-first-4g --verify false
+  /path/to/new-disposable.img moat mixed 64 1 1,64 --overwrite-first-4g --verify false
 ```
 
 ## Matched workload
@@ -108,7 +108,7 @@ target/engine-compare/x86_64-unknown-linux-gnu/release/moat-engine-compare \
   through 100 B, 4 KiB, 64 KiB and 300 B in that order, at equal record counts.
 - Writes generate consecutive distinct keys. Groups contain 64 records for
   small/mixed workloads and 16 for uniform large workloads. The driver polls
-  after each group and reap on backpressure. V2 puts a small/mixed group in one
+  after each group and reap on backpressure. Moat puts a small/mixed group in one
   frame; uniform large values use a prepared frame each.
 - The write interval includes copying values, computing CRCs, index publication,
   completion processing and the final durable flush. No precomputed checksums
@@ -131,7 +131,7 @@ target/engine-compare/x86_64-unknown-linux-gnu/release/moat-engine-compare \
   Use `--sizes` on the runner to select values large enough to contain it, for
   example `--sizes 65536 4194304 --range 4096:8192`. Range reads use concurrency
   1 and 64. Keep different range/mode runs in separate output directories.
-- The runner defaults to three fresh write/read repetitions using v2. Read selection
+- The runner defaults to three fresh write/read repetitions using moat. Read selection
   uses the same fixed random seed. Latency samples cover one request in 16,
   from read admission through delivery to the common verification callback.
 
@@ -163,7 +163,7 @@ If a pool mapping merges with unrelated memory, these observations are `null`
 rather than attributing unrelated huge pages to the pool. `Transparent` alone
 means a successful hint, not guaranteed promotion.
 
-V2 uses an owner-local hash index. Bounded-dataset runs include index growth, frame construction, and completion metadata allocation in write timing; full-device runs reserve index capacity before timing. Historical v1 comparisons remain in the experiment archive, and the current runner contains no legacy implementation.
+Moat uses an owner-local hash index. Bounded-dataset runs include index growth, frame construction, and completion metadata allocation in write timing; full-device runs reserve index capacity before timing. Historical v1 comparisons remain in the experiment archive, and the current runner contains no legacy implementation.
 
 The bounded data window is small and repeatedly accessed. Direct I/O bypasses the OS
 page cache but does not eliminate device-side caching or prove cold-media

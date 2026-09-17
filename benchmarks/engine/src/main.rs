@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Destructive benchmark of the v2 device engine.
+//! Destructive benchmark of the moat device engine.
 
 mod memory;
 mod unified;
@@ -53,13 +53,13 @@ impl Config {
         let args: Vec<_> = std::env::args().collect();
         assert!(
             args.len() >= 8 && (args.len() - 8).is_multiple_of(2),
-            "usage: moat-engine-compare PATH v2 SIZE|mixed PAYLOAD_MIB SECONDS QDS --overwrite-first-4g|--overwrite-entire-device [--verify true|false] [--range full|START:END] [--huge-pages disabled|preferred|required]"
+            "usage: moat-engine-compare PATH moat SIZE|mixed PAYLOAD_MIB SECONDS QDS --overwrite-first-4g|--overwrite-entire-device [--verify true|false] [--range full|START:END] [--huge-pages disabled|preferred|required]"
         );
         assert!(matches!(
             args[7].as_str(),
             "--overwrite-first-4g" | "--overwrite-entire-device"
         ));
-        assert_eq!(args[2], "v2", "only the v2 engine is supported");
+        assert_eq!(args[2], "moat", "only the moat engine is supported");
         let path = fs::canonicalize(&args[1]).unwrap();
         let stat = PathBuf::from("/sys/class/block")
             .join(path.file_name().unwrap())

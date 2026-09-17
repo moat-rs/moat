@@ -1,6 +1,6 @@
 # Segments, footer trailers, and recovery
 
-The current implementation is in `moat-engine-v2`. Device, segment, and frame
+The current implementation is in `moat-engine`. Device, segment, and frame
 format versions are all **1**. This alpha format does not read or migrate earlier
 alpha layouts. See [device lifecycle](engine-device-lifecycle.md) for allocation
 and formatting rules.

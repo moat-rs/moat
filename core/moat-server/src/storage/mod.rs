@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Transitional application boundary over the v2 engine.
+//! Transitional application boundary over the engine.
 //!
 //! Disk handles contain configuration and an ownership lease, never a shared
 //! engine. A Session owns one engine, index, queue and pool on its caller thread.
-//! All persistence and recovery use v2; there is no legacy-format reader or GC.
+//! All persistence and recovery use the engine; there is no legacy-format reader or GC.
 
 mod device;
 mod queue;
@@ -31,19 +31,19 @@ use std::{
 
 pub use device::{Device, FileDevice, MemDevice};
 use moat_common::{BufferPool, ChunkId, PoolOptions, PooledBuf};
-use moat_engine_v2::{
+use moat_engine::{
     engine,
     frame::{FrameBuilder, PreparedFrame},
     pipeline::{self, ReadBuffers, Ticket},
 };
-pub use moat_engine_v2::{
+pub use moat_engine::{
     engine::{FormatOptions, Layout},
     frame::FrameLimits,
     pipeline::{Completion, ReadRange},
 };
 pub use queue::QueueBackend;
 
-/// Application storage failures, preserving the typed v2 cause.
+/// Application storage failures, preserving the typed engine cause.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// No buffer or queue slot is available, or another session owns the disk.
@@ -58,7 +58,7 @@ pub enum Error {
     /// Cold I/O or queue initialization failed.
     #[error(transparent)]
     Io(#[from] std::io::Error),
-    /// The v2 engine failed.
+    /// The engine failed.
     #[error(transparent)]
     Engine(#[from] engine::Error),
 }
@@ -67,8 +67,8 @@ impl From<pipeline::Error> for Error {
         Self::Engine(error.into())
     }
 }
-impl From<moat_engine_v2::frame::Error> for Error {
-    fn from(error: moat_engine_v2::frame::Error) -> Self {
+impl From<moat_engine::frame::Error> for Error {
+    fn from(error: moat_engine::frame::Error) -> Self {
         Self::Engine(engine::Error::Pipeline(error.into()))
     }
 }
@@ -134,7 +134,7 @@ impl std::fmt::Debug for Disk {
     }
 }
 impl Disk {
-    /// Reads v2 geometry; index recovery runs on the eventual owner thread.
+    /// Reads engine geometry; index recovery runs on the eventual owner thread.
     pub fn open(device: Arc<dyn Device>, options: Options) -> Result<Self> {
         if options.index_capacity == 0 {
             return Err(Error::Invalid("index capacity must be nonzero"));
@@ -172,7 +172,7 @@ impl Disk {
         Ok(frame.saturating_mul(2).saturating_add(3 * moat_common::PAGE_SIZE))
     }
 }
-/// Formats only in v2 encoding. The identity must be fresh and nonzero.
+/// Formats only in the engine encoding. The identity must be fresh and nonzero.
 pub fn format(device: &dyn Device, options: &FormatOptions) -> Result<()> {
     engine::format(&queue::DeviceRef(device), *options)?;
     Ok(())
@@ -196,7 +196,7 @@ pub struct Session {
     _owner: std::marker::PhantomData<std::rc::Rc<()>>,
 }
 impl Session {
-    /// Acquires ownership, initializes buffers and recovers the v2 index.
+    /// Acquires ownership, initializes buffers and recovers the engine index.
     pub fn open(disk: Disk, options: &QueueOptions, backend: QueueBackend) -> Result<Self> {
         disk.0
             .owned
@@ -256,7 +256,7 @@ impl Session {
     pub fn in_flight(&self) -> usize {
         self.engine.in_flight()
     }
-    /// Drives the owner's queue, preserving native v2 completions and buffers.
+    /// Drives the owner's queue, preserving native completions and buffers.
     pub fn poll(&mut self, wait: bool, out: &mut Vec<Completion>) -> Result<usize> {
         let result = self.engine.poll(wait, out).map_err(Error::from);
         self.publish_usage();
@@ -346,7 +346,7 @@ pub fn read_buffer(buffers: ReadBuffers, range: ReadRange) -> (PooledBuf, Range<
         ReadRange::Value(range) => (buffers.value, range),
         ReadRange::Metadata(range) => (buffers.metadata.expect("verified metadata"), range),
     };
-    let moat_engine_v2::io::Buffer::Pooled(buffer) = buffer else {
+    let moat_engine::io::Buffer::Pooled(buffer) = buffer else {
         unreachable!("Session only submits pooled buffers")
     };
     (buffer, range)

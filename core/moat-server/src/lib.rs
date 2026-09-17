@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Disk discovery, placement and exclusive v2 engine owner threads.
+//! Disk discovery, placement and exclusive engine owner threads.
 //! Each worker owns its assigned devices and their individual queues.
 
 pub mod disk;

@@ -15,7 +15,7 @@
 use std::{fs::OpenOptions, io, ops::Range, os::unix::fs::OpenOptionsExt, sync::Arc};
 
 use moat_common::{BufferPool, PAGE_SIZE, align_up};
-use moat_engine_v2::{
+use moat_engine::{
     engine::{self, Device, Engine, Error, FormatOptions},
     frame::{FrameBuilder, FrameLimits, PreparedFrame},
     io::{Buffer, UringQueue},

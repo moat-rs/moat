@@ -84,7 +84,7 @@ pub struct DiskInfo {
     pub segment_size: u64,
     /// Maximum encoded chunk size in bytes.
     pub chunk_max: u32,
-    /// Default upper-layer live-entry limit; not a hard bound on v2 index memory.
+    /// Default upper-layer live-entry limit; not a hard bound on engine index memory.
     pub index_entries: usize,
 }
 
@@ -176,7 +176,7 @@ impl Store {
         Arc::strong_count(&self.inner) == 1
     }
 
-    /// Acquires each disk's exclusive v2 session and starts its worker. Returns the
+    /// Acquires each disk's exclusive session and starts its worker. Returns the
     /// recovered live inventory before any adapter request is admitted.
     ///
     /// The caller owns formatting and passes disk handles. Recovery and pool
@@ -391,7 +391,7 @@ impl Store {
             permit: Some(permit),
         })
     }
-    /// v2 is append-only: physical reclamation is explicitly unsupported.
+    /// The engine is append-only: physical reclamation is explicitly unsupported.
     pub fn reclaim(&self, disk: usize) -> Request<()> {
         let Some(gate) = self.inner.admission.get(disk) else {
             return Request::ready(Err(Error::Invalid("disk index out of bounds")));

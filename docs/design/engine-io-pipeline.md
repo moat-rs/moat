@@ -1,6 +1,6 @@
 # Single-owner segment I/O pipeline
 
-Status: implemented in `moat-engine-v2`. This stage connects frame construction,
+Status: implemented in `moat-engine`. This stage connects frame construction,
 segment admission, real file I/O, an in-memory index, optional read verification, ordered
 write completion, and flush. It does not yet implement a complete device engine.
 Measured comparisons and their limits are maintained in the
@@ -57,7 +57,7 @@ Huge-page policy is configured through the shared `PoolOptions`, independently
 of frame geometry and CRC policy. The queue retains the registered pool until
 after the ring closes. Completion moves the buffer back without copying payload
 bytes or cloning its pool owner. Arena allocation and pool accounting reuse
-`moat-common`; v2 does not depend on the legacy engine. `Preferred` permits THP
+`moat-common`; the engine does not depend on the legacy engine. `Preferred` permits THP
 or ordinary-page fallback, while `Required` fails without explicit huge pages.
 An arena's `Transparent` backing indicates a hint, not guaranteed promotion.
 

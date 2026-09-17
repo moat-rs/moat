@@ -49,8 +49,8 @@ impl From<moat_server::storage::Error> for Error {
         Self::Engine(Arc::new(error))
     }
 }
-impl From<moat_engine_v2::pipeline::Error> for Error {
-    fn from(error: moat_engine_v2::pipeline::Error) -> Self {
+impl From<moat_engine::pipeline::Error> for Error {
+    fn from(error: moat_engine::pipeline::Error) -> Self {
         moat_server::storage::Error::from(error).into()
     }
 }

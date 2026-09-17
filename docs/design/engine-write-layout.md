@@ -1,6 +1,6 @@
 # Engine write layout: open inline pages and unified value extents
 
-> Historical design: the v1 implementation has been removed. This document preserves the original design and milestones; shared readers/writers, legacy formats, GC, and implementation status described here do not represent the current code. See the [v2 migration guide](v2-migration.md) for current constraints.
+> Historical design: the v1 implementation has been removed. This document preserves the original design and milestones; shared readers/writers, legacy formats, GC, and implementation status described here do not represent the current code. See the [engine migration guide](engine-migration.md) for current constraints.
 
 Status: earlier proposal and executable recovery model. The
 [unified immutable Frame proposal](engine-frame-layout.md) supersedes this

@@ -15,7 +15,7 @@
 //! Persistent format, mixed placement, and hostile-input validation.
 
 use moat_common::{AlignedBuf, CHECKSUM_BLOCK_SIZE, ChunkId, Crc32c, crc32c};
-use moat_engine_v2::frame::{
+use moat_engine::frame::{
     DESCRIPTOR_LEN, Error, FORMAT_VERSION, Frame, FrameBuilder, FrameHeader, FrameLimits, FramePosition, HEADER_LEN,
     MAGIC, Metadata, PreparedFrame, RecordKind,
 };

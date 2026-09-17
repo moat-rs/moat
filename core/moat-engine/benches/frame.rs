@@ -20,7 +20,7 @@ use std::{
 };
 
 use moat_common::{AlignedBuf, ChunkId};
-use moat_engine_v2::frame::{Frame, FrameBuilder, FrameLimits, FramePosition, PreparedFrame};
+use moat_engine::frame::{Frame, FrameBuilder, FrameLimits, FramePosition, PreparedFrame};
 
 fn measure(name: &str, payload_len: usize, mut operation: impl FnMut()) {
     let start = Instant::now();

@@ -24,7 +24,7 @@ use std::{
 };
 
 use moat_common::{AlignedBuf, ChunkId, PAGE_SIZE};
-use moat_engine_v2::{
+use moat_engine::{
     engine::{self, Device, Engine, Error, FormatOptions, Layout},
     frame::{FrameBuilder, FrameLimits, FramePosition, PreparedFrame},
     io::{FileQueue, Queue},
@@ -428,7 +428,7 @@ fn footer_trailer_is_stored_in_the_final_page_of_the_segment() {
 #[test]
 fn registered_prepared_io_rolls_over_and_reopens_with_both_read_policies() {
     use moat_common::{BufferPool, HugePages, PoolOptions};
-    use moat_engine_v2::io::UringQueue;
+    use moat_engine::io::UringQueue;
 
     let disk = disk(4);
     let pool = BufferPool::new(PoolOptions {
@@ -440,7 +440,7 @@ fn registered_prepared_io_rolls_over_and_reopens_with_both_read_policies() {
     let queue = UringQueue::with_pool(disk.file.try_clone().unwrap(), 4, pool.clone()).unwrap();
     let mut store = Engine::open(disk.clone(), queue).unwrap();
     let limits = store.layout().limits();
-    let mut buffer: moat_engine_v2::io::Buffer = pool
+    let mut buffer: moat_engine::io::Buffer = pool
         .alloc(PreparedFrame::required_len(limits, 4096).unwrap())
         .unwrap()
         .into();
@@ -598,7 +598,7 @@ fn older_footer_is_ignored_after_allocation_generation_changes() {
     disk.read_at(&mut page, base).unwrap();
     let old = SegmentHeader::decode(&page, layout.device_id(), 0, STRIDE).unwrap();
     let new = SegmentHeader::new(
-        moat_engine_v2::segment::SegmentId {
+        moat_engine::segment::SegmentId {
             sequence: old.id().sequence + 1,
             ..old.id()
         },
@@ -782,7 +782,7 @@ fn reformat_advances_beyond_recovered_allocation_generations() {
     disk.read_at(&mut page, base).unwrap();
     let old = SegmentHeader::decode(&page, layout.device_id(), 0, STRIDE).unwrap();
     let newer = SegmentHeader::new(
-        moat_engine_v2::segment::SegmentId {
+        moat_engine::segment::SegmentId {
             sequence: old.id().sequence + 1,
             ..old.id()
         },

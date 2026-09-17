@@ -5,8 +5,8 @@
 | Path | Contents |
 |---|---|
 | `core/moat-common` | Identifiers, checksums, memory alignment, and buffer pools |
-| `core/moat-engine-v2` | Sole frame engine, owner-driven I/O, allocation, and recovery |
-| `core/moat-server` | Device discovery, routing, v2 session adaptation, and exclusive workers |
+| `core/moat-engine` | Sole frame engine, owner-driven I/O, allocation, and recovery |
+| `core/moat-server` | Device discovery, routing, session adaptation, and exclusive workers |
 | `core/moat-cache-memory` | Resident cache and eviction policies |
 | `core/moat-cache-store` | Async engine adapter, request budgets, and read coalescing |
 | `core/moat-cache` | Memory and disk cache coordination, key identity, and data views |
@@ -23,15 +23,15 @@ and run instructions; they are not included in the root workspace tests.
 
 ## Reading the storage engine
 
-Start with the [v2 guide](../core/moat-engine-v2/README.md) and [migration boundaries](design/v2-migration.md):
+Start with the [engine guide](../core/moat-engine/README.md) and [migration boundaries](design/engine-migration.md):
 
-1. [Frame codecs](../core/moat-engine-v2/src/frame/mod.rs) and the [segment format](design/engine-segment-format.md).
-2. [Pipeline](../core/moat-engine-v2/src/pipeline/mod.rs): requests, buffer ownership, and completion ordering.
-3. [Device engine](../core/moat-engine-v2/src/engine/mod.rs): geometry, recovery, segment routing, and rollover.
+1. [Frame codecs](../core/moat-engine/src/frame/mod.rs) and the [segment format](design/engine-segment-format.md).
+2. [Pipeline](../core/moat-engine/src/pipeline/mod.rs): requests, buffer ownership, and completion ordering.
+3. [Device engine](../core/moat-engine/src/engine/mod.rs): geometry, recovery, segment routing, and rollover.
 4. [Application adapter](../core/moat-server/src/storage/mod.rs): exclusive leases, queues/pools, LSNs, and request conversion.
 5. [Cache-store worker](../core/moat-cache-store/src/worker.rs): per-key ordering, read coalescing, fences, and shutdown.
 
-The v1 designs and experiments explain historical decisions. V2 and the migration guide define the current format and interfaces.
+The v1 designs and experiments explain historical decisions. The engine and the migration guide define the current format and interfaces.
 
 ## Design documents
 
@@ -39,7 +39,7 @@ The v1 designs and experiments explain historical decisions. V2 and the migratio
 |---|---|
 | [Chunkserver design](design/chunkserver.md) | Overall architecture and goals |
 | [Chunkserver audit](design/chunkserver-audit.md) | Design review and constraints |
-| [V2 migration guide](design/v2-migration.md) | Current interfaces, transition boundaries, missing capabilities, and rebuild priorities |
+| [Engine migration guide](design/engine-migration.md) | Current interfaces, transition boundaries, missing capabilities, and rebuild priorities |
 | [Historical engine API](design/engine-api.md) | Removed v1 shared-queue design |
 | [Unified Frame layout proposal](design/engine-frame-layout.md) | Immutable frames, mixed-value placement, read/write paths, recovery, and tradeoffs |
 | [Earlier engine write layout proposal](design/engine-write-layout.md) | Open inline pages, unified value extents, and a recovery validation model |

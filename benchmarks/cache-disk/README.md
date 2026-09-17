@@ -1,7 +1,7 @@
 Disk cache comparison
 =====================
 
-This standalone workspace compares engine v2 and foyer pinned to
+This standalone workspace compares moat and foyer pinned to
 [`dd46245c45071d1036331e4e2c48e15386017b96`](https://github.com/foyer-rs/foyer/tree/dd46245c45071d1036331e4e2c48e15386017b96).
 Foyer dependencies are confined to the comparison workspace.
 
@@ -10,14 +10,14 @@ records the native engine after migration, with all samples and comparison limit
 
 The common workload driver uses a synchronous `Backend` interface: submit
 writes or reads, poll completions, drain a write batch, and close. It runs one
-persistent caller thread per device. For v2, request generation, engine calls,
+persistent caller thread per device. For moat, request generation, engine calls,
 read validation, and buffer recycling all happen on that thread. Its phase
 commands cross threads only when starting or finishing a benchmark phase.
 
-`engine: "v2"` **does not create or enter a Tokio runtime**.
+`engine: "moat"` **does not create or enter a Tokio runtime**.
 It uses registered io_uring buffers and returns pooled read buffers without
 copying into new value vectors. No request tasks, oneshots, completion drivers,
-or per-record channels surround the engine. The v2 crate remains independent
+or per-record channels surround the engine. The engine crate remains independent
 of Tokio; this comparison executable links Tokio for foyer only.
 
 The foyer adapter is the sole runtime boundary. It creates a shared Tokio
@@ -46,7 +46,7 @@ encoding, checksums, I/O, and the final device sync are timed. Keys and routing
 are prepared outside timing. Small engine values use a contiguous key/value
 envelope; large prepared writes copy the separately owned key and value directly
 into the registered buffer. Generation and encoding are bounded to 64 records
-or about 4 MiB between polls (one record can exceed the byte budget). V2 retains
+or about 4 MiB between polls (one record can exceed the byte budget). Moat retains
 rejected prepared buffers across backpressure. Every inserted key is read and
 checked before timed random reads.
 
@@ -59,7 +59,7 @@ initialization instead. This reserves no bytes and changes no foyer data-path co
 Engine reads use `moat_verify_reads` (default false); all writes retain checksums.
 These integrity and ownership semantics differ and are reported explicitly.
 
-`engine_segment_bytes` defaults to 2 GiB for v2; foyer retains 16-MiB blocks.
+`engine_segment_bytes` defaults to 2 GiB for moat; foyer retains 16-MiB blocks.
 `moat_huge_pages: true` requests preferred huge pages for engine pools.
 Foyer's configured pool budget covers flush buffers and excludes its separate
 read allocations, so equal pool settings are not equal total-memory limits.

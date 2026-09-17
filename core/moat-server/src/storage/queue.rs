@@ -15,7 +15,7 @@
 use std::{collections::VecDeque, io, sync::Arc};
 
 use moat_common::BufferPool;
-use moat_engine_v2::{
+use moat_engine::{
     engine,
     io::{Completion, Operation, Queue, Request},
 };
@@ -110,7 +110,7 @@ impl Queue for SyncQueue {
 pub(super) enum DeviceQueue {
     Sync(SyncQueue),
     #[cfg(target_os = "linux")]
-    Uring(Box<moat_engine_v2::io::UringQueue>),
+    Uring(Box<moat_engine::io::UringQueue>),
 }
 impl DeviceQueue {
     pub fn new(
@@ -143,7 +143,7 @@ impl DeviceQueue {
                 )
             })?;
             let file = std::fs::File::from(fd.try_clone_to_owned()?);
-            Ok(Self::Uring(Box::new(moat_engine_v2::io::UringQueue::with_pool(
+            Ok(Self::Uring(Box::new(moat_engine::io::UringQueue::with_pool(
                 file, depth, _pool,
             )?)))
         }

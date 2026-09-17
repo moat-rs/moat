@@ -23,7 +23,7 @@ use std::{
 };
 
 use moat_common::{AlignedBuf, BufferPool, HugePages, PAGE_SIZE, PoolOptions};
-use moat_engine_v2::io::{Buffer, Completion, Operation, Queue, Request, UringQueue};
+use moat_engine::io::{Buffer, Completion, Operation, Queue, Request, UringQueue};
 
 const PAGE: usize = PAGE_SIZE as usize;
 

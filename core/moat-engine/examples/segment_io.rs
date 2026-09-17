@@ -19,7 +19,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     use std::{fs::OpenOptions, os::unix::fs::FileExt};
 
     use moat_common::{AlignedBuf, ChunkId, PAGE_SIZE};
-    use moat_engine_v2::{
+    use moat_engine::{
         frame::{FrameBuilder, FrameHeader, FrameLimits},
         io::FileQueue,
         pipeline::{Completion, Pipeline, ReadBuffers},
