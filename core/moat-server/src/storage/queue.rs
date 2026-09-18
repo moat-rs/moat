@@ -70,6 +70,9 @@ pub(super) struct SyncQueue {
     completed: VecDeque<Completion>,
 }
 impl Queue for SyncQueue {
+    fn has_ready(&self) -> bool {
+        !self.completed.is_empty()
+    }
     fn depth(&self) -> usize {
         self.depth
     }
@@ -166,6 +169,13 @@ impl DeviceQueue {
     }
 }
 impl Queue for DeviceQueue {
+    fn has_ready(&self) -> bool {
+        self.queue().has_ready()
+    }
+    #[cfg(unix)]
+    fn notification_fd(&self) -> Option<std::os::fd::BorrowedFd<'_>> {
+        self.queue().notification_fd()
+    }
     fn depth(&self) -> usize {
         self.queue().depth()
     }

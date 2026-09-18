@@ -25,6 +25,15 @@ pub enum Error {
     /// Retry after polling completions; no work was accepted.
     #[error("pipeline is full or a flush is pending")]
     Backpressure,
+    /// Seal the active segment before accepting more footer metadata.
+    #[error("active segment metadata budget exhausted")]
+    MetadataFull,
+    /// A configured resource bound would be exceeded before admission.
+    #[error("engine resource limit exceeded: {0}")]
+    ResourceLimit(&'static str),
+    /// Memory reservation failed before admitting an operation.
+    #[error("metadata allocation failed: {0}")]
+    Allocation(#[from] std::collections::TryReserveError),
     /// A recovered pipeline cannot write into its old allocation.
     #[error("pipeline is read-only")]
     ReadOnly,

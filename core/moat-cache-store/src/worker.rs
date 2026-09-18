@@ -261,6 +261,18 @@ impl Worker {
             let mut completions = std::mem::take(&mut self.completions);
             for completion in completions.drain(..) {
                 match completion {
+                    Completion::Failed { ticket, error } => {
+                        let error = Error::from(storage::Error::Engine(moat_engine::engine::Error::Aborted(error)));
+                        self.write_error.get_or_insert(error.clone());
+                        if let Some(id) = self.reads.remove(&ticket.number()) {
+                            self.complete(id).fail(error);
+                        } else if let Some((id, _)) = self.writes.remove(&ticket.number()) {
+                            self.complete(id).fail(error);
+                        } else {
+                            assert_eq!(self.fence.as_ref().and_then(|f| f.ticket), Some(ticket.number()));
+                            self.finish_fence(Err(error))?;
+                        }
+                    }
                     Completion::Read {
                         ticket,
                         result,
@@ -517,6 +529,7 @@ mod tests {
         storage::format(
             &*device,
             &FormatOptions {
+                sync_mode: Default::default(),
                 device_id: [41; 16],
                 segment_size: 1 << 20,
                 limits: FrameLimits::new(128 << 10, 64 << 10).unwrap(),
@@ -540,10 +553,18 @@ mod tests {
         let counters = Arc::new(Counters::default());
         let (sender, receiver) = mpsc::channel();
         let mut worker = Worker::new(0, disk, options, receiver, counters.clone()).unwrap();
-        for n in [1, 2] {
-            worker.session.write(ChunkId::from_u128(n), Some(&[n as u8])).unwrap();
-        }
         let mut out = Vec::new();
+        for n in [1, 2] {
+            loop {
+                match worker.session.write(ChunkId::from_u128(n), Some(&[n as u8])) {
+                    Ok(_) => break,
+                    Err(storage::Error::Busy) => {
+                        worker.session.poll(false, &mut out).unwrap();
+                    }
+                    Err(error) => panic!("{error}"),
+                }
+            }
+        }
         while worker.session.in_flight() != 0 {
             worker.session.poll(true, &mut out).unwrap();
         }

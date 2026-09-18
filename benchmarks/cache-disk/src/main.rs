@@ -62,6 +62,10 @@ struct Config {
     moat_verify_reads: bool,
     #[serde(default)]
     moat_huge_pages: bool,
+    #[serde(default = "enabled")]
+    moat_sync: bool,
+    #[serde(default = "enabled")]
+    moat_input_pool: bool,
     #[serde(default = "engine_segment_bytes")]
     engine_segment_bytes: u64,
     #[serde(default = "prefill_batch")]
@@ -87,6 +91,8 @@ impl Config {
             "pool_bytes_per_disk": self.pool_bytes_per_disk,
             "moat_verify_reads": self.moat_verify_reads,
             "moat_huge_pages": self.moat_huge_pages,
+            "moat_sync": self.moat_sync,
+            "moat_input_pool": self.moat_input_pool,
             "engine_segment_bytes": self.engine_segment_bytes,
             "prefill_batch": self.prefill_batch,
         })
@@ -272,4 +278,8 @@ fn engine_segment_bytes() -> u64 {
 }
 fn prefill_batch() -> usize {
     256
+}
+
+fn enabled() -> bool {
+    true
 }

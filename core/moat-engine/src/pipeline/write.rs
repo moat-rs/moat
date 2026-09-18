@@ -32,7 +32,14 @@ impl<Q: Queue> Pipeline<Q> {
         frame: &FrameBuilder<'_>,
         buffer: impl Into<Buffer>,
     ) -> std::result::Result<Ticket, Rejected<Buffer>> {
-        self.submit_frame(buffer.into(), |segment, _, buffer| {
+        let buffer = buffer.into();
+        if frame.encoded_len() > self.resources.frame_bytes {
+            return Err(Rejected {
+                error: super::Error::ResourceLimit("frame bytes"),
+                input: buffer,
+            });
+        }
+        self.submit_frame(buffer, |segment, _, buffer| {
             let position = segment.position(frame.encoded_len(), frame.metadata_len())?;
             frame.encode_into(position, buffer)?;
             Ok(position)
@@ -52,10 +59,25 @@ impl<Q: Queue> Pipeline<Q> {
         value_len: u32,
         buffer: impl Into<Buffer>,
     ) -> std::result::Result<Ticket, Rejected<Buffer>> {
-        self.submit_frame(buffer.into(), |segment, limits, buffer| {
-            let len = PreparedFrame::required_len(limits, value_len)?;
+        let buffer = buffer.into();
+        let required = match PreparedFrame::required_len(self.limits, value_len) {
+            Ok(len) => len,
+            Err(error) => {
+                return Err(Rejected {
+                    error: error.into(),
+                    input: buffer,
+                });
+            }
+        };
+        if required > self.resources.frame_bytes {
+            return Err(Rejected {
+                error: super::Error::ResourceLimit("frame bytes"),
+                input: buffer,
+            });
+        }
+        self.submit_frame(buffer, |segment, limits, buffer| {
             let frame = PreparedFrame::new(limits, value_len, buffer)?;
-            let position = segment.position(len, frame.metadata_len())?;
+            let position = segment.position(required, frame.metadata_len())?;
             frame.finish(position, key, lsn)?;
             Ok(position)
         })
@@ -72,12 +94,29 @@ impl<Q: Queue> Pipeline<Q> {
             let position = encode(segment, this.limits, buffer)?;
             let metadata = Metadata::decode(buffer, this.limits, position)?;
             let len = metadata.header().frame_len();
-            let entries = index::entries(metadata, this.current as u32).collect();
-            segment.append(metadata)?;
+            let count = metadata.header().record_count() as usize;
+            if count > this.resources.pending_records {
+                return Err(super::Error::ResourceLimit("single frame pending record metadata"));
+            }
+            if this.pending_entries.saturating_add(count) > this.resources.pending_records {
+                return Err(super::Error::Backpressure);
+            }
+            if metadata.as_bytes().len() > this.resources.metadata_bytes {
+                return Err(super::Error::ResourceLimit("single frame footer metadata"));
+            }
+            if segment.metadata_len().saturating_add(metadata.as_bytes().len()) > this.resources.metadata_bytes {
+                return Err(super::Error::MetadataFull);
+            }
+            let mut entries = Vec::new();
+            entries.try_reserve_exact(count)?;
+            entries.extend(index::entries(metadata, this.current as u32));
+            let reserved_new = this.reserve_entries(&entries)?;
+            this.segment.as_mut().expect("active segment").append(metadata)?;
             Ok((
                 Write {
                     ticket,
                     entries,
+                    reserved_new,
                     completed: None,
                 },
                 this.extents[this.current].base + position.offset() as u64,
@@ -89,6 +128,8 @@ impl<Q: Queue> Pipeline<Q> {
             Err(error) => return Err(Rejected { error, input: buffer }),
         };
         let ticket = write.ticket;
+        self.pending_entries += write.entries.len();
+        self.pending_new += write.reserved_new;
         let slot = self.take_slot(Pending::Write(write));
         self.writes.push_back(slot);
         self.submit(slot, Operation::Write, offset, len, Some(buffer));

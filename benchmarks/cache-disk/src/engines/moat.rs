@@ -17,10 +17,10 @@ use crate::Config;
 use anyhow::Result;
 use moat_common::{BufferPool, HugePages, PoolOptions};
 use moat_engine::{
-    engine::{self, Device, Engine, Error},
+    engine::{self, Completion, Device, Engine, Error},
     frame::{FrameBuilder, FrameLimits, PreparedFrame},
     io::{Buffer, UringQueue},
-    pipeline::{self, Completion, ReadBuffers},
+    pipeline::{self, ReadBuffers},
 };
 use std::{
     collections::VecDeque,
@@ -76,9 +76,15 @@ impl Moat {
             bytes: c.bytes_per_disk,
         };
         let limits = FrameLimits::new(8 << 20, (4 << 20) + 4096)?;
+        let sync_mode = if c.moat_sync {
+            engine::SyncMode::Enabled
+        } else {
+            engine::SyncMode::Disabled
+        };
         engine::format(
             &device,
             engine::FormatOptions {
+                sync_mode,
                 device_id: crate::fresh_identity()?,
                 segment_size: c.engine_segment_bytes as u32,
                 limits,
@@ -94,7 +100,12 @@ impl Moat {
             },
         })?;
         let queue = UringQueue::with_pool(file, 256, pool.clone())?;
-        let mut engine = Engine::open(device, queue)?;
+        let mut options = engine::Options {
+            sync_mode,
+            ..Default::default()
+        };
+        options.resources.index_entries = options.resources.index_entries.max(c.records_per_disk * 2);
+        let mut engine = Engine::open_blocking_with_options(device, queue, options)?;
         engine.reserve_index(c.records_per_disk * 2)?;
         Ok(Self {
             engine,
@@ -196,11 +207,13 @@ impl Backend for Moat {
                     result.map(|range| Data::Moat { buffers, range }).map_err(Into::into),
                 ),
                 Completion::Flush { .. } => unreachable!("benchmark uses the common device sync boundary"),
+                Completion::Lifecycle { .. } => unreachable!("lifecycle is driven by blocking helpers"),
+                Completion::Failed { error, .. } => return Err(error.into()),
             });
         }
         Ok(())
     }
     fn close(mut self) -> Result<()> {
-        Ok(self.engine.seal()?)
+        Ok(self.engine.seal_blocking()?)
     }
 }

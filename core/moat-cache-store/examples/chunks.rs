@@ -27,6 +27,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         storage::format(
             &*device,
             &FormatOptions {
+                sync_mode: Default::default(),
                 segment_size: (1 << 20) as u32,
                 limits: FrameLimits::new(((128 << 10) + 8192u32).next_power_of_two(), 128 << 10).unwrap(),
                 device_id: [1; 16],
@@ -35,6 +36,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let engine = Disk::open(
             device,
             storage::Options {
+                sync_mode: Default::default(),
                 index_capacity: 128,
                 verify_reads: false,
             },

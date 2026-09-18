@@ -26,6 +26,11 @@ engine. Tiny-record full fills are not part of that report.
 
 ## Build and run
 
+The executable uses the system allocator. `--sync false` disables format and
+runtime persistence barriers, including explicit flush; the default is true.
+Disabled flush still waits for preceding writes. Startup output records the
+selected sync policy; comparisons must distinguish these durability contracts.
+
 Build for GNU/Linux with glibc. `x86-64-v3` requires a compatible destination CPU;
 do not use the build machine's `target-cpu=native` for an unrelated test machine.
 

@@ -597,6 +597,7 @@ fn main() {
                 storage::format(
                     &device,
                     &FormatOptions {
+                        sync_mode: Default::default(),
                         segment_size: u32::try_from(segment).expect("segment fits u32"),
                         limits: FrameLimits::new(8 << 20, 4 << 20).unwrap(),
                         device_id: uuid,
@@ -619,6 +620,7 @@ fn main() {
     let mut node = Node::open(
         devices,
         Options {
+            sync_mode: Default::default(),
             index_capacity,
             verify_reads,
         },

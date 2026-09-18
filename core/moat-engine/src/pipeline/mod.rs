@@ -18,11 +18,14 @@
 //! queue. The upper layer owns device format, segment selection, and lifecycle.
 //! There are no shared mutable indexes, locks, channels, or per-ticket atomics.
 //! A successful write completion means readable, not durable; `flush` supplies
-//! the persistence barrier. Recovered allocations are read-only.
+//! the persistence barrier unless the owning engine disables device syncs.
+//! Recovered allocations are read-only.
 
 mod driver;
 mod error;
 mod index;
+mod maintenance;
+mod options;
 mod read;
 mod verify;
 mod write;
@@ -32,6 +35,7 @@ use std::collections::VecDeque;
 pub use error::{Error, Rejected, Result};
 use index::{Index, Location};
 use moat_common::{ChunkId, PAGE_SIZE, is_aligned};
+pub use options::{PollBudget, ResourceLimits};
 use read::{Read, ReadExtent};
 pub use read::{ReadBuffers, ReadRange, ReadRequirements};
 use verify::VerifiedRead;
@@ -74,11 +78,19 @@ pub enum Completion {
         /// Original buffers, returned on both success and failure.
         buffers: ReadBuffers,
     },
-    /// All preceding accepted writes and the subsequent persistence barrier finished.
+    /// Terminal notification after queue failure. Submitted buffers remain owned
+    /// by the queue until safe teardown; this event does not transfer them.
+    Failed {
+        /// Accepted operation identity.
+        ticket: Ticket,
+        /// Shared fatal cause.
+        error: std::sync::Arc<Error>,
+    },
+    /// All preceding writes and the configured optional persistence barrier completed.
     Flush {
         /// Admission identity.
         ticket: Ticket,
-        /// Durability outcome.
+        /// Write-fence and optional durability outcome.
         result: Result<()>,
     },
 }
@@ -87,7 +99,10 @@ impl Completion {
     /// The admission identity regardless of operation kind.
     pub fn ticket(&self) -> Ticket {
         match self {
-            Self::Write { ticket, .. } | Self::Read { ticket, .. } | Self::Flush { ticket, .. } => *ticket,
+            Self::Write { ticket, .. }
+            | Self::Read { ticket, .. }
+            | Self::Flush { ticket, .. }
+            | Self::Failed { ticket, .. } => *ticket,
         }
     }
 }
@@ -95,6 +110,7 @@ impl Completion {
 struct Write {
     ticket: Ticket,
     entries: Vec<(ChunkId, Location)>,
+    reserved_new: usize,
     completed: Option<(Result<()>, Buffer)>,
 }
 
@@ -129,9 +145,22 @@ pub struct Pipeline<Q> {
     writes: VecDeque<usize>,
     ready_reads: VecDeque<usize>,
     flush: Option<usize>,
+    sync_enabled: bool,
     next_ticket: u64,
+    serving: bool,
     failed_at: Option<u64>,
     queue_failed: bool,
+    fatal: Option<std::sync::Arc<Error>>,
+    failed_cursor: usize,
+    control: Option<Request>,
+    control_active: bool,
+    control_done: Option<crate::io::Completion>,
+    maintenance: bool,
+    budget: PollBudget,
+    resources: ResourceLimits,
+    pending_entries: usize,
+    pending_new: usize,
+    keys: Vec<ChunkId>,
 }
 
 impl<Q: Queue> Pipeline<Q> {
@@ -185,9 +214,22 @@ impl<Q: Queue> Pipeline<Q> {
             writes: VecDeque::with_capacity(depth),
             ready_reads: VecDeque::with_capacity(depth),
             flush: None,
+            sync_enabled: true,
             next_ticket: 1,
+            serving: false,
             failed_at: None,
             queue_failed: false,
+            fatal: None,
+            failed_cursor: 0,
+            control: None,
+            control_active: false,
+            control_done: None,
+            maintenance: false,
+            budget: PollBudget::default(),
+            resources: ResourceLimits::default(),
+            pending_entries: 0,
+            pending_new: 0,
+            keys: Vec::new(),
         })
     }
 
@@ -195,7 +237,7 @@ impl<Q: Queue> Pipeline<Q> {
     /// Call only during read-only startup, before submitting operations. Tombstones
     /// and older physical records are resolved by LSN, just as during publication.
     pub fn restore(&mut self, metadata: Metadata<'_>) -> Result<()> {
-        if self.segment.is_some() || self.next_ticket != 1 {
+        if self.segment.is_some() || self.serving {
             return Err(Error::InvalidArgument("restore is only valid before serving reads"));
         }
         let h = metadata.header();
@@ -212,7 +254,11 @@ impl<Q: Queue> Pipeline<Q> {
             ));
         }
         let metadata = Metadata::decode(metadata.as_bytes(), self.limits, position)?;
-        index::apply(&mut self.index, index::entries(metadata, self.current as u32));
+        let mut entries = Vec::new();
+        entries.try_reserve_exact(metadata.header().record_count() as usize)?;
+        entries.extend(index::entries(metadata, self.current as u32));
+        self.reserve_entries(&entries)?;
+        index::apply(&mut self.index, &mut self.keys, entries);
         Ok(())
     }
 
@@ -228,7 +274,8 @@ impl<Q: Queue> Pipeline<Q> {
 
     // Device geometry validates disjoint extents and never reuses an allocation.
     pub(crate) fn attach(&mut self, header: SegmentHeader, base: u64, writable: bool) -> Result<()> {
-        if self.in_flight() != 0
+        if !self.writes.is_empty()
+            || self.flush.is_some()
             || self.segment.is_some()
             || self.queue_failed
             || self.failed_at.is_some()
@@ -241,6 +288,7 @@ impl<Q: Queue> Pipeline<Q> {
         } else {
             None
         };
+        self.extents.try_reserve(1)?;
         self.current = self.extents.len();
         self.extents.push(Extent { header, base });
         self.segment = builder;
@@ -248,7 +296,7 @@ impl<Q: Queue> Pipeline<Q> {
     }
 
     pub(crate) fn take_segment(&mut self) -> Result<Option<SegmentBuilder>> {
-        if self.in_flight() != 0 {
+        if !self.writes.is_empty() || self.flush.is_some() {
             return Err(Error::Backpressure);
         }
         if self.queue_failed {
@@ -264,7 +312,9 @@ impl<Q: Queue> Pipeline<Q> {
         &mut self,
         additional: usize,
     ) -> std::result::Result<(), std::collections::TryReserveError> {
-        self.index.try_reserve(additional)
+        let additional = additional.min(self.resources.index_entries.saturating_sub(self.index.len()));
+        self.index.try_reserve(additional)?;
+        self.keys.try_reserve(additional)
     }
 
     pub(crate) fn visit_versions(&self, mut visit: impl FnMut(ChunkId, u64, Option<u32>)) {
@@ -315,7 +365,7 @@ impl<Q: Queue> Pipeline<Q> {
                 return Err(Error::Backpressure);
             }
         }
-        if self.free.is_empty() || self.queue.vacant() == 0 {
+        if self.free.is_empty() || self.queue.vacant() == 0 || (self.maintenance && self.queue.vacant() <= 1) {
             return Err(Error::Backpressure);
         }
         if self.next_ticket == u64::MAX {
@@ -325,6 +375,7 @@ impl<Q: Queue> Pipeline<Q> {
     }
 
     fn take_slot(&mut self, pending: Pending) -> usize {
+        self.serving = true;
         let slot = self.free.pop().expect("admission checked capacity");
         self.slots[slot] = Some(pending);
         self.next_ticket += 1;

@@ -16,10 +16,10 @@ use std::{fs::OpenOptions, io, ops::Range, os::unix::fs::OpenOptionsExt, sync::A
 
 use moat_common::{BufferPool, PAGE_SIZE, align_up};
 use moat_engine::{
-    engine::{self, Device, Engine, Error, FormatOptions},
+    engine::{self, Completion, Device, Engine, Error, FormatOptions},
     frame::{FrameBuilder, FrameLimits, PreparedFrame},
     io::{Buffer, UringQueue},
-    pipeline::{self, Completion, ReadBuffers},
+    pipeline::{self, ReadBuffers},
 };
 
 use crate::{Backend, Config, DEPTH, MAX_VALUE, Record, SEGMENT, key};
@@ -69,6 +69,11 @@ impl Unified {
             .unwrap();
         assert!(Device::capacity(&file).unwrap() >= config.capacity());
         let limits = FrameLimits::new(8 << 20, MAX_VALUE).unwrap();
+        let sync_mode = if config.sync {
+            engine::SyncMode::Enabled
+        } else {
+            engine::SyncMode::Disabled
+        };
         let device = Window {
             file: file.try_clone().unwrap(),
             capacity: config.capacity(),
@@ -76,6 +81,7 @@ impl Unified {
         engine::format(
             &device,
             FormatOptions {
+                sync_mode,
                 device_id: crate::fresh_identity(),
                 segment_size: SEGMENT as u32,
                 limits,
@@ -85,10 +91,16 @@ impl Unified {
         let pool = BufferPool::new(config.pool_options()).unwrap();
         let queue = UringQueue::with_pool(file, DEPTH, pool.clone()).unwrap();
         let deferred = queue.deferred_taskrun();
-        let mut pipeline = Engine::open(device, queue).unwrap();
+        let average = config.sizes().iter().sum::<usize>() / config.sizes().len();
+        let reserve = config.bytes as usize / average + 64;
+        let mut options = engine::Options {
+            sync_mode,
+            ..Default::default()
+        };
+        options.resources.index_entries = options.resources.index_entries.max(reserve);
+        let mut pipeline = Engine::open_blocking_with_options(device, queue, options).unwrap();
         if config.whole_device {
-            let average = config.sizes().iter().sum::<usize>() / config.sizes().len();
-            pipeline.reserve_index(config.bytes as usize / average + 64).unwrap();
+            pipeline.reserve_index(reserve).unwrap();
         }
         let sizes = config.sizes();
         let capacity = if sizes.len() == 1 && sizes[0] >= 65536 {
@@ -127,7 +139,8 @@ impl Unified {
                 Completion::Flush { result, .. } => {
                     result.unwrap();
                 }
-                Completion::Read { .. } => unreachable!(),
+                Completion::Read { .. } | Completion::Lifecycle { .. } => unreachable!(),
+                Completion::Failed { error, .. } => panic!("{error}"),
             }
         }
     }
@@ -210,12 +223,12 @@ impl Backend for Unified {
     }
 
     fn seal(&mut self) {
-        self.pipeline.seal().unwrap();
+        self.pipeline.seal_blocking().unwrap();
     }
 
     fn usage(&self) -> serde_json::Value {
-        serde_json::json!({"segments":self.pipeline.layout().segment_count(),
-            "allocated_segments":self.pipeline.allocated_segments(),"indexed_versions":self.pipeline.indexed_versions()})
+        serde_json::json!({"segments":self.pipeline.layout().unwrap().segment_count(),
+            "allocated_segments":self.pipeline.allocated_segments(),"indexed_versions":self.pipeline.indexed_versions().unwrap()})
     }
 
     fn flush(&mut self, _: u64) {

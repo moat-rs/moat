@@ -12,116 +12,254 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Single-owner device routing and append-only segment rollover.
-//!
-//! One index and one queue serve all allocated segments. Ordinary reads/writes
-//! remain asynchronous. Formatting, recovery, sealing, and allocation use cold
-//! positional I/O; rollover requires a drained pipeline. No segment is reused.
+//! Single-owner asynchronous recovery, I/O, and segment lifecycle.
 
+mod completion;
 mod device;
 mod error;
 mod layout;
+mod lifecycle;
 mod recovery;
 
-use std::ops::Range;
+use crate::{
+    frame::{FrameBuilder, FrameLimits},
+    io::{Buffer, Queue},
+    pipeline::{self, Pipeline, ReadBuffers, ReadRequirements, Ticket},
+    segment,
+};
+use moat_common::{ChunkId, PAGE_SIZE};
+use std::{
+    ops::Range,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
+pub use crate::pipeline::{PollBudget, ResourceLimits};
+pub use completion::{Completion, Lifecycle};
 pub use device::Device;
 pub use error::{Error, Rejected, Result};
 pub use layout::{FormatOptions, Layout, format};
-use moat_common::{AlignedBuf, ChunkId, PAGE_SIZE};
+use lifecycle::{Job, Progress};
 
-use crate::{
-    frame::FrameBuilder,
-    io::{Buffer, Queue},
-    pipeline::{self, Completion, Pipeline, ReadBuffers, ReadRequirements, Ticket},
-    segment,
-};
+/// Whether the engine requests persistence barriers from its backing device.
+/// This is an explicit runtime policy, not a persisted property or PLP detector.
+/// It does not change the asynchronous ticket/poll API in either mode.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SyncMode {
+    /// Request device syncs for format, lifecycle transitions, and explicit flush.
+    #[default]
+    Enabled,
+    /// Never request device syncs. Flush still drains preceding writes and reports
+    /// errors. Durability depends on the backing device's write-completion contract;
+    /// otherwise use disposable data and reformat after an unclean shutdown.
+    Disabled,
+}
 
-/// An exclusively owned device, its global index, and a dedicated I/O queue.
-///
-/// Callers must provide exclusive device ownership and a queue for that same
-/// device. Completed data remains immutable. Reopen never resumes an old active
-/// tail: new writes allocate an unused segment. Rollover chooses the next unused
-/// slot by default; `rollover_to` lets the caller select a different unused slot.
-/// There is no automatic reclamation, segment reuse, or background worker.
+/// Runtime resource limits and cooperative work targets, not persistent geometry.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Options {
+    /// Persistence policy for this owner, including explicit flush and close.
+    pub sync_mode: SyncMode,
+    /// Metadata/index admission bounds.
+    pub resources: ResourceLimits,
+    /// Work retired by one data-path poll; lifecycle advances at most two steps.
+    pub poll: PollBudget,
+}
+/// Public engine lifecycle state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum State {
+    /// Geometry/index recovery is pending.
+    Opening,
+    /// Reads are available; a segment transition may still backpressure writes.
+    Ready,
+    /// Admission stopped; accepted operations are being drained.
+    Closing,
+    /// Explicit shutdown completed; the object can be dropped.
+    Closed,
+    /// Recovery, queue, or write lifecycle failed. Previously published data may
+    /// remain readable if recovery completed and the queue is healthy.
+    Failed,
+}
+/// A bounded, weakly consistent traversal of the keys present when created.
+/// Later overwrites may be observed; later new keys are excluded.
+#[derive(Debug)]
+pub struct VersionCursor {
+    owner: u64,
+    next: usize,
+    end: usize,
+}
+
+/// One exclusive device owner. All online disk I/O goes through its Queue.
+/// `open` returns before recovery and must be driven with `poll`. Blocking
+/// helpers are explicitly named; no background thread is created.
 pub struct Engine<D, Q> {
-    device: D,
-    layout: Layout,
+    _device: D,
+    capacity: u64,
+    layout: Option<Layout>,
     pipeline: Pipeline<Q>,
     used: Vec<bool>,
     next: u32,
     allocated: u32,
     active: Option<u32>,
-    failed: bool,
+    state: State,
+    opened: bool,
+    job: Option<Job>,
+    options: Options,
+    completions: Vec<pipeline::Completion>,
+    identity: u64,
 }
-
 impl<D: Device, Q: Queue> Engine<D, Q> {
-    /// Opens persisted geometry and rebuilds the global index. Sealed footers
-    /// accelerate recovery; active segments are scanned with payload validation.
-    pub fn open(device: D, queue: Q) -> Result<Self> {
-        let layout = Layout::read(&device)?;
-        let pipeline = Pipeline::empty(queue, layout.limits())?;
-        let mut engine = Self {
-            device,
-            layout,
-            pipeline,
-            used: vec![false; layout.segment_count() as usize],
-            next: 0,
-            allocated: 0,
-            active: None,
-            failed: false,
-        };
-        engine.recover()?;
+    /// Accepts recovery without reading device contents. The capacity query and
+    /// owner construction are synchronous setup; recovery I/O is poll-driven.
+    pub fn open(device: D, queue: Q) -> Result<(Self, Ticket)> {
+        Self::open_with_options(device, queue, Options::default())
+    }
+    /// Opens with explicit index/metadata bounds and progress budgets.
+    pub fn open_with_options(device: D, queue: Q, options: Options) -> Result<(Self, Ticket)> {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        let capacity = device.capacity()?;
+        let depth = queue.depth();
+        let mut pipeline = Pipeline::empty(queue, FrameLimits::new(4096, 0)?)?;
+        pipeline.configure(options.resources, options.poll)?;
+        pipeline.set_sync_enabled(options.sync_mode == SyncMode::Enabled);
+        let ticket = pipeline.next_ticket()?;
+        pipeline.maintenance(true);
+        Ok((
+            Self {
+                _device: device,
+                capacity,
+                layout: None,
+                pipeline,
+                used: Vec::new(),
+                next: 0,
+                allocated: 0,
+                active: None,
+                state: State::Opening,
+                opened: false,
+                job: Some(Job::open(ticket)),
+                options,
+                completions: Vec::with_capacity(depth),
+                identity: NEXT.fetch_add(1, Ordering::Relaxed),
+            },
+            ticket,
+        ))
+    }
+    /// Explicit blocking recovery helper for tools and synchronous adapters.
+    pub fn open_blocking(device: D, queue: Q) -> Result<Self> {
+        Self::open_blocking_with_options(device, queue, Options::default())
+    }
+    /// Explicit blocking recovery with caller-selected runtime bounds.
+    pub fn open_blocking_with_options(device: D, queue: Q, options: Options) -> Result<Self> {
+        let (mut engine, ticket) = Self::open_with_options(device, queue, options)?;
+        engine.wait_lifecycle(ticket)?;
         Ok(engine)
     }
-
-    /// Persisted geometry and decoding bounds.
-    pub fn layout(&self) -> Layout {
-        self.layout
+    /// Current initialization/shutdown state.
+    pub fn state(&self) -> State {
+        self.state
     }
-    /// Segment receiving new frames, if one is allocated in this session.
+    /// Persisted geometry, available once recovery has succeeded.
+    pub fn layout(&self) -> Result<Layout> {
+        self.check_readable()?;
+        Ok(self.layout.expect("recovered layout"))
+    }
+    /// Current writable segment, if any.
     pub fn active_segment(&self) -> Option<u32> {
         self.active
     }
-    /// Number of allocated segments, including recovered active tails.
+    /// Allocated slots discovered or allocated so far.
     pub fn allocated_segments(&self) -> usize {
         self.allocated as usize
     }
-    /// Reserves room for additional indexed keys before serving the workload.
-    /// This is a memory reservation, not a hard admission budget.
+    /// Preallocates index buckets within the configured logical entry bound.
     pub fn reserve_index(&mut self, additional: usize) -> Result<()> {
+        self.check_readable()?;
+        if self.pipeline.index_len().saturating_add(additional) > self.options.resources.index_entries {
+            return Err(pipeline::Error::ResourceLimit("index reservation").into());
+        }
         Ok(self.pipeline.reserve_index(additional)?)
     }
-    /// Number of indexed latest versions, including tombstones.
-    pub fn indexed_versions(&self) -> usize {
-        self.pipeline.index_len()
+    /// Indexed versions including tombstones; unavailable before recovery completes.
+    pub fn indexed_versions(&self) -> Result<usize> {
+        self.check_readable()?;
+        Ok(self.pipeline.index_len())
     }
-    /// Number of user operations still awaiting completion delivery.
+    /// Operations awaiting completion, including an internal automatic transition.
     pub fn in_flight(&self) -> usize {
-        self.pipeline.in_flight()
+        self.pipeline.in_flight() + usize::from(self.job.is_some())
     }
-    /// Whether the latest published version is a data record.
-    pub fn contains(&self, key: &ChunkId) -> bool {
-        self.pipeline.contains(key)
+    /// Whether a published live record exists.
+    pub fn contains(&self, key: &ChunkId) -> Result<bool> {
+        self.check_readable()?;
+        Ok(self.pipeline.contains(key))
     }
-    /// Logical version and value length of a published live record.
-    pub fn stat(&self, key: &ChunkId) -> Option<(u64, u32)> {
-        self.pipeline.stat(key)
+    /// Published LSN and length; absence is distinct from not-ready.
+    pub fn stat(&self, key: &ChunkId) -> Result<Option<(u64, u32)>> {
+        self.check_readable()?;
+        Ok(self.pipeline.stat(key))
     }
-    /// Visits every latest published version, including tombstones (`None`).
-    /// This allows owners to recover their LSN allocator without duplicating the index.
-    pub fn visit_versions(&self, visit: impl FnMut(ChunkId, u64, Option<u32>)) {
+    /// Synchronously visits all versions. Use the cursor API to bound owner work.
+    pub fn visit_versions(&self, visit: impl FnMut(ChunkId, u64, Option<u32>)) -> Result<()> {
+        self.check_readable()?;
         self.pipeline.visit_versions(visit);
+        Ok(())
     }
-    /// Drives the shared queue and delivers read/write/flush completions.
+    /// Captures the traversal boundary without copying the index.
+    pub fn version_cursor(&self) -> Result<VersionCursor> {
+        self.check_readable()?;
+        Ok(VersionCursor {
+            owner: self.identity,
+            next: 0,
+            end: self.pipeline.key_count(),
+        })
+    }
+    /// Visits at most `limit` keys; returns true at the captured end. The cursor
+    /// must belong to this engine and does not prevent concurrent overwrites.
+    pub fn visit_versions_batch(
+        &self,
+        cursor: &mut VersionCursor,
+        limit: usize,
+        mut visit: impl FnMut(ChunkId, u64, Option<u32>),
+    ) -> Result<bool> {
+        self.check_readable()?;
+        if cursor.owner != self.identity || limit == 0 {
+            return Err(Error::InvalidArgument("invalid version cursor or batch limit"));
+        }
+        let end = cursor.next.saturating_add(limit).min(cursor.end);
+        self.pipeline.visit_batch(cursor.next, end, &mut visit);
+        cursor.next = end;
+        Ok(end == cursor.end)
+    }
+    /// Runs one bounded progress turn. A nonblocking Queue is required for
+    /// nonblocking disk I/O; synchronous FileQueue remains an explicit backend.
     pub fn poll(&mut self, wait: bool, out: &mut Vec<Completion>) -> Result<usize> {
-        Ok(self.pipeline.poll(wait, out)?)
+        let before = out.len();
+        let progressed = self.drive_job(out);
+        self.pipeline.poll(
+            wait && !progressed && out.len() == before && !self.has_ready(),
+            &mut self.completions,
+        )?;
+        out.extend(self.completions.drain(..).map(Completion::from));
+        if self.pipeline.queue_failed() && self.state != State::Closed {
+            self.state = State::Failed;
+        }
+        self.drive_job(out);
+        Ok(out.len() - before)
     }
-    /// Required buffer capacities for the currently published record version.
+    /// Local work remains runnable; poll again before waiting on a descriptor.
+    pub fn has_ready(&self) -> bool {
+        self.pipeline.has_ready() || self.job.as_ref().is_some_and(|job| !job.waiting && !job.blocked)
+    }
+    /// Optional queue readiness descriptor; available with notification-enabled backends.
+    #[cfg(unix)]
+    pub fn notification_fd(&self) -> Option<std::os::fd::BorrowedFd<'_>> {
+        self.pipeline.notification_fd()
+    }
+    /// Minimum caller-buffer sizes for a published record and verification mode.
     pub fn read_requirements(&self, key: ChunkId, range: Range<u32>, verify: bool) -> Result<ReadRequirements> {
+        self.check_readable()?;
         Ok(self.pipeline.read_requirements(key, range, verify)?)
     }
-    /// Reads a snapshot from any allocated segment, with optional CRC checks.
+    /// Reads a published snapshot. Reads can continue during sealing/rollover.
     pub fn read(
         &mut self,
         key: ChunkId,
@@ -129,29 +267,31 @@ impl<D: Device, Q: Queue> Engine<D, Q> {
         verify: bool,
         buffers: ReadBuffers,
     ) -> std::result::Result<Ticket, Rejected<ReadBuffers>> {
+        if let Err(error) = self.check_readable() {
+            return Err(Rejected { error, input: buffers });
+        }
         self.pipeline.read(key, range, verify, buffers).map_err(|r| Rejected {
             error: r.error.into(),
             input: r.input,
         })
     }
-    /// Orders a persistence barrier after preceding writes. Does not seal the segment.
+    /// Enqueues a persistence barrier. Retry after an active lifecycle transition.
+    /// With sync disabled, completion is a write fence without a persistence barrier.
     pub fn flush(&mut self) -> Result<Ticket> {
-        if self.failed {
-            return Err(Error::Failed);
-        }
+        self.check_writable()?;
         Ok(self.pipeline.flush()?)
     }
-    /// Encodes and submits a frame, rolling over a full segment after draining.
-    /// Backpressure preserves the buffer; call `poll` and retry. Segment transition
-    /// I/O is synchronous and occurs only on allocation or rollover, never per record.
+    /// Encodes and accepts a frame. On segment pressure, starts asynchronous
+    /// rollover and returns Backpressure with the original buffer for retry.
     pub fn write(
         &mut self,
         frame: &FrameBuilder<'_>,
         buffer: impl Into<Buffer>,
     ) -> std::result::Result<Ticket, Rejected<Buffer>> {
-        self.submit(buffer.into(), |pipeline, buffer| pipeline.write(frame, buffer))
+        self.submit(buffer.into(), |p, b| p.write(frame, b))
     }
-    /// Submits an already filled prepared value without another payload copy.
+    /// Accepts a prepared value. Checksum work remains synchronous and is bounded
+    /// by the frame limit; rejected buffers retain their prepared payload.
     pub fn write_prepared(
         &mut self,
         key: ChunkId,
@@ -159,134 +299,258 @@ impl<D: Device, Q: Queue> Engine<D, Q> {
         len: u32,
         buffer: impl Into<Buffer>,
     ) -> std::result::Result<Ticket, Rejected<Buffer>> {
-        self.submit(buffer.into(), |pipeline, buffer| {
-            pipeline.write_prepared(key, lsn, len, buffer)
-        })
+        self.submit(buffer.into(), |p, b| p.write_prepared(key, lsn, len, b))
     }
-
     fn submit(
         &mut self,
         buffer: Buffer,
-        mut submit: impl FnMut(&mut Pipeline<Q>, Buffer) -> std::result::Result<Ticket, pipeline::Rejected<Buffer>>,
+        submit: impl FnOnce(&mut Pipeline<Q>, Buffer) -> std::result::Result<Ticket, pipeline::Rejected<Buffer>>,
     ) -> std::result::Result<Ticket, Rejected<Buffer>> {
-        if let Err(error) = self.ensure_active() {
+        if let Err(error) = self.check_writable() {
             return Err(Rejected { error, input: buffer });
         }
-        match submit(&mut self.pipeline, buffer) {
-            Ok(ticket) => Ok(ticket),
-            Err(rejected) => {
-                if matches!(rejected.error, pipeline::Error::Segment(segment::Error::Full { .. }))
-                    && self.pipeline.data_end().is_some_and(|end| end > PAGE_SIZE as u32)
-                {
-                    if let Err(error) = self.rollover() {
-                        return Err(Rejected {
-                            error,
-                            input: rejected.input,
-                        });
-                    }
-                    submit(&mut self.pipeline, rejected.input).map_err(|r| Rejected {
-                        error: r.error.into(),
-                        input: r.input,
-                    })
-                } else {
-                    Err(Rejected {
-                        error: rejected.error.into(),
-                        input: rejected.input,
-                    })
-                }
-            }
-        }
-    }
-
-    fn ensure_active(&mut self) -> Result<()> {
-        if self.failed {
-            return Err(Error::Failed);
-        }
         if self.active.is_none() {
-            self.rollover()?;
+            if self.pipeline.writes_pending() {
+                return Err(Rejected {
+                    error: pipeline::Error::Backpressure.into(),
+                    input: buffer,
+                });
+            }
+            let error = self
+                .start_rollover(None, None)
+                .err()
+                .unwrap_or_else(|| pipeline::Error::Backpressure.into());
+            return Err(Rejected { error, input: buffer });
+        }
+        submit(&mut self.pipeline, buffer).map_err(|r| {
+            let full = matches!(
+                r.error,
+                pipeline::Error::Segment(segment::Error::Full { .. }) | pipeline::Error::MetadataFull
+            );
+            let error = if full && self.pipeline.data_end().is_some_and(|end| end > PAGE_SIZE as u32) {
+                self.start_rollover(None, None)
+                    .err()
+                    .unwrap_or_else(|| pipeline::Error::Backpressure.into())
+            } else {
+                r.error.into()
+            };
+            Rejected { error, input: r.input }
+        })
+    }
+    fn check_readable(&self) -> Result<()> {
+        if !self.opened {
+            return Err(if self.state == State::Opening {
+                Error::NotReady
+            } else {
+                Error::Failed
+            });
+        }
+        if matches!(self.state, State::Closing | State::Closed) {
+            return Err(Error::Closed);
         }
         Ok(())
     }
-
-    fn check_idle(&self) -> Result<()> {
-        if self.failed {
+    fn check_writable(&self) -> Result<()> {
+        self.check_readable()?;
+        if self.state == State::Failed {
             return Err(Error::Failed);
         }
-        if self.pipeline.in_flight() != 0 {
+        if self.job.is_some() {
             return Err(pipeline::Error::Backpressure.into());
         }
         Ok(())
     }
-
-    /// Seals the current allocation and activates the next unused segment.
-    /// Requires all completions to have been delivered; otherwise returns backpressure.
-    pub fn rollover(&mut self) -> Result<()> {
-        self.check_idle()?;
-        while self.next < self.layout.segment_count() && self.used[self.next as usize] {
-            self.next += 1;
-        }
-        if self.next == self.layout.segment_count() {
-            return Err(Error::OutOfSpace);
-        }
-        self.rollover_to(self.next)
+    /// Asynchronously seals and selects the next unused segment.
+    pub fn rollover(&mut self) -> Result<Ticket> {
+        self.check_writable()?;
+        let ticket = self.pipeline.next_ticket()?;
+        self.start_rollover(None, Some(ticket))?;
+        Ok(ticket)
     }
-
-    /// Selects a caller-chosen unused segment. Occupied segments are never reclaimed.
-    /// The previous allocation is durably sealed before the new header is persisted.
-    pub fn rollover_to(&mut self, number: u32) -> Result<()> {
-        self.check_idle()?;
-        let base = self.layout.segment_base(number)?;
+    /// Asynchronously selects a caller-chosen unused slot; no reuse is authorized.
+    pub fn rollover_to(&mut self, number: u32) -> Result<Ticket> {
+        self.check_writable()?;
+        let ticket = self.pipeline.next_ticket()?;
+        self.start_rollover(Some(number), Some(ticket))?;
+        Ok(ticket)
+    }
+    fn start_rollover(&mut self, number: Option<u32>, ticket: Option<Ticket>) -> Result<()> {
+        let layout = self.layout.expect("ready layout");
+        let number = match number {
+            Some(n) => n,
+            None => {
+                while self.next < layout.segment_count() && self.used[self.next as usize] {
+                    self.next += 1;
+                }
+                if self.next == layout.segment_count() {
+                    return Err(Error::OutOfSpace);
+                }
+                self.next
+            }
+        };
+        layout.segment_base(number)?;
         if self.used[number as usize] {
             return Err(Error::InvalidArgument("segment is already allocated"));
         }
-        self.seal()?;
-        let header = self.layout.header(number)?;
-        let mut page = AlignedBuf::zeroed(PAGE_SIZE as usize);
-        header.encode_into(&mut page)?;
-        // Retire the slot even if the header write fails. Reopen decides whether
-        // it is a valid allocation; this owner cannot retry into uncertain bytes.
-        self.used[number as usize] = true;
-        self.allocated += 1;
-        if let Err(error) = self.device.write_at(&page, base).and_then(|()| self.device.sync()) {
-            self.failed = true;
-            return Err(error.into());
-        }
-        if let Err(error) = self.pipeline.attach(header, base, true) {
-            self.failed = true;
-            return Err(error.into());
-        }
-        self.active = Some(number);
+        self.pipeline.maintenance(true);
+        self.job = Some(Job::transition(ticket, Lifecycle::Rollover, Some(number)));
         Ok(())
     }
-
-    /// Persists data and preceding footer pages, then commits the final footer
-    /// page containing the trailer. The allocation header remains unchanged.
-    /// An interrupted seal can therefore recover by scanning frames.
-    /// Requires a drained pipeline. A lifecycle I/O failure prevents further writes.
-    pub fn seal(&mut self) -> Result<()> {
-        self.check_idle()?;
-        let Some(number) = self.active else {
-            return Ok(());
-        };
-        let mut builder = self.pipeline.take_segment()?.expect("active allocation has a builder");
-        self.active = None;
-        let result = (|| -> Result<()> {
-            let mut footer = AlignedBuf::zeroed(builder.footer_len());
-            let header = builder.seal_into(&mut footer)?;
-            let range = header.footer_range().expect("newly sealed segment");
-            let base = self.layout.segment_base(number)? + range.start as u64;
-            let split = footer.len() - PAGE_SIZE as usize;
-            if split != 0 {
-                self.device.write_at(&footer[..split], base)?;
-            }
-            self.device.sync()?;
-            self.device.write_at(&footer[split..], base + split as u64)?;
-            self.device.sync()?;
-            Ok(())
-        })();
-        if result.is_err() {
-            self.failed = true;
+    /// Asynchronously seals after preceding writes; existing reads may continue.
+    pub fn seal(&mut self) -> Result<Ticket> {
+        self.check_writable()?;
+        let ticket = self.pipeline.next_ticket()?;
+        self.pipeline.maintenance(true);
+        self.job = Some(Job::transition(Some(ticket), Lifecycle::Seal, None));
+        Ok(ticket)
+    }
+    /// Stops admission and asynchronously drains and seals, syncing if enabled. Dropping
+    /// before completion may block in the queue's buffer-safety fallback.
+    pub fn close(&mut self) -> Result<Ticket> {
+        if matches!(self.state, State::Opening | State::Closing | State::Closed) || self.job.is_some() {
+            return Err(if self.state == State::Closed {
+                Error::Closed
+            } else {
+                pipeline::Error::Backpressure.into()
+            });
         }
-        result
+        let ticket = self.pipeline.next_ticket()?;
+        self.state = State::Closing;
+        self.pipeline.maintenance(true);
+        self.job = Some(Job::transition(Some(ticket), Lifecycle::Close, None));
+        Ok(ticket)
+    }
+    /// Explicit blocking seal helper. Requires no outstanding operations so it
+    /// cannot consume another caller's completion.
+    pub fn seal_blocking(&mut self) -> Result<()> {
+        self.blocking_transition(|e| e.seal())
+    }
+    /// Explicit blocking rollover helper for tools.
+    pub fn rollover_blocking(&mut self) -> Result<()> {
+        self.blocking_transition(|e| e.rollover())
+    }
+    /// Explicit blocking selection helper for tools.
+    pub fn rollover_to_blocking(&mut self, number: u32) -> Result<()> {
+        self.blocking_transition(|e| e.rollover_to(number))
+    }
+    /// Explicit blocking orderly shutdown helper for tools.
+    pub fn close_blocking(&mut self) -> Result<()> {
+        self.blocking_transition(|e| e.close())
+    }
+    fn blocking_transition(&mut self, start: impl FnOnce(&mut Self) -> Result<Ticket>) -> Result<()> {
+        if self.in_flight() != 0 {
+            return Err(pipeline::Error::Backpressure.into());
+        }
+        let ticket = start(self)?;
+        self.wait_lifecycle(ticket)
+    }
+    fn wait_lifecycle(&mut self, ticket: Ticket) -> Result<()> {
+        let mut out = Vec::new();
+        loop {
+            self.poll(true, &mut out)?;
+            for completion in out.drain(..) {
+                if let Completion::Lifecycle {
+                    ticket: got, result, ..
+                } = completion
+                    && got == ticket
+                {
+                    return result;
+                }
+            }
+        }
+    }
+    fn drive_job(&mut self, out: &mut Vec<Completion>) -> bool {
+        let Some(mut job) = self.job.take() else { return false };
+        if self.pipeline.queue_failed() && job.kind != Lifecycle::Close {
+            return self.finish_job(job, Err(pipeline::Error::QueueFailed.into()), out);
+        }
+        let input = if job.waiting {
+            if self.pipeline.queue_failed() {
+                return self.finish_job(job, Err(pipeline::Error::QueueFailed.into()), out);
+            }
+            let Some(completion) = self.pipeline.take_control() else {
+                self.job = Some(job);
+                return false;
+            };
+            job.waiting = false;
+            match completion.result {
+                Ok(actual) if actual == completion.request.len => completion.request.buffer,
+                Ok(actual) => {
+                    return self.finish_job(
+                        job,
+                        Err(pipeline::Error::ShortIo {
+                            operation: completion.request.operation,
+                            offset: completion.request.offset,
+                            expected: completion.request.len,
+                            actual,
+                        }
+                        .into()),
+                        out,
+                    );
+                }
+                Err(source) => {
+                    return self.finish_job(
+                        job,
+                        Err(pipeline::Error::Io {
+                            operation: completion.request.operation,
+                            offset: completion.request.offset,
+                            source,
+                        }
+                        .into()),
+                        out,
+                    );
+                }
+            }
+        } else {
+            None
+        };
+        job.blocked = false;
+        match job.step(self, input) {
+            Ok(Progress::Done) => self.finish_job(job, Ok(()), out),
+            Ok(Progress::Continue) => {
+                self.job = Some(job);
+                true
+            }
+            Ok(Progress::Wait) => {
+                job.blocked = true;
+                self.job = Some(job);
+                false
+            }
+            Ok(Progress::Io {
+                operation,
+                offset,
+                len,
+                buffer,
+            }) => match self.pipeline.control_io(operation, offset, len, buffer) {
+                Ok(()) => {
+                    job.waiting = true;
+                    self.job = Some(job);
+                    true
+                }
+                Err(error) => self.finish_job(job, Err(error.into()), out),
+            },
+            Err(error) => self.finish_job(job, Err(error), out),
+        }
+    }
+    fn finish_job(&mut self, job: Job, result: Result<()>, out: &mut Vec<Completion>) -> bool {
+        if job.kind == Lifecycle::Close {
+            self.state = State::Closed;
+        } else if result.is_err() {
+            self.state = State::Failed;
+        } else {
+            self.state = State::Ready;
+            if job.kind == Lifecycle::Open {
+                self.opened = true;
+            }
+        }
+        self.pipeline.maintenance(false);
+        if let Some(ticket) = job.ticket {
+            out.push(Completion::Lifecycle {
+                ticket,
+                operation: job.kind,
+                result,
+            });
+        }
+        true
     }
 }

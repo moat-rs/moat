@@ -97,6 +97,18 @@ pub struct Completion {
 /// reached the device. `depth` includes completions not yet popped. Implementors
 /// must retain buffers until the OS stops accessing them, including during drop.
 pub trait Queue {
+    /// Userspace submissions or completions need another nonblocking poll.
+    fn has_ready(&self) -> bool {
+        false
+    }
+
+    /// Optional completion event descriptor for an external reactor. Queues
+    /// without notifications return None; `poll(false)` still drives progress.
+    #[cfg(unix)]
+    fn notification_fd(&self) -> Option<std::os::fd::BorrowedFd<'_>> {
+        None
+    }
+
     /// Maximum accepted requests, including completed requests not yet popped.
     fn depth(&self) -> usize;
     /// Slots available right now. With exclusive ownership, a request must be

@@ -41,6 +41,9 @@ pub struct Layout {
 /// Destructive format parameters. Each format must use a fresh device identity.
 #[derive(Debug, Clone, Copy)]
 pub struct FormatOptions {
+    /// Persistence policy for formatting only. Select the same policy separately
+    /// in `Options` when opening the engine. Defaults elsewhere remain enabled.
+    pub sync_mode: super::SyncMode,
     /// Fresh random 128-bit identity supplied by the application.
     /// Required even after an interrupted format to distinguish old frames.
     pub device_id: [u8; 16],
@@ -129,7 +132,7 @@ impl Layout {
         put_u64(page, 56, self.sequence);
         put_u32(page, 12, crc_with_zeroed_checksum(page));
     }
-    fn decode(page: &[u8]) -> Result<Self> {
+    pub(super) fn decode(page: &[u8]) -> Result<Self> {
         if page[..8] != MAGIC || u32_at(page, 12) != crc_with_zeroed_checksum(page) {
             return Err(Error::NotFormatted);
         }
@@ -140,6 +143,7 @@ impl Layout {
             return Err(Error::Corrupt("reserved superblock bytes"));
         }
         let options = FormatOptions {
+            sync_mode: Default::default(),
             device_id: page[16..32].try_into().unwrap(),
             segment_size: u32_at(page, 40),
             limits: FrameLimits::new(u32_at(page, 48), u32_at(page, 52))?,
@@ -180,7 +184,16 @@ impl Layout {
 /// Destructive: exclusive access is required. This does not erase payloads or
 /// discard the device. Epochs prevent old payloads from becoming new frames.
 /// An interrupted format requires another format if no superblock was committed.
+/// With sync disabled, successful return does not establish persistence unless
+/// the device already guarantees durable completion of every write.
 pub fn format(device: &impl Device, options: FormatOptions) -> Result<Layout> {
+    let sync = || {
+        if options.sync_mode == super::SyncMode::Enabled {
+            device.sync()
+        } else {
+            Ok(())
+        }
+    };
     let capacity = device.capacity()?;
     let sequence = match Layout::read(device) {
         Ok(old) => {
@@ -210,16 +223,16 @@ pub fn format(device: &impl Device, options: FormatOptions) -> Result<Layout> {
     for offset in [0, PAGE_SIZE] {
         device.write_at(&page, offset)?;
     }
-    device.sync()?;
+    sync()?;
     for number in 0..layout.segments {
         device.write_at(&page, layout.segment_base(number)?)?;
         device.write_at(&page, layout.footer_tail_offset(number)?)?;
     }
-    device.sync()?;
+    sync()?;
     layout.encode(&mut page);
     device.write_at(&page, 0)?;
-    device.sync()?;
+    sync()?;
     device.write_at(&page, PAGE_SIZE)?;
-    device.sync()?;
+    sync()?;
     Ok(layout)
 }

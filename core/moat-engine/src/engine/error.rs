@@ -20,6 +20,15 @@ use crate::{frame, pipeline, segment};
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
+    /// A shared fatal queue error terminated an accepted operation.
+    #[error("engine operation aborted: {0}")]
+    Aborted(#[source] std::sync::Arc<pipeline::Error>),
+    /// Recovery has not completed; drive the open ticket first.
+    #[error("engine is not ready")]
+    NotReady,
+    /// Shutdown stopped admission or already completed.
+    #[error("engine is closing or closed")]
+    Closed,
     /// Caller-supplied geometry or segment selection is invalid.
     #[error("invalid device argument: {0}")]
     InvalidArgument(&'static str),

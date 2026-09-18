@@ -58,6 +58,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     for completion in completions.drain(..) {
         match completion {
+            Completion::Failed { error, .. } => return Err(error.to_string().into()),
             Completion::Write { result, .. } | Completion::Flush { result, .. } => result?,
             Completion::Read { .. } => unreachable!(),
         }

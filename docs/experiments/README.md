@@ -23,6 +23,7 @@ results belong here instead of beside executable code.
 | [Write-regression investigation](cache-disk/2026-09-17-v2/investigation/REPORT.md) | Rechecks all five sizes with order controls, longer writes, per-owner timing, expanded unique inserts, engine/harness isolation, and profiles; preserves the unresolved smaller 64-KiB result. |
 | [V2 ablation and cleanup](engine/2026-09-16-ablation/REPORT.md) | Removes one feature at a time, brackets treatments with fresh controls, and records the resulting implementation decisions. |
 | [Footer recovery ablation](engine/2026-09-17-footer-ablation/REPORT.md) | Removes route over-reservation and bulky baseline attachments; retains measured allocation/read savings and fault coverage. |
+| [Async lifecycle ablation and cleanup](engine/2026-09-18-async-lifecycle/ablation/REPORT.md) | Removes redundant checks and duplicate footer encoding, retains measured input-alignment and small-value index benefits, and compares original/first-commit/cleanup fsync modes across all five sizes on twenty devices. |
 
 ## Optimization inventory
 

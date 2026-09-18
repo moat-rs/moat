@@ -511,9 +511,13 @@ fn fatal_queue_failure_is_sticky_and_retains_submitted_buffers() {
     let (mut pipeline, state, _) = manual(2);
     write(&mut pipeline, 1, 1, b"pending");
     state.borrow_mut().queue_error = true;
-    assert!(matches!(pipeline.poll(false, &mut Vec::new()), Err(Error::Queue(_))));
+    let mut out = Vec::new();
+    pipeline.poll(false, &mut out).unwrap();
+    assert!(matches!(&out[..], [Completion::Failed { error, .. }] if matches!(&**error, Error::Queue(_))));
     assert!(state.borrow().pending.front().unwrap().buffer.is_some());
-    assert!(matches!(pipeline.poll(false, &mut Vec::new()), Err(Error::QueueFailed)));
+    assert_eq!(pipeline.in_flight(), 0);
+    out.clear();
+    assert_eq!(pipeline.poll(false, &mut out).unwrap(), 0);
     assert!(matches!(pipeline.flush(), Err(Error::QueueFailed)));
 }
 

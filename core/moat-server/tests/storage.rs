@@ -25,6 +25,7 @@ fn setup() -> (Disk, QueueOptions) {
     storage::format(
         &*device,
         &FormatOptions {
+            sync_mode: Default::default(),
             device_id: [42; 16],
             segment_size: 1 << 20,
             limits: FrameLimits::new(128 << 10, 64 << 10).unwrap(),
@@ -34,6 +35,7 @@ fn setup() -> (Disk, QueueOptions) {
     let disk = Disk::open(
         device,
         Options {
+            sync_mode: Default::default(),
             index_capacity: 16,
             verify_reads: true,
         },
@@ -56,10 +58,20 @@ fn drain(session: &mut Session) {
     }
     for completion in completions {
         match completion {
+            Completion::Failed { error, .. } => panic!("{error}"),
             Completion::Write { result, .. } | Completion::Flush { result, .. } => result.unwrap(),
             Completion::Read { result, .. } => {
                 result.unwrap();
             }
+        }
+    }
+}
+fn write(session: &mut Session, id: ChunkId, value: Option<&[u8]>) -> (moat_engine::pipeline::Ticket, u64) {
+    loop {
+        match session.write(id, value) {
+            Ok(accepted) => return accepted,
+            Err(storage::Error::Busy) => drain(session),
+            Err(error) => panic!("{error}"),
         }
     }
 }
@@ -75,10 +87,10 @@ fn empty_and_recovered_flushes_allocate_no_segment_and_lsn_includes_tombstones()
     drain(&mut first);
     assert_eq!(disk.usage().free_segments, disk.usage().segments);
     let id = ChunkId::from_u128(1);
-    let (_, written) = first.write(id, Some(b"old")).unwrap();
+    let (_, written) = write(&mut first, id, Some(b"old"));
     assert_eq!(written, 1, "rejected writes must not consume LSNs");
     drain(&mut first);
-    let (_, deleted) = first.write(id, None).unwrap();
+    let (_, deleted) = write(&mut first, id, None);
     drain(&mut first);
     assert!(deleted > written);
     first.seal().unwrap();
@@ -89,7 +101,7 @@ fn empty_and_recovered_flushes_allocate_no_segment_and_lsn_includes_tombstones()
     drain(&mut second);
     assert_eq!(disk.usage().free_segments, free);
     assert!(second.stat(&id).is_none());
-    let (_, next) = second.write(ChunkId::from_u128(2), Some(b"new")).unwrap();
+    let (_, next) = write(&mut second, ChunkId::from_u128(2), Some(b"new"));
     assert!(next > deleted);
     drain(&mut second);
     second.seal().unwrap();
@@ -120,7 +132,7 @@ fn full_append_only_device_keeps_reads_available() {
     let id = ChunkId::from_u128(1);
     for _ in 0..1000 {
         match session.write(id, Some(&value)) {
-            Ok(_) => drain(&mut session),
+            Ok(_) | Err(storage::Error::Busy) => drain(&mut session),
             Err(storage::Error::Engine(moat_engine::engine::Error::OutOfSpace)) => {
                 filled = true;
                 break;
