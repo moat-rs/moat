@@ -91,16 +91,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "moat-engine"
-version = "0.0.0"
-dependencies = [
- "io-uring",
- "libc",
- "moat-common",
- "thiserror",
-]
-
-[[package]]
 name = "moat-engine-compare"
 version = "0.0.0"
 dependencies = [
@@ -108,6 +98,16 @@ dependencies = [
  "moat-common",
  "moat-engine",
  "serde_json",
+]
+
+[[package]]
+name = "moat-engine"
+version = "0.0.0"
+dependencies = [
+ "io-uring",
+ "libc",
+ "moat-common",
+ "thiserror",
 ]
 
 [[package]]

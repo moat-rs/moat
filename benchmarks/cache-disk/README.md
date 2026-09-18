@@ -5,8 +5,7 @@ This standalone workspace compares moat and foyer pinned to
 [`dd46245c45071d1036331e4e2c48e15386017b96`](https://github.com/foyer-rs/foyer/tree/dd46245c45071d1036331e4e2c48e15386017b96).
 Foyer dependencies are confined to the comparison workspace.
 
-The executable uses the system allocator. The historical jemalloc experiment
-is archived; its optional integration has been removed.
+The executable uses the system allocator.
 
 `moat_sync` defaults to `true`. Set it to `false` for a Moat run that skips
 format and engine lifecycle syncs as well as the driver's final prefill
@@ -37,18 +36,10 @@ alignment.
 Compare engine revisions with matching input modes, and report this ownership
 difference when comparing Moat's default pooled mode with Foyer.
 
-The [preallocated-input twenty-device recheck](../../docs/experiments/engine/2026-09-18-async-lifecycle/input-pool/REPORT.md)
-compares both engine revisions with the same source pool, retaining allocating-input
-controls and page-reclamation evidence.
-
-The [64-KiB follow-up](../../docs/experiments/engine/2026-09-18-async-lifecycle/64k-followup/REPORT.md)
-isolates lifecycle waits and copy costs, and compares both engine revisions
-with page-aligned input pools on all twenty devices.
-
-The [longer twenty-device comparison](../../docs/experiments/engine/2026-09-18-async-lifecycle/large-batch/REPORT.md)
-uses the same binaries with larger datasets and matching 1-GiB segments. Its
-single complete round requires at least ten measured seconds for every write
-and random-read phase and retains all fifteen samples and per-device counters.
+The [twenty-device comparison](../../docs/experiments/engine/2026-09-18-async-lifecycle/ablation/REPORT.md)
+compares the original engine and asynchronous lifecycle implementation with
+matching source pools, all five value sizes, and at least ten measured seconds
+per write/read phase. It includes cleanup ablations and measurement limitations.
 
 The [earlier twenty-device v2 recheck](../../docs/experiments/cache-disk/2026-09-17-v2/REPORT.md)
 records the native engine after migration, with all samples and comparison limits.
