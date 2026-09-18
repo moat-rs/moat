@@ -96,6 +96,13 @@ or about 4 MiB between polls (one record can exceed the byte budget). Moat retai
 rejected prepared buffers across backpressure. Every inserted key is read and
 checked before timed random reads.
 
+Keep `smaps_rollup` and `numa_maps` collection outside warmup and timed reads.
+Scanning a large process can overlap the next phase and reduce throughput
+without changing CPU time per read or p99 latency. Use the driver's reported
+peak RSS for throughput runs; collect detailed memory maps in a separate
+diagnostic. The [read-observer control](../../docs/experiments/engine/2026-09-18-async-lifecycle/ablation/REPORT.md#read-observer-diagnostic)
+retains the affected samples and a subsequent read phase without the scan.
+
 Foyer uses its disk-only HybridCache path, including serialization, XXHash64
 verification, and owned value decoding. Its memory filter rejects all entries;
 its adapter waits for storage flushes after each prefill batch. The pinned file

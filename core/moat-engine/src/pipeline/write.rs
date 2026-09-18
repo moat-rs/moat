@@ -76,9 +76,8 @@ impl<Q: Queue> Pipeline<Q> {
             });
         }
         self.submit_frame(buffer, |segment, limits, buffer| {
-            let len = PreparedFrame::required_len(limits, value_len)?;
             let frame = PreparedFrame::new(limits, value_len, buffer)?;
-            let position = segment.position(len, frame.metadata_len())?;
+            let position = segment.position(required, frame.metadata_len())?;
             frame.finish(position, key, lsn)?;
             Ok(position)
         })

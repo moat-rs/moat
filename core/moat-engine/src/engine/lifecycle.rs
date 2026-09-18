@@ -102,7 +102,7 @@ impl Job {
     pub fn step<D: Device, Q: Queue>(&mut self, engine: &mut Engine<D, Q>, input: Option<Buffer>) -> Result<Progress> {
         match &mut self.work {
             Work::Open(recovery) => recovery.step(engine, input),
-            Work::Transition(transition) => transition.step(engine, self.kind, input),
+            Work::Transition(transition) => transition.step(engine, self.kind),
         }
     }
 }
@@ -124,12 +124,7 @@ struct Transition {
     last: Option<(u32, Buffer)>,
 }
 impl Transition {
-    fn step<D: Device, Q: Queue>(
-        &mut self,
-        engine: &mut Engine<D, Q>,
-        kind: Lifecycle,
-        _input: Option<Buffer>,
-    ) -> Result<Progress> {
+    fn step<D: Device, Q: Queue>(&mut self, engine: &mut Engine<D, Q>, kind: Lifecycle) -> Result<Progress> {
         if !engine.opened {
             return Err(super::Error::Failed);
         }

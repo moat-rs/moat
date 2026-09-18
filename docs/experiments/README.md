@@ -31,6 +31,7 @@ results belong here instead of beside executable code.
 | [Preallocated benchmark inputs](engine/2026-09-18-async-lifecycle/input-pool/REPORT.md) | Adds bounded source pools before timing; both original/current use the same harness in the fifty-five-process twenty-device recheck, with owned-input controls and reclamation/fault evidence. |
 | [Longer twenty-device comparison](engine/2026-09-18-async-lifecycle/large-batch/REPORT.md) | One complete fifteen-case round with at least ten measured seconds per write/read phase; larger unique datasets and matching 1-GiB segments retain a smaller 64-KiB write gap. |
 | [64-KiB lifecycle and input-layout follow-up](engine/2026-09-18-async-lifecycle/64k-followup/REPORT.md) | Boundary timers exclude direct footer/sync waits as the main gap; all-twenty-device controls isolate copy costs and remove the observed revision gap with page-aligned source pools. |
+| [Async lifecycle ablation and cleanup](engine/2026-09-18-async-lifecycle/ablation/REPORT.md) | Removes redundant checks and duplicate footer encoding, retains measured input-alignment and small-value index benefits, and compares original/first-commit/cleanup fsync modes across all five sizes on twenty devices. |
 
 ## Optimization inventory
 

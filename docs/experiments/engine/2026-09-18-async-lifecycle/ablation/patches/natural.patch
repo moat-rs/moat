@@ -1,0 +1,11 @@
+--- a/benchmarks/cache-disk/src/engines/mod.rs
++++ b/benchmarks/cache-disk/src/engines/mod.rs
+@@ -74,7 +74,7 @@
+ impl Put {
+     pub fn new(c: &Config, record: &Record) -> Self {
+         let split = c.engine == "foyer" || c.key_bytes + c.value_bytes >= 65536;
+-        if c.engine == "moat" && c.moat_input_pool && split {
++        if false {
+             // Stabilize source alignment across engine revisions: initialization
+             // allocations must not determine the timed payload-copy alignment.
+             let mut value = AlignedBuf::zeroed(c.value_bytes.div_ceil(PAGE_SIZE as usize) * PAGE_SIZE as usize);

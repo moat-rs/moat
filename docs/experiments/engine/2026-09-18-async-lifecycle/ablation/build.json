@@ -1,0 +1,36 @@
+{
+  "base_commit": "a55205f664c040b6a2af7eaa206b9336d2b05902",
+  "original_commit": "f76d1dcf8f290261af2860321d040d3f0b87df93",
+  "binaries": {
+    "base": "9479a92ccccecea93003c6199eccebc691fb336d40c5af61b5b14ec0942dcd35",
+    "length": "70f4a26da919bda22636b3075259b20f95bf0bb4df8d656819eefa5d862a1efc",
+    "control": "5d47f3b3c1487f6299794e3799c4882d57f445a5887ebf72763d2e614fe71f07",
+    "exact-index": "6290c6b4de672c2387a19cbb1718ece6a460dba6c5b1aac5edff9dbaf5ff2e24",
+    "natural": "dabc4c9b0efc602c090f059bd62decc3a84f8d0b8844e2310ccb6593ae000288",
+    "original": "9773a1102ea19fd772d55b545ef7d35f8476fe2bf277eefac4496900fea5526c",
+    "cleanup": "46c8f6a0057ddf44f92b645e6a0478f4f46b3082c4e631db3b65fa3ae02db551"
+  },
+  "cleanup_patch_sha256": "5898d4010fc4ca1b641f30cbb2d96a2996b5ac10e16ad130988f9b6a610289d1",
+  "cleanup_files": {
+    "core/moat-engine/src/engine/lifecycle.rs": "f7d5fa7013f539be49a931c47a5bce5c3e109f24b7066dae55e45b4699ee9c09",
+    "core/moat-engine/src/pipeline/maintenance.rs": "5665b97d929a6b0d1d9ab0fc240b49370b32b17cb0d6239ace68f3c1250083d2",
+    "core/moat-engine/src/pipeline/write.rs": "30e0d7149d14434c77897551ff80a848444c30978583975b5a39c04b70f23ad3",
+    "core/moat-engine/src/segment/builder.rs": "97a6743d7353a7a6b40454afdf505ec85d4e1af0ff372285a15d04228aef5e4a"
+  },
+  "toolchain": {
+    "rustc": [
+      "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+      "binary: rustc",
+      "commit-hash: 88d9e12ae178fab0fb5cc050a94da85685d449ea",
+      "commit-date: 2026-08-18",
+      "host: x86_64-unknown-linux-gnu",
+      "release: 1.98.0",
+      "LLVM version: 22.1.8"
+    ],
+    "cargo": "cargo 1.98.0 (797e8a9bc 2026-08-05)",
+    "target": "x86_64-unknown-linux-gnu",
+    "rustflags": "-C target-cpu=x86-64-v3",
+    "profile": "release",
+    "allocator": "system glibc"
+  }
+}

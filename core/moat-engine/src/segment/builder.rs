@@ -138,25 +138,13 @@ impl SegmentBuilder {
         bytes.fill(0);
         bytes[..self.metadata.len()].copy_from_slice(&self.metadata);
         let at = len - FOOTER_TRAILER_LEN;
-        let trailer = &mut bytes[at..];
-        trailer[..8].copy_from_slice(&FOOTER_MAGIC);
-        put_u32(trailer, 8, FORMAT_VERSION);
-        trailer[16..32].copy_from_slice(&self.header.id.device_id);
-        put_u32(trailer, 32, self.header.id.segment_no);
-        put_u32(trailer, 36, self.data_end);
-        put_u64(trailer, 40, self.header.id.sequence);
-        put_u32(trailer, 48, self.frame_count);
-        put_u32(trailer, 52, self.metadata.len() as u32);
-        put_u32(trailer, 56, len as u32);
+        let header = self.sealed_header();
+        encode_trailer(&mut bytes[at..], header, len);
         let checksum = super::footer::checksum(bytes);
         put_u32(&mut bytes[at..], 60, checksum);
         let checksum = crc_with_zeroed_checksum(&bytes[at..]);
         put_u32(&mut bytes[at..], 12, checksum);
-        self.header.seal = Some(Seal {
-            data_end: self.data_end,
-            frame_count: self.frame_count,
-            metadata_len: self.metadata.len() as u32,
-        });
+        self.header = header;
         Ok(self.header)
     }
 }
@@ -170,14 +158,19 @@ pub(crate) struct FooterEncoder {
     checksum: moat_common::Crc32c,
 }
 impl SegmentBuilder {
-    pub(crate) fn into_footer(self) -> FooterEncoder {
-        let len = self.footer_len();
+    fn sealed_header(&self) -> SegmentHeader {
         let mut header = self.header;
         header.seal = Some(Seal {
             data_end: self.data_end,
             frame_count: self.frame_count,
             metadata_len: self.metadata.len() as u32,
         });
+        header
+    }
+
+    pub(crate) fn into_footer(self) -> FooterEncoder {
+        let len = self.footer_len();
+        let header = self.sealed_header();
         FooterEncoder {
             metadata: self.metadata,
             header,
@@ -205,17 +198,7 @@ impl FooterEncoder {
         );
         if last {
             let at = len - FOOTER_TRAILER_LEN;
-            let seal = self.header.seal.expect("sealed footer");
-            let trailer = &mut bytes[at..];
-            trailer[..8].copy_from_slice(&FOOTER_MAGIC);
-            put_u32(trailer, 8, FORMAT_VERSION);
-            trailer[16..32].copy_from_slice(&self.header.id.device_id);
-            put_u32(trailer, 32, self.header.id.segment_no);
-            put_u32(trailer, 36, seal.data_end);
-            put_u64(trailer, 40, self.header.id.sequence);
-            put_u32(trailer, 48, seal.frame_count);
-            put_u32(trailer, 52, seal.metadata_len);
-            put_u32(trailer, 56, self.len as u32);
+            encode_trailer(&mut bytes[at..], self.header, self.len);
             self.checksum.update(&bytes);
             put_u32(&mut bytes[at..], 60, self.checksum.finalize());
             let crc = crc_with_zeroed_checksum(&bytes[at..]);
@@ -226,5 +209,77 @@ impl FooterEncoder {
         let offset = self.header.segment_len - self.len as u32 + self.offset as u32;
         self.offset += len;
         Some((offset, bytes, last))
+    }
+}
+
+// Both encoders write the same trailer fields before calculating their CRCs.
+fn encode_trailer(trailer: &mut [u8], header: SegmentHeader, footer_len: usize) {
+    let seal = header.seal.expect("sealed footer");
+    trailer[..8].copy_from_slice(&FOOTER_MAGIC);
+    put_u32(trailer, 8, FORMAT_VERSION);
+    trailer[16..32].copy_from_slice(&header.id.device_id);
+    put_u32(trailer, 32, header.id.segment_no);
+    put_u32(trailer, 36, seal.data_end);
+    put_u64(trailer, 40, header.id.sequence);
+    put_u32(trailer, 48, seal.frame_count);
+    put_u32(trailer, 52, seal.metadata_len);
+    put_u32(trailer, 56, footer_len as u32);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        frame::{FrameBuilder, FrameLimits},
+        segment::{Footer, SegmentId},
+    };
+    use moat_common::ChunkId;
+
+    #[test]
+    fn incremental_footer_matches_contiguous_encoding_across_chunk_boundaries() {
+        let limits = FrameLimits::new(16 << 10, 8 << 10).unwrap();
+        let header = SegmentHeader::new(
+            SegmentId {
+                device_id: [0x37; 16],
+                segment_no: 9,
+                sequence: 123,
+            },
+            16 << 20,
+        )
+        .unwrap();
+        for count in [0, 1, 30, 31, 496, 497, 528, 1024] {
+            let mut whole = SegmentBuilder::new(header).unwrap();
+            let mut incremental = SegmentBuilder::new(header).unwrap();
+            for key in 0..count {
+                let mut frame = FrameBuilder::new(limits);
+                frame.push(ChunkId::from_u128(key), key as u64 + 1, b"test").unwrap();
+                let position = whole.position(frame.encoded_len(), frame.metadata_len()).unwrap();
+                let mut bytes = vec![0; frame.encoded_len()];
+                frame.encode_into(position, &mut bytes).unwrap();
+                let metadata = Metadata::decode(&bytes, limits, position).unwrap();
+                whole.append(metadata).unwrap();
+                incremental.append(metadata).unwrap();
+            }
+            let mut expected = vec![0xff; whole.footer_len()];
+            let sealed = whole.seal_into(&mut expected).unwrap();
+            let mut encoder = incremental.into_footer();
+            let mut actual = Vec::new();
+            let mut last_pages = 0;
+            while let Some((offset, bytes, last)) = encoder.next() {
+                assert_eq!(
+                    offset as usize,
+                    header.segment_len as usize - expected.len() + actual.len()
+                );
+                assert!(bytes.len() <= 64 << 10);
+                if last {
+                    assert_eq!(bytes.len(), PAGE_SIZE as usize);
+                    last_pages += 1;
+                }
+                actual.extend_from_slice(&bytes);
+            }
+            assert_eq!(last_pages, 1);
+            assert_eq!(actual, expected, "frame count: {count}");
+            Footer::decode(&actual, sealed, limits).unwrap();
+        }
     }
 }

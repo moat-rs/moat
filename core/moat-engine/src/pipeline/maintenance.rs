@@ -110,7 +110,7 @@ impl<Q: Queue> Pipeline<Q> {
         self.control_done.take()
     }
     pub(super) fn start_control(&mut self) {
-        if self.queue_failed || self.queue.vacant() == 0 {
+        if self.queue_failed {
             return;
         }
         if let Some(request) = self.control.take() {
