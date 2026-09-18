@@ -1,0 +1,14 @@
+[
+  {
+    "case": "trace-v100-disabled",
+    "fsync_syscalls": 0,
+    "fdatasync_syscalls": 0,
+    "counts_io_uring_sqe": false
+  },
+  {
+    "case": "trace-v100-enabled",
+    "fsync_syscalls": 0,
+    "fdatasync_syscalls": 100,
+    "counts_io_uring_sqe": false
+  }
+]

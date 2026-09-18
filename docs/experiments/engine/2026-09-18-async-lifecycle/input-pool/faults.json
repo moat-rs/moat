@@ -1,0 +1,26 @@
+[
+  {
+    "case": "faults-owned",
+    "minor_faults": 2412015,
+    "major_faults": 0,
+    "under_strace": false
+  },
+  {
+    "case": "faults-pooled",
+    "minor_faults": 15717,
+    "major_faults": 0,
+    "under_strace": false
+  },
+  {
+    "case": "trace-owned",
+    "minor_faults": 2413991,
+    "major_faults": 0,
+    "under_strace": true
+  },
+  {
+    "case": "trace-pooled",
+    "minor_faults": 15730,
+    "major_faults": 0,
+    "under_strace": true
+  }
+]

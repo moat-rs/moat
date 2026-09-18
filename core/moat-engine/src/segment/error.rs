@@ -20,6 +20,9 @@ use crate::frame;
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
+    /// Metadata allocation failed before admission.
+    #[error("segment metadata allocation failed: {0}")]
+    Allocation(#[from] std::collections::TryReserveError),
     /// Caller-supplied segment geometry or frame order is invalid.
     #[error("invalid segment argument: {0}")]
     InvalidArgument(&'static str),

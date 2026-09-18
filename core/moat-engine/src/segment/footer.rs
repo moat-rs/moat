@@ -171,3 +171,94 @@ impl<'a> Footer<'a> {
         })
     }
 }
+
+/// Budgeted footer validation, followed by frame-at-a-time recovery.
+pub(crate) struct FooterValidator {
+    header: SegmentHeader,
+    limits: FrameLimits,
+    checksum: Crc32c,
+    checked: usize,
+    metadata_at: usize,
+    frame_offset: u32,
+    frames: u32,
+    expected: u32,
+    checksum_done: bool,
+}
+impl FooterValidator {
+    pub(crate) fn new(bytes: &[u8], header: SegmentHeader, limits: FrameLimits) -> Result<Self> {
+        let trailer = FooterTrailer::decode(bytes, header.segment_len)?;
+        if trailer.header != header {
+            return Err(Error::Corrupt("footer identity"));
+        }
+        Ok(Self {
+            header,
+            limits,
+            checksum: Crc32c::new(),
+            checked: 0,
+            metadata_at: 0,
+            frame_offset: PAGE_SIZE as u32,
+            frames: 0,
+            expected: trailer.checksum,
+            checksum_done: false,
+        })
+    }
+    pub(crate) fn step(&mut self, bytes: &[u8]) -> Result<bool> {
+        let seal = self.header.seal.expect("sealed header");
+        let at = bytes.len() - FOOTER_TRAILER_LEN;
+        if !self.checksum_done {
+            let end = (self.checked + (64 << 10)).min(bytes.len());
+            for (start, stop, zero) in [
+                (0, at + 12, false),
+                (at + 12, at + 16, true),
+                (at + 16, at + 60, false),
+                (at + 60, bytes.len(), true),
+            ] {
+                let lo = self.checked.max(start);
+                let hi = end.min(stop);
+                if lo < hi {
+                    if zero {
+                        self.checksum.update(&[0; 4][..hi - lo]);
+                    } else {
+                        self.checksum.update(&bytes[lo..hi]);
+                    }
+                }
+            }
+            let lo = self.checked.max(seal.metadata_len as usize);
+            let hi = end.min(at);
+            if lo < hi && bytes[lo..hi].iter().any(|b| *b != 0) {
+                return Err(Error::Corrupt("footer padding"));
+            }
+            self.checked = end;
+            if end == bytes.len() {
+                if self.checksum.finalize() != self.expected {
+                    return Err(Error::Corrupt("footer checksum"));
+                }
+                self.checksum_done = true;
+            }
+            return Ok(false);
+        }
+        if self.frames == seal.frame_count {
+            if self.metadata_at != seal.metadata_len as usize || self.frame_offset != seal.data_end {
+                return Err(Error::Corrupt("footer frame coverage"));
+            }
+            return Ok(true);
+        }
+        let position = self.header.position(self.frame_offset).map_err(|source| Error::Frame {
+            offset: self.frame_offset,
+            source,
+        })?;
+        let metadata = Metadata::decode(
+            &bytes[self.metadata_at..seal.metadata_len as usize],
+            self.limits,
+            position,
+        )
+        .map_err(|source| Error::Frame {
+            offset: self.frame_offset,
+            source,
+        })?;
+        self.metadata_at += metadata.as_bytes().len();
+        self.frame_offset += metadata.header().frame_len() as u32;
+        self.frames += 1;
+        Ok(false)
+    }
+}

@@ -38,6 +38,7 @@ fn device() -> Arc<MemDevice> {
     storage::format(
         &*device,
         &FormatOptions {
+            sync_mode: Default::default(),
             segment_size: (SEGMENT) as u32,
             limits: FrameLimits::new(((CHUNK_MAX as u32) + 8192u32).next_power_of_two(), CHUNK_MAX as u32).unwrap(),
             device_id: [1; 16],
@@ -62,6 +63,7 @@ fn store_on(devices: Vec<Arc<dyn Device>>, backend: QueueBackend) -> Store {
             Disk::open(
                 device,
                 storage::Options {
+                    sync_mode: Default::default(),
                     index_capacity: 1024,
 
                     verify_reads: false,
@@ -511,6 +513,7 @@ fn uring_multiple_disks_recover_after_device_order_changes() {
             storage::format(
                 &*device,
                 &FormatOptions {
+                    sync_mode: Default::default(),
                     segment_size: (SEGMENT) as u32,
                     limits: FrameLimits::new(((64 << 10) + 8192u32).next_power_of_two(), 64 << 10).unwrap(),
                     device_id: [index as u8 + 1; 16],

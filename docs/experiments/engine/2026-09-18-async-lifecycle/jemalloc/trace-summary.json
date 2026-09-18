@@ -1,0 +1,20 @@
+[
+  {
+    "case": "trace-v65536-jemalloc",
+    "calls": {
+      "MADV_DONTNEED": 16
+    },
+    "bytes": {
+      "MADV_DONTNEED": 2445312
+    }
+  },
+  {
+    "case": "trace-v65536-system",
+    "calls": {
+      "MADV_DONTNEED": 2460
+    },
+    "bytes": {
+      "MADV_DONTNEED": 9831829504
+    }
+  }
+]

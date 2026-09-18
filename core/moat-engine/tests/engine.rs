@@ -25,16 +25,16 @@ use std::{
 
 use moat_common::{AlignedBuf, ChunkId, PAGE_SIZE};
 use moat_engine::{
-    engine::{self, Device, Engine, Error, FormatOptions, Layout},
+    engine::{self, Completion, Device, Engine, Error, FormatOptions, Layout},
     frame::{FrameBuilder, FrameLimits, FramePosition, PreparedFrame},
-    io::{FileQueue, Queue},
-    pipeline::{self, Completion, ReadBuffers},
+    io::Queue,
+    pipeline::{self, ReadBuffers},
     segment::{FooterTrailer, SegmentHeader},
 };
 
 const PAGE: usize = PAGE_SIZE as usize;
 const STRIDE: u32 = 64 * 1024;
-type Store = Engine<Disk, FileQueue>;
+type Store = Engine<Disk, DiskQueue>;
 
 #[derive(Clone)]
 struct Disk {
@@ -66,7 +66,14 @@ impl Disk {
         self.file.sync_data().unwrap();
     }
     fn open(&self) -> engine::Result<Store> {
-        Engine::open(self.clone(), FileQueue::new(self.file.try_clone().unwrap(), 4).unwrap())
+        Engine::open_blocking(
+            self.clone(),
+            DiskQueue {
+                disk: self.clone(),
+                completed: std::collections::VecDeque::new(),
+                depth: 4,
+            },
+        )
     }
 }
 impl Device for Disk {
@@ -93,6 +100,7 @@ impl Device for Disk {
 }
 fn options(id: u8) -> FormatOptions {
     FormatOptions {
+        sync_mode: Default::default(),
         device_id: [id; 16],
         segment_size: STRIDE,
         limits: FrameLimits::new(32768, 16384).unwrap(),
@@ -130,12 +138,14 @@ fn drain<D: Device, Q: Queue>(store: &mut Engine<D, Q>) -> Vec<Completion> {
                 assert!(result.is_ok(), "{result:?}")
             }
             Completion::Read { result, .. } => assert!(result.is_ok(), "{result:?}"),
+            Completion::Lifecycle { result, .. } => assert!(result.is_ok(), "{result:?}"),
+            Completion::Failed { error, .. } => panic!("{error}"),
         }
     }
     out
 }
 fn put(store: &mut Store, id: u128, lsn: u64, value: Option<&[u8]>) {
-    let mut frame = FrameBuilder::new(store.layout().limits());
+    let mut frame = FrameBuilder::new(store.layout().unwrap().limits());
     match value {
         Some(value) => frame.push(key(id), lsn, value).unwrap(),
         None => frame.push_tombstone(key(id), lsn).unwrap(),
@@ -179,7 +189,7 @@ fn rollover_routes_old_and_new_records_and_reopens_all_segments() {
             assert_eq!(get(&mut store, id, 4096, verify), vec![id as u8; 4096]);
         }
     }
-    store.seal().unwrap();
+    store.seal_blocking().unwrap();
     drop(store);
     let mut store = disk.open().unwrap();
     for verify in [false, true] {
@@ -193,18 +203,18 @@ fn rollover_routes_old_and_new_records_and_reopens_all_segments() {
 fn caller_selection_and_lsn_order_survive_physical_recovery_order() {
     let disk = disk(4);
     let mut store = disk.open().unwrap();
-    store.rollover_to(3).unwrap();
+    store.rollover_to_blocking(3).unwrap();
     put(&mut store, 1, 30, Some(b"new"));
     put(&mut store, 2, 30, None);
-    store.rollover_to(0).unwrap();
+    store.rollover_to_blocking(0).unwrap();
     put(&mut store, 1, 10, Some(b"old"));
     put(&mut store, 2, 10, Some(b"old"));
-    store.seal().unwrap();
+    store.seal_blocking().unwrap();
     drop(store);
     let mut store = disk.open().unwrap();
     assert_eq!(get(&mut store, 1, 3, true), b"new");
-    assert!(!store.contains(&key(2)));
-    assert!(matches!(store.rollover_to(3), Err(Error::InvalidArgument(_))));
+    assert!(!store.contains(&key(2)).unwrap());
+    assert!(matches!(store.rollover_to_blocking(3), Err(Error::InvalidArgument(_))));
 }
 
 #[test]
@@ -227,7 +237,7 @@ fn full_device_returns_prepared_buffer_and_remains_readable() {
     let disk = disk(1);
     let mut store = disk.open().unwrap();
     let len = 16384;
-    let limits = store.layout().limits();
+    let limits = store.layout().unwrap().limits();
     for id in 0..2 {
         put(&mut store, id, id as u64 + 1, Some(&vec![id as u8; len]));
     }
@@ -260,7 +270,7 @@ fn rollover_waits_for_delivery_and_preserves_a_pending_read_snapshot() {
         .read(key(1), 0..3, false, ReadBuffers::new(AlignedBuf::zeroed(PAGE)))
         .unwrap();
     assert!(matches!(
-        store.rollover(),
+        store.rollover_blocking(),
         Err(Error::Pipeline(pipeline::Error::Backpressure))
     ));
     let out = drain(&mut store);
@@ -272,7 +282,7 @@ fn rollover_waits_for_delivery_and_preserves_a_pending_read_snapshot() {
         } => assert_eq!(buffers.view(range.clone()), b"old"),
         _ => panic!("read"),
     }
-    store.rollover().unwrap();
+    store.rollover_blocking().unwrap();
     put(&mut store, 1, 2, Some(b"new"));
     assert_eq!(get(&mut store, 1, 3, true), b"new");
 }
@@ -282,11 +292,11 @@ fn seal_order_never_overwrites_the_allocation_header() {
     let disk = disk(2);
     let mut store = disk.open().unwrap();
     put(&mut store, 1, 1, Some(b"data"));
-    let base = store.layout().segment_base(0).unwrap();
+    let base = store.layout().unwrap().segment_base(0).unwrap();
     let mut before = vec![0; PAGE];
     disk.read_at(&mut before, base).unwrap();
     disk.fail(usize::MAX);
-    store.seal().unwrap();
+    store.seal_blocking().unwrap();
     assert_eq!(
         &*disk.log.borrow(),
         &[(false, 0), (true, base + STRIDE as u64 - PAGE_SIZE), (false, 0)]
@@ -305,8 +315,11 @@ fn every_seal_failure_stops_writes_and_preserves_previously_flushed_data() {
         store.flush().unwrap();
         drain(&mut store);
         disk.fail(failure);
-        assert!(matches!(store.seal(), Err(Error::Io(_))));
-        assert!(matches!(store.rollover(), Err(Error::Failed)));
+        assert!(matches!(
+            store.seal_blocking(),
+            Err(Error::Pipeline(pipeline::Error::Io { .. }))
+        ));
+        assert!(matches!(store.rollover_blocking(), Err(Error::Failed)));
         assert_eq!(get(&mut store, 1, 7, false), b"durable");
         drop(store);
         disk.fail(usize::MAX);
@@ -323,8 +336,8 @@ fn torn_seal_and_bad_footer_recover_without_rewriting_headers() {
         let disk = disk(2);
         let mut store = disk.open().unwrap();
         put(&mut store, 1, 1, Some(b"recover"));
-        store.seal().unwrap();
-        let layout = store.layout();
+        store.seal_blocking().unwrap();
+        let layout = store.layout().unwrap();
         drop(store);
         let base = layout.segment_base(0).unwrap();
         let offset = if damage == "seal" {
@@ -343,8 +356,8 @@ fn sealed_damage_remains_an_error_when_footer_fallback_scans_frames() {
     let disk = disk(2);
     let mut store = disk.open().unwrap();
     put(&mut store, 1, 1, Some(b"data"));
-    store.seal().unwrap();
-    let base = store.layout().segment_base(0).unwrap();
+    store.seal_blocking().unwrap();
+    let base = store.layout().unwrap().segment_base(0).unwrap();
     drop(store);
     disk.file
         .write_all_at(&[0xff], base + STRIDE as u64 - PAGE_SIZE + 17)
@@ -386,7 +399,7 @@ fn reformat_changes_epoch_so_unwritten_old_frames_cannot_resurrect() {
     let mut store = disk.open().unwrap();
     assert_eq!(get(&mut store, 99, 5, true), b"fresh");
     for id in 0..4 {
-        assert!(!store.contains(&key(id)));
+        assert!(!store.contains(&key(id)).unwrap());
     }
 }
 
@@ -396,15 +409,18 @@ fn fresh_allocation_header_must_be_durable_before_frames_are_submitted() {
         let disk = disk(2);
         let mut store = disk.open().unwrap();
         disk.fail(failure);
-        let mut frame = FrameBuilder::new(store.layout().limits());
+        let mut frame = FrameBuilder::new(store.layout().unwrap().limits());
         frame.push(key(1), 1, b"new").unwrap();
         let rejected = store
             .write(&frame, AlignedBuf::zeroed(frame.encoded_len()))
             .unwrap_err();
-        assert!(matches!(rejected.error, Error::Io(_)));
+        assert!(matches!(rejected.error, Error::Pipeline(pipeline::Error::Backpressure)));
+        assert_eq!(disk.calls.get(), 0);
+        drain(&mut store);
+        assert_eq!(store.state(), engine::State::Failed);
         assert_eq!(store.in_flight(), 0);
-        assert!(!store.contains(&key(1)));
-        assert!(matches!(store.rollover(), Err(Error::Failed)));
+        assert!(!store.contains(&key(1)).unwrap());
+        assert!(matches!(store.rollover_blocking(), Err(Error::Failed)));
     }
 }
 
@@ -413,8 +429,8 @@ fn footer_trailer_is_stored_in_the_final_page_of_the_segment() {
     let disk = disk(1);
     let mut store = disk.open().unwrap();
     put(&mut store, 1, 1, Some(b"x"));
-    store.seal().unwrap();
-    let layout = store.layout();
+    store.seal_blocking().unwrap();
+    let layout = store.layout().unwrap();
     let base = layout.segment_base(0).unwrap();
     let mut page = vec![0; PAGE];
     disk.read_at(&mut page, base + STRIDE as u64 - PAGE_SIZE).unwrap();
@@ -438,8 +454,8 @@ fn registered_prepared_io_rolls_over_and_reopens_with_both_read_policies() {
     })
     .unwrap();
     let queue = UringQueue::with_pool(disk.file.try_clone().unwrap(), 4, pool.clone()).unwrap();
-    let mut store = Engine::open(disk.clone(), queue).unwrap();
-    let limits = store.layout().limits();
+    let mut store = Engine::open_blocking(disk.clone(), queue).unwrap();
+    let limits = store.layout().unwrap().limits();
     let mut buffer: moat_engine::io::Buffer = pool
         .alloc(PreparedFrame::required_len(limits, 4096).unwrap())
         .unwrap()
@@ -449,7 +465,16 @@ fn registered_prepared_io_rolls_over_and_reopens_with_both_read_policies() {
             .unwrap()
             .value_mut()
             .fill(id as u8);
-        store.write_prepared(key(id), id as u64 + 1, 4096, buffer).unwrap();
+        loop {
+            match store.write_prepared(key(id), id as u64 + 1, 4096, buffer) {
+                Ok(_) => break,
+                Err(rejected) if matches!(rejected.error, Error::Pipeline(pipeline::Error::Backpressure)) => {
+                    buffer = rejected.input;
+                    drain(&mut store);
+                }
+                Err(rejected) => panic!("{}", rejected.error),
+            }
+        }
         buffer = match drain(&mut store).pop().unwrap() {
             Completion::Write { buffer, .. } => buffer,
             _ => panic!("expected write"),
@@ -458,10 +483,10 @@ fn registered_prepared_io_rolls_over_and_reopens_with_both_read_policies() {
     assert!(store.allocated_segments() > 1);
     store.flush().unwrap();
     drain(&mut store);
-    store.seal().unwrap();
+    store.seal_blocking().unwrap();
     drop(store);
     let queue = UringQueue::with_pool(disk.file.try_clone().unwrap(), 4, pool).unwrap();
-    let mut store = Engine::open(disk, queue).unwrap();
+    let mut store = Engine::open_blocking(disk, queue).unwrap();
     for verify in [false, true] {
         for id in 0..20 {
             assert_eq!(get(&mut store, id, 4096, verify), vec![id as u8; 4096]);
@@ -477,18 +502,18 @@ fn interrupted_format_never_commits_partial_allocation_reset() {
         let disk = disk(2);
         let mut store = disk.open().unwrap();
         put(&mut store, 1, 1, Some(b"old"));
-        store.seal().unwrap();
+        store.seal_blocking().unwrap();
         drop(store);
         disk.fail(failure);
         assert!(matches!(engine::format(&disk, options(8)), Err(Error::Io(_))));
         disk.fail(usize::MAX);
         match disk.open() {
             Ok(store) => {
-                if store.layout().device_id() == [7; 16] {
-                    assert!(store.contains(&key(1)));
+                if store.layout().unwrap().device_id() == [7; 16] {
+                    assert!(store.contains(&key(1)).unwrap());
                 } else {
                     assert_eq!(store.allocated_segments(), 0);
-                    assert!(!store.contains(&key(1)));
+                    assert!(!store.contains(&key(1)).unwrap());
                 }
             }
             Err(Error::NotFormatted) => {}
@@ -498,11 +523,21 @@ fn interrupted_format_never_commits_partial_allocation_reset() {
 }
 
 fn put_batch(store: &mut Store, count: u32) {
-    let mut frame = FrameBuilder::new(store.layout().limits());
+    let mut frame = FrameBuilder::new(store.layout().unwrap().limits());
     for n in 0..count {
         frame.push(key(n as u128), n as u64, b"x").unwrap();
     }
-    store.write(&frame, AlignedBuf::zeroed(frame.encoded_len())).unwrap();
+    let mut buffer = AlignedBuf::zeroed(frame.encoded_len()).into();
+    loop {
+        match store.write(&frame, buffer) {
+            Ok(_) => break,
+            Err(rejected) if matches!(rejected.error, Error::Pipeline(pipeline::Error::Backpressure)) => {
+                buffer = rejected.input;
+                drain(store);
+            }
+            Err(rejected) => panic!("{}", rejected.error),
+        }
+    }
     drain(store);
 }
 
@@ -521,8 +556,8 @@ fn recovery_reads_small_footer_once_and_only_the_prefix_of_large_footer() {
         let disk = disk(1);
         let mut store = disk.open().unwrap();
         put_batch(&mut store, records);
-        store.seal().unwrap();
-        let base = store.layout().segment_base(0).unwrap();
+        store.seal_blocking().unwrap();
+        let base = store.layout().unwrap().segment_base(0).unwrap();
         drop(store);
         disk.reads.borrow_mut().clear();
         let mut store = disk.open().unwrap();
@@ -539,7 +574,7 @@ fn recovery_reads_small_footer_once_and_only_the_prefix_of_large_footer() {
             ));
         }
         assert_eq!(*disk.reads.borrow(), expected);
-        assert_eq!(store.indexed_versions(), records as usize);
+        assert_eq!(store.indexed_versions().unwrap(), records as usize);
         for n in 0..records {
             assert_eq!(get(&mut store, n as u128, 1, true), b"x");
         }
@@ -551,9 +586,9 @@ fn multipage_seal_persists_prefix_before_committing_the_tail_page() {
     let disk = disk(1);
     let mut store = disk.open().unwrap();
     put_batch(&mut store, 70);
-    let base = store.layout().segment_base(0).unwrap();
+    let base = store.layout().unwrap().segment_base(0).unwrap();
     disk.fail(usize::MAX);
-    store.seal().unwrap();
+    store.seal_blocking().unwrap();
     assert_eq!(
         *disk.log.borrow(),
         vec![
@@ -574,12 +609,15 @@ fn every_multipage_seal_failure_preserves_previously_flushed_records() {
         store.flush().unwrap();
         drain(&mut store);
         disk.fail(failure);
-        assert!(matches!(store.seal(), Err(Error::Io(_))));
-        assert!(matches!(store.rollover(), Err(Error::Failed)));
+        assert!(matches!(
+            store.seal_blocking(),
+            Err(Error::Pipeline(pipeline::Error::Io { .. }))
+        ));
+        assert!(matches!(store.rollover_blocking(), Err(Error::Failed)));
         drop(store);
         disk.fail(usize::MAX);
         let mut store = disk.open().unwrap();
-        assert_eq!(store.indexed_versions(), 70);
+        assert_eq!(store.indexed_versions().unwrap(), 70);
         assert_eq!(get(&mut store, 69, 1, true), b"x");
     }
 }
@@ -590,8 +628,8 @@ fn older_footer_is_ignored_after_allocation_generation_changes() {
     let mut store = disk.open().unwrap();
     put(&mut store, 1, 1, Some(b"old"));
     put(&mut store, 2, 2, Some(b"stale"));
-    store.seal().unwrap();
-    let layout = store.layout();
+    store.seal_blocking().unwrap();
+    let layout = store.layout().unwrap();
     let base = layout.segment_base(0).unwrap();
     drop(store);
     let mut page = vec![0; PAGE];
@@ -609,7 +647,7 @@ fn older_footer_is_ignored_after_allocation_generation_changes() {
     disk.write_at(&page, base).unwrap();
     disk.sync().unwrap();
     // Allocation alone must not resurrect either old record.
-    assert_eq!(disk.open().unwrap().indexed_versions(), 0);
+    assert_eq!(disk.open().unwrap().indexed_versions().unwrap(), 0);
     let mut frame = FrameBuilder::new(layout.limits());
     frame.push(key(99), 99, b"fresh").unwrap();
     let mut bytes = AlignedBuf::zeroed(frame.encoded_len());
@@ -622,10 +660,10 @@ fn older_footer_is_ignored_after_allocation_generation_changes() {
     disk.write_at(&bytes, base + PAGE_SIZE).unwrap();
     disk.sync().unwrap();
     let mut store = disk.open().unwrap();
-    assert_eq!(store.indexed_versions(), 1);
+    assert_eq!(store.indexed_versions().unwrap(), 1);
     assert_eq!(get(&mut store, 99, 5, true), b"fresh");
-    assert!(!store.contains(&key(1)));
-    assert!(!store.contains(&key(2)));
+    assert!(!store.contains(&key(1)).unwrap());
+    assert!(!store.contains(&key(2)).unwrap());
 }
 
 #[test]
@@ -634,8 +672,8 @@ fn future_footer_and_wrong_allocation_identity_are_errors() {
         let disk = disk(1);
         let mut store = disk.open().unwrap();
         put(&mut store, 1, 1, Some(b"x"));
-        store.seal().unwrap();
-        let base = store.layout().segment_base(0).unwrap();
+        store.seal_blocking().unwrap();
+        let base = store.layout().unwrap().segment_base(0).unwrap();
         drop(store);
         let at = base + STRIDE as u64 - 64;
         let mut trailer = vec![0; 64];
@@ -657,8 +695,8 @@ fn valid_footer_cannot_hide_a_corrupt_allocation_header() {
     let disk = disk(1);
     let mut store = disk.open().unwrap();
     put(&mut store, 1, 1, Some(b"x"));
-    store.seal().unwrap();
-    let base = store.layout().segment_base(0).unwrap();
+    store.seal_blocking().unwrap();
+    let base = store.layout().unwrap().segment_base(0).unwrap();
     drop(store);
     disk.file.write_all_at(&[0xff], base + 12).unwrap();
     assert!(matches!(disk.open(), Err(Error::Segment(_))));
@@ -672,8 +710,8 @@ fn torn_tail_page_recovers_with_partial_metadata_or_partial_trailer() {
         put_batch(&mut store, records);
         store.flush().unwrap();
         drain(&mut store);
-        store.seal().unwrap();
-        let at = store.layout().segment_base(0).unwrap() + STRIDE as u64 - PAGE_SIZE;
+        store.seal_blocking().unwrap();
+        let at = store.layout().unwrap().segment_base(0).unwrap() + STRIDE as u64 - PAGE_SIZE;
         drop(store);
         let mut tail = vec![0; PAGE];
         disk.read_at(&mut tail, at).unwrap();
@@ -705,7 +743,7 @@ fn torn_tail_page_recovers_with_partial_metadata_or_partial_trailer() {
                 disk.file.write_all_at(&torn, at).unwrap();
                 let mut reopened = disk.open().unwrap();
                 assert_eq!(
-                    reopened.indexed_versions(),
+                    reopened.indexed_versions().unwrap(),
                     records as usize,
                     "cut={cut}, prefix={keep_prefix}"
                 );
@@ -720,14 +758,14 @@ fn same_generation_bad_footer_keeps_the_committed_frame_boundary() {
     let disk = disk(1);
     let mut store = disk.open().unwrap();
     put_batch(&mut store, 70);
-    store.seal().unwrap();
-    let base = store.layout().segment_base(0).unwrap();
+    store.seal_blocking().unwrap();
+    let base = store.layout().unwrap().segment_base(0).unwrap();
     drop(store);
     // Damage the first footer page while retaining the independently valid trailer.
     disk.file
         .write_all_at(&[0xff], base + STRIDE as u64 - 2 * PAGE_SIZE)
         .unwrap();
-    assert_eq!(disk.open().unwrap().indexed_versions(), 70);
+    assert_eq!(disk.open().unwrap().indexed_versions().unwrap(), 70);
     disk.file.write_all_at(&[0xff], base + PAGE_SIZE + 12).unwrap();
     assert!(matches!(disk.open(), Err(Error::Segment(_))));
 }
@@ -737,8 +775,8 @@ fn recovery_read_errors_are_not_treated_as_missing_footers() {
     let disk = disk(1);
     let mut store = disk.open().unwrap();
     put_batch(&mut store, 70);
-    store.seal().unwrap();
-    let base = store.layout().segment_base(0).unwrap();
+    store.seal_blocking().unwrap();
+    let base = store.layout().unwrap().segment_base(0).unwrap();
     drop(store);
     for at in [
         base,
@@ -746,7 +784,7 @@ fn recovery_read_errors_are_not_treated_as_missing_footers() {
         base + STRIDE as u64 - 2 * PAGE_SIZE,
     ] {
         disk.fail_read.set(Some(at));
-        assert!(matches!(disk.open(), Err(Error::Io(_))));
+        assert!(matches!(disk.open(), Err(Error::Pipeline(pipeline::Error::Io { .. }))));
     }
 }
 
@@ -759,12 +797,15 @@ fn seal_crash_discards_unsynced_writes_without_losing_durable_records() {
             put_batch(&mut store, records);
             disk.sync().unwrap();
             disk.fail(failure);
-            assert!(matches!(store.seal(), Err(Error::Io(_))));
+            assert!(matches!(
+                store.seal_blocking(),
+                Err(Error::Pipeline(pipeline::Error::Io { .. }))
+            ));
             drop(store);
             disk.crash();
             disk.fail(usize::MAX);
             let mut reopened = disk.open().unwrap();
-            assert_eq!(reopened.indexed_versions(), records as usize);
+            assert_eq!(reopened.indexed_versions().unwrap(), records as usize);
             assert_eq!(get(&mut reopened, (records - 1) as u128, 1, true), b"x");
         }
     }
@@ -808,7 +849,50 @@ fn reformat_advances_beyond_recovered_allocation_generations() {
     disk.sync().unwrap();
     drop(store);
     let mut store = disk.open().unwrap();
-    assert_eq!(store.indexed_versions(), 1);
+    assert_eq!(store.indexed_versions().unwrap(), 1);
     assert_eq!(get(&mut store, 99, 5, true), b"fresh");
-    assert!(!store.contains(&key(2)));
+    assert!(!store.contains(&key(2)).unwrap());
+}
+
+// Lifecycle I/O now uses Queue; fault injection must cover that same device.
+struct DiskQueue {
+    disk: Disk,
+    depth: usize,
+    completed: std::collections::VecDeque<moat_engine::io::Completion>,
+}
+impl Queue for DiskQueue {
+    fn depth(&self) -> usize {
+        self.depth
+    }
+    fn vacant(&self) -> usize {
+        self.depth - self.completed.len()
+    }
+    fn has_ready(&self) -> bool {
+        !self.completed.is_empty()
+    }
+    fn try_submit(&mut self, mut request: moat_engine::io::Request) -> Result<(), moat_engine::io::Request> {
+        if self.vacant() == 0 {
+            return Err(request);
+        }
+        let result = match request.operation {
+            moat_engine::io::Operation::Read => self
+                .disk
+                .read_at(&mut request.buffer.as_mut().unwrap()[..request.len], request.offset)
+                .map(|_| request.len),
+            moat_engine::io::Operation::Write => self
+                .disk
+                .write_at(&request.buffer.as_ref().unwrap()[..request.len], request.offset)
+                .map(|_| request.len),
+            moat_engine::io::Operation::Sync => self.disk.sync().map(|_| 0),
+        };
+        self.completed
+            .push_back(moat_engine::io::Completion { request, result });
+        Ok(())
+    }
+    fn poll(&mut self, _wait: bool) -> io::Result<()> {
+        Ok(())
+    }
+    fn pop(&mut self) -> Option<moat_engine::io::Completion> {
+        self.completed.pop_front()
+    }
 }

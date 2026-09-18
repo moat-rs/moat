@@ -1,0 +1,30 @@
+[
+  {
+    "case": "trace-default-baseline",
+    "dontneed_calls": 0,
+    "dontneed_bytes": 0,
+    "phase": "per-owner timed writer",
+    "counts_unfinished_entries": true
+  },
+  {
+    "case": "trace-default-current",
+    "dontneed_calls": 2426,
+    "dontneed_bytes": 9822990336,
+    "phase": "per-owner timed writer",
+    "counts_unfinished_entries": true
+  },
+  {
+    "case": "trace-high-current",
+    "dontneed_calls": 0,
+    "dontneed_bytes": 0,
+    "phase": "per-owner timed writer",
+    "counts_unfinished_entries": true
+  },
+  {
+    "case": "trace-low-baseline",
+    "dontneed_calls": 2412,
+    "dontneed_bytes": 9766133760,
+    "phase": "per-owner timed writer",
+    "counts_unfinished_entries": true
+  }
+]

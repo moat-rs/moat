@@ -5,7 +5,52 @@ This standalone workspace compares moat and foyer pinned to
 [`dd46245c45071d1036331e4e2c48e15386017b96`](https://github.com/foyer-rs/foyer/tree/dd46245c45071d1036331e4e2c48e15386017b96).
 Foyer dependencies are confined to the comparison workspace.
 
-The [latest twenty-device v2 recheck](../../docs/experiments/cache-disk/2026-09-17-v2/REPORT.md)
+The executable uses the system allocator. The historical jemalloc experiment
+is archived; its optional integration has been removed.
+
+`moat_sync` defaults to `true`. Set it to `false` for a Moat run that skips
+format and engine lifecycle syncs as well as the driver's final prefill
+`sync_data`. Pending writes still complete before verification. This changes
+the durability contract and must be reported explicitly in comparisons;
+Foyer's synchronization is unaffected. It does not alter device cache settings.
+
+`moat_input_pool` defaults to `true`. Each pinned Moat owner allocates and touches
+a bounded pool of source values before reporting startup complete, then retains
+it through the measured phases. The pool contains at most 64 values and about
+4 MiB of payload per owner (one value can exceed the byte target), also capped
+by the local batch and dataset size. Source storage is recycled after successful
+admission because Moat has copied it into its registered I/O buffer. Every record
+still fills its complete source value and stamps its identity inside timing.
+Pooled sources for prepared writes use page-aligned allocations, with padding
+excluded from the logical value. This stabilizes payload-copy alignment across
+engine revisions even when initialization allocations differ. Smaller combined
+key/value sources retain their existing representation.
+Set `moat_input_pool: false` to retain the historical allocating-input control.
+
+Foyer takes ownership of source values, so its existing owned-input mode remains
+in effect regardless of this Moat option. `DRIVER.input` reports `pooled` or
+`owned`; per-owner `INPUT` records report buffer counts and payload capacity.
+`DRIVER.input_alignment` distinguishes page-aligned sources from natural
+allocation alignment. The analyzer keeps input modes, source alignments, and
+fsync policies in separate result groups; historical logs default to natural
+alignment.
+Compare engine revisions with matching input modes, and report this ownership
+difference when comparing Moat's default pooled mode with Foyer.
+
+The [preallocated-input twenty-device recheck](../../docs/experiments/engine/2026-09-18-async-lifecycle/input-pool/REPORT.md)
+compares both engine revisions with the same source pool, retaining allocating-input
+controls and page-reclamation evidence.
+
+The [64-KiB follow-up](../../docs/experiments/engine/2026-09-18-async-lifecycle/64k-followup/REPORT.md)
+isolates lifecycle waits and copy costs, and compares both engine revisions
+with page-aligned input pools on all twenty devices.
+
+The [longer twenty-device comparison](../../docs/experiments/engine/2026-09-18-async-lifecycle/large-batch/REPORT.md)
+uses the same binaries with larger datasets and matching 1-GiB segments. Its
+single complete round requires at least ten measured seconds for every write
+and random-read phase and retains all fifteen samples and per-device counters.
+
+The [earlier twenty-device v2 recheck](../../docs/experiments/cache-disk/2026-09-17-v2/REPORT.md)
 records the native engine after migration, with all samples and comparison limits.
 
 The common workload driver uses a synchronous `Backend` interface: submit
@@ -41,9 +86,10 @@ Backpressure retains the unsubmitted request. Latency includes time waiting
 for admission, and the timed phase drains every accepted request before reporting.
 
 Prefill divides `prefill_batch` between devices and drains each local batch.
-There is no cross-device barrier between batches. Value allocation and generation,
-encoding, checksums, I/O, and the final device sync are timed. Keys and routing
-are prepared outside timing. Small engine values use a contiguous key/value
+There is no cross-device barrier between batches. Value generation, encoding,
+checksums, I/O, and the configured final device sync are timed. Source-value
+allocation is outside timing in pooled mode and inside timing in owned mode.
+Keys and routing are prepared outside timing. Small engine values use a contiguous key/value
 envelope; large prepared writes copy the separately owned key and value directly
 into the registered buffer. Generation and encoding are bounded to 64 records
 or about 4 MiB between polls (one record can exceed the byte budget). Moat retains
@@ -67,7 +113,8 @@ read allocations, so equal pool settings are not equal total-memory limits.
 Historical input-copy, in-place producer, and large-frame batching diagnostics
 are archived with their measured source revisions in the
 [experiment record](../../docs/experiments/README.md). The current driver keeps
-one owned-input comparison path. Retired or misspelled configuration fields
+explicit pooled-input and owned-input modes without removing the final copy
+into registered engine storage. Retired or misspelled configuration fields
 are rejected instead of silently selecting a different workload.
 
 The `CONFIG` output contains an explicit allowlist of workload parameters and

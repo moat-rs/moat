@@ -44,6 +44,7 @@ struct Config {
     qds: Vec<usize>,
     disk_stat: Option<PathBuf>,
     verify: bool,
+    sync: bool,
     huge_pages: HugePages,
     range: Option<Range<u32>>,
 }
@@ -53,7 +54,7 @@ impl Config {
         let args: Vec<_> = std::env::args().collect();
         assert!(
             args.len() >= 8 && (args.len() - 8).is_multiple_of(2),
-            "usage: moat-engine-compare PATH moat SIZE|mixed PAYLOAD_MIB SECONDS QDS --overwrite-first-4g|--overwrite-entire-device [--verify true|false] [--range full|START:END] [--huge-pages disabled|preferred|required]"
+            "usage: moat-engine-compare PATH moat SIZE|mixed PAYLOAD_MIB SECONDS QDS --overwrite-first-4g|--overwrite-entire-device [--verify true|false] [--sync true|false] [--range full|START:END] [--huge-pages disabled|preferred|required]"
         );
         assert!(matches!(
             args[7].as_str(),
@@ -82,6 +83,7 @@ impl Config {
             qds: args[6].split(',').map(|s| s.parse().unwrap()).collect(),
             disk_stat: stat.exists().then_some(stat),
             verify: false,
+            sync: true,
             huge_pages: HugePages::Preferred,
             range: None,
         };
@@ -96,6 +98,7 @@ impl Config {
                     }
                 }
                 "--verify" => config.verify = option[1].parse().expect("verify must be true or false"),
+                "--sync" => config.sync = option[1].parse().expect("sync must be true or false"),
                 "--range" if option[1] == "full" => config.range = None,
                 "--range" => {
                     let (start, end) = option[1].split_once(':').expect("range must be START:END");
@@ -266,7 +269,7 @@ impl Measurement {
                 "device_read_ios": after.read_ios - self.before.read_ios,
                 "device_write_ios": after.write_ios - self.before.write_ios,
                 "memory": backend.memory(), "huge_pages": format!("{:?}", config.huge_pages),
-                "verified_reads": config.verify, "durable_flush": true,
+                "verified_reads": config.verify, "durable_flush": config.sync,
                 "read_range": config.range.as_ref().map_or_else(|| "full".to_owned(), |r| format!("{}:{}", r.start, r.end)),
             })
         );
@@ -390,5 +393,6 @@ fn run(mut backend: impl Backend, config: &Config) {
 
 fn main() {
     let config = Config::parse();
+    println!("SYNC {}", json!({"enabled": config.sync}));
     run(unified::Unified::new(&config), &config);
 }

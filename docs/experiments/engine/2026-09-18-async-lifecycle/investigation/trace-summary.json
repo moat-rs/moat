@@ -1,0 +1,34 @@
+[
+  {
+    "name": "trace-v65536-baseline",
+    "seconds": 0.293243712,
+    "calls": {},
+    "discard_bytes": 0
+  },
+  {
+    "name": "trace-v65536-candidate",
+    "seconds": 0.342519301,
+    "calls": {
+      "madvise": 2462,
+      "madvise_dontneed": 2462,
+      "mmap": 20
+    },
+    "discard_bytes": 9831927808
+  },
+  {
+    "name": "trace-v65536-notrim-baseline",
+    "seconds": 0.276151258,
+    "calls": {
+      "mmap": 20
+    },
+    "discard_bytes": 0
+  },
+  {
+    "name": "trace-v65536-notrim-candidate",
+    "seconds": 0.267361915,
+    "calls": {
+      "mmap": 20
+    },
+    "discard_bytes": 0
+  }
+]

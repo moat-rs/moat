@@ -39,6 +39,7 @@ fn devices() -> Vec<Arc<dyn Device>> {
             storage::format(
                 &dev,
                 &FormatOptions {
+                    sync_mode: Default::default(),
                     segment_size: 1 << 20,
                     limits: FrameLimits::new(128 << 10, 64 << 10).unwrap(),
                     device_id: [d as u8 + 1; 16],
@@ -116,6 +117,7 @@ impl Handler for Load {
                     self.reads_done += 1;
                 }
                 Completion::Flush { .. } => unreachable!(),
+                Completion::Failed { error, .. } => panic!("{error}"),
             }
         }
         if !self.written {

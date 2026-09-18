@@ -51,6 +51,7 @@ fn engine(device: Arc<dyn Device>) -> Disk {
     Disk::open(
         device,
         storage::Options {
+            sync_mode: Default::default(),
             index_capacity: 1024,
 
             verify_reads: true,
@@ -67,6 +68,7 @@ fn device(uuid: u8) -> Arc<GateDevice> {
     storage::format(
         &*device,
         &FormatOptions {
+            sync_mode: Default::default(),
             segment_size: (SEGMENT) as u32,
             limits: FrameLimits::new(((128 << 10) + 8192u32).next_power_of_two(), 128 << 10).unwrap(),
             device_id: [uuid; 16],
@@ -446,6 +448,7 @@ fn uring_file_backend_drives_the_same_adapter_contract() {
     storage::format(
         &*device,
         &FormatOptions {
+            sync_mode: Default::default(),
             segment_size: (SEGMENT) as u32,
             limits: FrameLimits::new(((128 << 10) + 8192u32).next_power_of_two(), 128 << 10).unwrap(),
             device_id: [12; 16],

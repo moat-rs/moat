@@ -312,6 +312,11 @@ fn run_worker<H: Handler>(
             slot.session.poll(true, &mut scratch).map_err(engine_err)?;
             for completion in scratch.drain(..) {
                 match completion {
+                    Completion::Failed { error, .. } => {
+                        return Err(engine_err(crate::storage::Error::Engine(
+                            moat_engine::engine::Error::Aborted(error),
+                        )));
+                    }
                     Completion::Write { result, .. } | Completion::Flush { result, .. } => {
                         result.map_err(crate::storage::Error::from).map_err(engine_err)?
                     }

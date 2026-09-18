@@ -1,0 +1,10 @@
+{
+  "head": "f76d1dcf8f290261af2860321d040d3f0b87df93",
+  "rustflags": "-C target-cpu=x86-64-v3",
+  "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)\nbinary: rustc\ncommit-hash: 88d9e12ae178fab0fb5cc050a94da85685d449ea\ncommit-date: 2026-08-18\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.0\nLLVM version: 22.1.8\n",
+  "started": 1789703596.36884,
+  "baseline-binary_sha256": "767dd5a90f2e626e3dc8f93f74b24c05367f0c11515215c577837e007918b7a3",
+  "candidate-binary_sha256": "db2aff85e1f8f3ed4260fb7a03fef61bcfb1cf2b4a65082b051826917a3c7601",
+  "candidate-source.tar.gz_sha256": "92d48f4945fcca220bcb4dc174374a04802a6a27eaa16ba92278ffc7b301ca7f",
+  "source.patch_sha256": "d9db7cb478ab1fc9226e52bbba48b4834cdfc37bd1192bf19a44922845086c9a"
+}

@@ -61,6 +61,7 @@ fn device() -> Arc<MemDevice> {
     storage::format(
         &*d,
         &FormatOptions {
+            sync_mode: Default::default(),
             segment_size: (1 << 20) as u32,
             limits: FrameLimits::new(((128 << 10) + 8192u32).next_power_of_two(), 128 << 10).unwrap(),
             device_id: [19; 16],

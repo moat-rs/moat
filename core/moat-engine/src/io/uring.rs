@@ -17,7 +17,10 @@ use std::{
     fs::File,
     io,
     marker::PhantomData,
-    os::{fd::AsRawFd, unix::fs::FileTypeExt},
+    os::{
+        fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd},
+        unix::fs::FileTypeExt,
+    },
     rc::Rc,
     sync::Arc,
 };
@@ -48,6 +51,7 @@ pub struct UringQueue {
     pool: Option<Arc<BufferPool>>,
     _file: File,
     deferred: bool,
+    notification: Option<OwnedFd>,
     _owner: PhantomData<Rc<()>>,
     pending: usize,
     max_io_len: usize,
@@ -61,7 +65,7 @@ impl UringQueue {
     /// Creates an asynchronous queue. Initialization errors are never downgraded
     /// silently to blocking I/O. The caller opens the file with its desired flags.
     pub fn new(file: File, depth: usize) -> io::Result<Self> {
-        Self::build(file, depth, None)
+        Self::build(file, depth, None, false)
     }
 
     /// Registers the pool's arenas once, including their huge-page backing.
@@ -74,7 +78,7 @@ impl UringQueue {
                 "invalid pool owner or arena count",
             ));
         }
-        Self::build(file, depth, Some(pool))
+        Self::build(file, depth, Some(pool), false)
     }
 
     /// Whether SINGLE_ISSUER and DEFER_TASKRUN were enabled together.
@@ -102,26 +106,59 @@ impl UringQueue {
         Ok(self)
     }
 
-    fn build(file: File, depth: usize, pool: Option<Arc<BufferPool>>) -> io::Result<Self> {
+    /// Creates a completion-notifying queue for epoll/poll integration. Deferred
+    /// task execution is deliberately disabled so readiness does not depend on
+    /// the sleeping owner entering the ring first. Pool ownership is unchanged.
+    pub fn with_notifications(file: File, depth: usize, pool: Option<Arc<BufferPool>>) -> io::Result<Self> {
+        if pool
+            .as_ref()
+            .is_some_and(|p| !p.is_home() || p.arenas().len() > u16::MAX as usize)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid pool owner or arena count",
+            ));
+        }
+        Self::build(file, depth, pool, true)
+    }
+
+    fn build(file: File, depth: usize, pool: Option<Arc<BufferPool>>, notify: bool) -> io::Result<Self> {
         check_depth(depth)?;
         let max_io_len = device_io_len(&file)?;
         let entries = depth.next_power_of_two() as u32;
-        let (ring, deferred) = match IoUring::builder()
-            .setup_cqsize(entries * 2)
-            .setup_single_issuer()
-            .setup_defer_taskrun()
-            .build(entries)
-        {
-            Ok(ring) => (ring, true),
-            Err(error)
-                if matches!(
-                    error.raw_os_error(),
-                    Some(libc::EINVAL | libc::ENOSYS | libc::EOPNOTSUPP)
-                ) =>
+        let (ring, deferred) = if notify {
+            (IoUring::builder().setup_cqsize(entries * 2).build(entries)?, false)
+        } else {
+            match IoUring::builder()
+                .setup_cqsize(entries * 2)
+                .setup_single_issuer()
+                .setup_defer_taskrun()
+                .build(entries)
             {
-                (IoUring::builder().setup_cqsize(entries * 2).build(entries)?, false)
+                Ok(ring) => (ring, true),
+                Err(error)
+                    if matches!(
+                        error.raw_os_error(),
+                        Some(libc::EINVAL | libc::ENOSYS | libc::EOPNOTSUPP)
+                    ) =>
+                {
+                    (IoUring::builder().setup_cqsize(entries * 2).build(entries)?, false)
+                }
+                Err(error) => return Err(error),
             }
-            Err(error) => return Err(error),
+        };
+        let notification = if notify {
+            // SAFETY: eventfd has no pointer arguments; flags request nonblocking ownership.
+            let fd = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
+            if fd < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: fd is a fresh valid descriptor and ownership is transferred once.
+            let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+            ring.submitter().register_eventfd(fd.as_raw_fd())?;
+            Some(fd)
+        } else {
+            None
         };
         ring.submitter().register_files(&[file.as_raw_fd()])?;
         if let Some(pool) = &pool {
@@ -143,6 +180,7 @@ impl UringQueue {
             pool,
             _file: file,
             deferred,
+            notification,
             _owner: PhantomData,
             pending: 0,
             max_io_len,
@@ -202,6 +240,13 @@ impl UringQueue {
 }
 
 impl Queue for UringQueue {
+    fn notification_fd(&self) -> Option<BorrowedFd<'_>> {
+        self.notification.as_ref().map(AsFd::as_fd)
+    }
+    fn has_ready(&self) -> bool {
+        (!self.ready.is_empty() && self.pending < self.slots.len()) || !self.completed.is_empty()
+    }
+
     fn depth(&self) -> usize {
         self.slots.len()
     }
@@ -232,6 +277,17 @@ impl Queue for UringQueue {
     }
 
     fn poll(&mut self, wait: bool) -> io::Result<()> {
+        if let Some(fd) = &self.notification {
+            let mut count = 0u64;
+            // SAFETY: count is a live writable eight-byte destination. The fd is nonblocking.
+            let result = unsafe { libc::read(fd.as_raw_fd(), (&mut count as *mut u64).cast(), 8) };
+            if result < 0 {
+                let error = io::Error::last_os_error();
+                if !matches!(error.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted) {
+                    return Err(error);
+                }
+            }
+        }
         // Deferred task work is driven by the enter below. Other rings may have
         // completed work since the last poll; reclaim its SQE budget first.
         if !self.deferred {

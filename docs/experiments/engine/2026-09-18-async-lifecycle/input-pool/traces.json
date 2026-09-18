@@ -1,0 +1,16 @@
+[
+  {
+    "case": "trace-owned",
+    "dontneed_calls": 2426,
+    "dontneed_bytes": 9823002624,
+    "phase": "per-owner timed writer",
+    "counts_unfinished_entries": true
+  },
+  {
+    "case": "trace-pooled",
+    "dontneed_calls": 0,
+    "dontneed_bytes": 0,
+    "phase": "per-owner timed writer",
+    "counts_unfinished_entries": true
+  }
+]

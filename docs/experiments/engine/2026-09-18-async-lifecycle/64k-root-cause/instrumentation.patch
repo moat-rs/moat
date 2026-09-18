@@ -1,0 +1,88 @@
+--- a/benchmarks/cache-disk/src/workload.rs
++++ b/benchmarks/cache-disk/src/workload.rs
+@@ -215,7 +215,24 @@
+     Ok(())
+ }
+ 
++
++fn diag_usage() -> libc::rusage {
++    let mut value = std::mem::MaybeUninit::<libc::rusage>::uninit();
++    assert_eq!(unsafe { libc::getrusage(libc::RUSAGE_THREAD, value.as_mut_ptr()) }, 0);
++    unsafe { value.assume_init() }
++}
++fn diag_cpu(t: libc::timeval) -> i64 { t.tv_sec * 1_000_000 + t.tv_usec }
++fn diag_wall() -> u128 {
++    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
++}
++
+ fn prefill(backend: &mut impl Backend, c: &Config, records: &[Record], batch: usize) -> Result<Stats> {
++    let diag_wall_start = diag_wall();
++    let diag_start = Instant::now();
++    let diag_before = diag_usage();
++    let (mut make_ns, mut drop_ns, mut put_ns, mut poll_ns) = (0u128,0u128,0u128,0u128);
++    let (mut put_calls, mut rejects, mut polls) = (0u64,0u64,0u64);
++
+     let mut pending = VecDeque::with_capacity(ENCODE_RECORDS);
+     let mut writing = HashMap::new();
+     let mut out = Vec::with_capacity(256);
+@@ -226,25 +243,34 @@
+             if pending.is_empty() {
+                 let count = ENCODE_RECORDS.min(ENCODE_BYTES.div_ceil(c.key_bytes + c.value_bytes));
+                 let end = (next + count).min(chunk.len());
++                let timer = Instant::now();
+                 pending.extend(chunk[next..end].iter().map(|r| Put::new(c, r)));
++                make_ns += timer.elapsed().as_nanos();
+                 next = end;
+             }
+             let mut bytes = 0;
+             while !pending.is_empty() {
+                 let first_len = pending[0].len();
+-                let Some((ticket, count)) = backend.put(&mut pending)? else {
+-                    break;
+-                };
++                let timer = Instant::now();
++                let result = backend.put(&mut pending)?;
++                put_ns += timer.elapsed().as_nanos();
++                put_calls += 1;
++                let Some((ticket, count)) = result else { rejects += 1; break; };
+                 ensure!(count > 0 && count <= pending.len(), "invalid write batch");
+                 // Uniform record sizes. Foyer moves the value out on admission.
+                 bytes += count * first_len;
++                let timer = Instant::now();
+                 pending.drain(..count);
++                drop_ns += timer.elapsed().as_nanos();
+                 ensure!(writing.insert(ticket, count).is_none(), "duplicate write ticket");
+                 if bytes >= ENCODE_BYTES {
+                     break;
+                 }
+             }
++            let timer = Instant::now();
+             backend.poll(&mut out)?;
++            poll_ns += timer.elapsed().as_nanos();
++            polls += 1;
+             for done in out.drain(..) {
+                 let Done::Write(ticket, result) = done else {
+                     anyhow::bail!("read during prefill")
+@@ -257,6 +283,22 @@
+         backend.drain()?;
+     }
+     ensure!(stats.operations as usize == records.len(), "incomplete prefill");
++    let diag_elapsed = diag_start.elapsed().as_nanos();
++    let diag_after = diag_usage();
++    let diag_wall_end = diag_wall();
++    println!("DETAIL {}", serde_json::json!({
++        "tid": unsafe { libc::gettid() }, "records":records.len(),
++        "wall_start_ns":diag_wall_start, "wall_end_ns":diag_wall_end,
++        "elapsed_ns":diag_elapsed, "make_ns":make_ns,"drop_ns":drop_ns,"put_ns":put_ns,"poll_ns":poll_ns,
++        "other_ns":diag_elapsed-make_ns-drop_ns-put_ns-poll_ns,
++        "put_calls":put_calls,"rejects":rejects,"polls":polls,
++        "minor_faults":diag_after.ru_minflt-diag_before.ru_minflt,
++        "major_faults":diag_after.ru_majflt-diag_before.ru_majflt,
++        "user_us":diag_cpu(diag_after.ru_utime)-diag_cpu(diag_before.ru_utime),
++        "system_us":diag_cpu(diag_after.ru_stime)-diag_cpu(diag_before.ru_stime),
++        "voluntary_switches":diag_after.ru_nvcsw-diag_before.ru_nvcsw,
++        "involuntary_switches":diag_after.ru_nivcsw-diag_before.ru_nivcsw
++    }));
+     Ok(stats)
+ }
+ 

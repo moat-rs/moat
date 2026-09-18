@@ -40,6 +40,7 @@ The v1 designs and experiments explain historical decisions. The engine and the 
 | [Chunkserver design](design/chunkserver.md) | Overall architecture and goals |
 | [Chunkserver audit](design/chunkserver-audit.md) | Design review and constraints |
 | [Engine migration guide](design/engine-migration.md) | Current interfaces, transition boundaries, missing capabilities, and rebuild priorities |
+| [Current chunkserver API inventory](design/chunkserver-api-inventory.md) | Implemented API surfaces, ownership, defaults, review decisions, and complete public declarations |
 | [Historical engine API](design/engine-api.md) | Removed v1 shared-queue design |
 | [Unified Frame layout proposal](design/engine-frame-layout.md) | Immutable frames, mixed-value placement, read/write paths, recovery, and tradeoffs |
 | [Earlier engine write layout proposal](design/engine-write-layout.md) | Open inline pages, unified value extents, and a recovery validation model |

@@ -54,17 +54,24 @@ pub(super) fn entries(metadata: Metadata<'_>, segment: u32) -> impl Iterator<Ite
     })
 }
 
-pub(super) fn apply(index: &mut Index, entries: impl IntoIterator<Item = (ChunkId, Location)>) {
+pub(super) fn apply(
+    index: &mut Index,
+    keys: &mut Vec<ChunkId>,
+    entries: impl IntoIterator<Item = (ChunkId, Location)>,
+) {
     for (key, location) in entries {
         // Physical completion order does not determine logical version order.
         // Keep tombstones so an older late-arriving value cannot resurrect a key.
-        index
-            .entry(key)
-            .and_modify(|old| {
-                if location.lsn > old.lsn {
-                    *old = location;
+        match index.entry(key) {
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                if location.lsn > entry.get().lsn {
+                    entry.insert(location);
                 }
-            })
-            .or_insert(location);
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                keys.push(key);
+                entry.insert(location);
+            }
+        }
     }
 }

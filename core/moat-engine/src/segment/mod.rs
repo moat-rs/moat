@@ -25,8 +25,10 @@ mod footer;
 mod header;
 mod recovery;
 
+pub(crate) use builder::FooterEncoder;
 pub use builder::SegmentBuilder;
 pub use error::{Error, Result};
+pub(crate) use footer::FooterValidator;
 pub use footer::{Footer, FooterTrailer};
 pub use header::{SegmentHeader, SegmentId};
 pub use recovery::Scanner;

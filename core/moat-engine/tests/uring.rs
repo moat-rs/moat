@@ -321,3 +321,33 @@ fn io_limit_is_aligned_and_cannot_be_raised() {
         .unwrap();
     assert_eq!(queue.max_io_len(), CHUNK);
 }
+
+#[test]
+fn notification_queue_wakes_an_external_poller_without_deferred_taskrun() {
+    use std::os::fd::AsRawFd;
+    let file = tempfile::tempfile().unwrap();
+    file.set_len((4 * PAGE) as u64).unwrap();
+    let mut queue = UringQueue::with_notifications(file, 4, None).unwrap();
+    assert!(!queue.deferred_taskrun());
+    queue
+        .try_submit(request(Operation::Write, AlignedBuf::zeroed(PAGE)))
+        .unwrap();
+    queue.poll(false).unwrap();
+    // A completion already reaped by the first poll must be consumed without
+    // sleeping; otherwise the eventfd must wake an external poller.
+    if !queue.has_ready() {
+        let mut fd = libc::pollfd {
+            fd: queue.notification_fd().unwrap().as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: fd points to one valid pollfd for the duration of this call.
+        let result = unsafe { libc::poll(&mut fd, 1, 1000) };
+        assert_eq!(result, 1, "completion notification timed out");
+        assert_ne!(fd.revents & libc::POLLIN, 0);
+        queue.poll(false).unwrap();
+    }
+    let completion = queue.pop().expect("notified completion");
+    assert_eq!(completion.result.unwrap(), PAGE);
+    assert_eq!(queue.vacant(), 4);
+}

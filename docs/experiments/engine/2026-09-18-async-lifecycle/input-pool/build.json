@@ -1,0 +1,16 @@
+{
+  "profile": "release",
+  "target": "x86_64-unknown-linux-gnu",
+  "rustflags": "-C target-cpu=x86-64-v3",
+  "allocator": "system (glibc)",
+  "source_archive_sha256": "ad9cfe8c820fd4a80a0a78a04e3846fd896e07645f0263447321ca6716767b19",
+  "binaries": {
+    "baseline": "13c785a39852d00d23b50a50e412df7ae7c7bce258ec19e0f55e8624e1db5bd3",
+    "current": "37ff4de07e295c28f437dfc1143e62974846c6f3359c8f5e598e3e701bc3a1bb"
+  },
+  "probe": {
+    "binary_sha256": "ca2df4f5e974bcd5d0d6d40070390508f34749e3073949ac15e96d5cb3261298",
+    "workload_sha256": "0c958d6ef925e894b3ba894bac62f71724e859bca4c832bb713130d5e5d4a68a"
+  },
+  "baseline_note": "Original engine, with the same pooled/owned workload, Put reset, and configuration implementation as current; original engine adapter preserved."
+}

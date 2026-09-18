@@ -30,6 +30,11 @@ for path in sorted(root.glob("*-d*-k*-v*.log")):
     configs = [json.loads(line[7:]) for line in lines if line.startswith("CONFIG ")]
     assert len(configs) == 1, path
     c = configs[0]
+    # Historical logs predate the input pool and defaulted to owned inputs.
+    input_mode = "pooled" if c["engine"] == "moat" and c.get("moat_input_pool", False) else "owned"
+    driver = next((json.loads(line[7:]) for line in lines if line.startswith("DRIVER ")), {})
+    input_alignment = driver.get("input_alignment", "natural")
+    sync_policy = "backend" if c["engine"] == "foyer" else ("enabled" if c.get("moat_sync", True) else "disabled")
     for line in lines:
         if line.startswith("PREFILL "):
             row = json.loads(line[8:])
@@ -41,6 +46,9 @@ for path in sorted(root.glob("*-d*-k*-v*.log")):
                 dict(
                     run=path.stem,
                     engine=c["engine"],
+                    input_mode=input_mode,
+                    input_alignment=input_alignment,
+                    sync_policy=sync_policy,
                     disks=len(c["disks"]),
                     key_bytes=c["key_bytes"],
                     value_bytes=c["value_bytes"],
@@ -66,6 +74,9 @@ for path in sorted(root.glob("*-d*-k*-v*.log")):
             dict(
                 run=path.stem,
                 engine=c["engine"],
+                input_mode=input_mode,
+                input_alignment=input_alignment,
+                sync_policy=sync_policy,
                 disks=len(c["disks"]),
                 key_bytes=c["key_bytes"],
                 value_bytes=c["value_bytes"],
@@ -106,7 +117,7 @@ def write_csv(name, rows):
 write_csv("samples.csv", records)
 write_csv("prefill.csv", prefills)
 groups = {}
-keys = ["engine", "disks", "key_bytes", "value_bytes", "clients"]
+keys = ["engine", "input_mode", "input_alignment", "sync_policy", "disks", "key_bytes", "value_bytes", "clients"]
 for row in records:
     groups.setdefault(tuple(row[k] for k in keys), []).append(row)
 summary = []
@@ -131,16 +142,18 @@ for disks, key_size, value_size in sorted(
     {(r["disks"], r["key_bytes"], r["value_bytes"]) for r in summary}
 ):
     best = []
-    for engine in sorted({r["engine"] for r in summary}):
+    for engine, input_mode, input_alignment, sync_policy in sorted(
+        {(r["engine"], r["input_mode"], r["input_alignment"], r["sync_policy"]) for r in summary}
+    ):
         candidates = [
             r
             for r in summary
-            if (r["engine"], r["disks"], r["key_bytes"], r["value_bytes"])
-            == (engine, disks, key_size, value_size)
+            if (r["engine"], r["input_mode"], r["input_alignment"], r["sync_policy"], r["disks"], r["key_bytes"], r["value_bytes"])
+            == (engine, input_mode, input_alignment, sync_policy, disks, key_size, value_size)
         ]
         if candidates:
             row = max(candidates, key=lambda r: r["ops_per_second"])
             best.append(
-                f"{engine}={row['ops_per_second']:.0f} ({row['clients']} clients)"
+                f"{engine}/{input_mode}/{input_alignment}/sync-{sync_policy}={row['ops_per_second']:.0f} ({row['clients']} clients)"
             )
     print(f"d={disks} k={key_size} v={value_size}: " + ", ".join(best))

@@ -1,0 +1,68 @@
+[
+  {
+    "case": "profile-v100-baseline",
+    "elapsed": 0.15168765932321548,
+    "cpu": 2.960726438,
+    "counts": {
+      "records": 10485760,
+      "polls": 343365,
+      "puts": 163850,
+      "rejects": 0
+    }
+  },
+  {
+    "case": "profile-v100-candidate",
+    "elapsed": 0.16483595222234726,
+    "cpu": 3.242853,
+    "counts": {
+      "records": 10485760,
+      "polls": 471608,
+      "puts": 248200,
+      "rejects": 84350
+    }
+  },
+  {
+    "case": "profile-v4194304-baseline",
+    "elapsed": 4.25514880893752,
+    "cpu": 68.04296716500001,
+    "counts": {
+      "records": 40960,
+      "polls": 1679047,
+      "puts": 176505,
+      "rejects": 135545
+    }
+  },
+  {
+    "case": "profile-v4194304-candidate",
+    "elapsed": 4.5438928552903235,
+    "cpu": 76.787997043,
+    "counts": {
+      "records": 40960,
+      "polls": 1354055,
+      "puts": 395835,
+      "rejects": 354875
+    }
+  },
+  {
+    "case": "profile-v65536-baseline",
+    "elapsed": 2.398169840220362,
+    "cpu": 40.968791976,
+    "counts": {
+      "records": 1310720,
+      "polls": 48197056,
+      "puts": 1367103,
+      "rejects": 56383
+    }
+  },
+  {
+    "case": "profile-v65536-candidate",
+    "elapsed": 2.381522350013256,
+    "cpu": 41.72726388,
+    "counts": {
+      "records": 1310720,
+      "polls": 41936504,
+      "puts": 2105059,
+      "rejects": 794339
+    }
+  }
+]

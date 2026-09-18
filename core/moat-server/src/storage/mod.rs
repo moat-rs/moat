@@ -78,8 +78,11 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// Runtime settings independent of persisted geometry.
 #[derive(Debug, Clone)]
 pub struct Options {
+    /// Explicit device-sync policy; disabled flushes still drain preceding writes.
+    pub sync_mode: engine::SyncMode,
     /// Initial index reservation and default upper-layer live-entry limit.
-    /// This is not a bound on the engine's latest-version index (which retains tombstones).
+    /// Also raises the native key budget above its default when larger.
+    /// The native budget includes tombstones and pending writes.
     pub index_capacity: usize,
     /// Validate metadata and payload checksums on reads.
     pub verify_reads: bool,
@@ -87,6 +90,7 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
+            sync_mode: engine::SyncMode::Enabled,
             index_capacity: 1024,
             verify_reads: false,
         }
@@ -190,6 +194,7 @@ pub struct Session {
     engine: engine::Engine<queue::OwnedDevice, queue::DeviceQueue>,
     pool: Arc<BufferPool>,
     next_lsn: u64,
+    completions: Vec<engine::Completion>,
     // Drop the engine (including its queue) before releasing ownership.
     lease: Lease,
     // Pools are thread-owned even with the synchronous queue.
@@ -211,18 +216,25 @@ impl Session {
         }
         let pool = BufferPool::new(options.pool)?;
         let queue = queue::DeviceQueue::new(disk.0.device.clone(), options.depth, backend, pool.clone())?;
-        let mut engine = engine::Engine::open(queue::OwnedDevice(disk.0.device.clone()), queue)?;
-        if engine.layout() != disk.layout() {
+        let mut runtime = engine::Options {
+            sync_mode: disk.0.options.sync_mode,
+            ..Default::default()
+        };
+        runtime.resources.index_entries = runtime.resources.index_entries.max(disk.index_capacity());
+        let mut engine =
+            engine::Engine::open_blocking_with_options(queue::OwnedDevice(disk.0.device.clone()), queue, runtime)?;
+        if engine.layout()? != disk.layout() {
             return Err(Error::Invalid("device geometry changed before ownership"));
         }
-        engine.reserve_index(disk.index_capacity())?;
+        engine.reserve_index(disk.index_capacity().saturating_sub(engine.indexed_versions()?))?;
         let mut max_lsn = 0;
-        engine.visit_versions(|_, lsn, _| max_lsn = max_lsn.max(lsn));
+        engine.visit_versions(|_, lsn, _| max_lsn = max_lsn.max(lsn))?;
         let next_lsn = max_lsn.checked_add(1).ok_or(Error::Invalid("LSN space exhausted"))?;
         let session = Self {
             engine,
             pool,
             next_lsn,
+            completions: Vec::with_capacity(options.depth),
             lease,
             _owner: std::marker::PhantomData,
         };
@@ -242,15 +254,17 @@ impl Session {
     }
     /// Published record version and length.
     pub fn stat(&self, id: &ChunkId) -> Option<(u64, u32)> {
-        self.engine.stat(id)
+        self.engine.stat(id).ok().flatten()
     }
     /// Visits live published records without copying the index.
     pub fn visit(&self, mut visit: impl FnMut(ChunkId, u64, u32)) {
-        self.engine.visit_versions(|id, lsn, len| {
-            if let Some(len) = len {
-                visit(id, lsn, len);
-            }
-        });
+        self.engine
+            .visit_versions(|id, lsn, len| {
+                if let Some(len) = len {
+                    visit(id, lsn, len);
+                }
+            })
+            .expect("opened session");
     }
     /// Outstanding operations, including undelivered completions.
     pub fn in_flight(&self) -> usize {
@@ -258,16 +272,18 @@ impl Session {
     }
     /// Drives the owner's queue, preserving native completions and buffers.
     pub fn poll(&mut self, wait: bool, out: &mut Vec<Completion>) -> Result<usize> {
-        let result = self.engine.poll(wait, out).map_err(Error::from);
+        let result = self.engine.poll(wait, &mut self.completions).map_err(Error::from);
+        let before = out.len();
+        out.extend(self.completions.drain(..).filter_map(engine::Completion::into_pipeline));
         self.publish_usage();
-        result
+        result.map(|_| out.len() - before)
     }
     /// Appends a data record or tombstone and returns its ticket and assigned LSN.
     /// The caller serializes conditional mutations of the same key.
     pub fn write(&mut self, id: ChunkId, value: Option<&[u8]>) -> Result<(Ticket, u64)> {
         let lsn = self.next_lsn;
         let next = lsn.checked_add(1).ok_or(Error::Invalid("LSN space exhausted"))?;
-        let limits: FrameLimits = self.engine.layout().limits();
+        let limits: FrameLimits = self.engine.layout()?.limits();
         let result = if let Some(value) = value.filter(|value| value.len() >= 65536) {
             let len = u32::try_from(value.len()).map_err(|_| Error::Invalid("value length exceeds u32"))?;
             let mut buffer = self
@@ -331,7 +347,7 @@ impl Session {
     }
     /// Seals after all completions have been delivered. This is a cold, blocking operation.
     pub fn seal(&mut self) -> Result<()> {
-        self.engine.seal().map_err(map_error)
+        self.engine.seal_blocking().map_err(map_error)
     }
 }
 fn map_error(error: engine::Error) -> Error {

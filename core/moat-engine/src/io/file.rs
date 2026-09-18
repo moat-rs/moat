@@ -40,6 +40,9 @@ impl FileQueue {
 }
 
 impl Queue for FileQueue {
+    fn has_ready(&self) -> bool {
+        !self.completed.is_empty()
+    }
     fn depth(&self) -> usize {
         self.depth
     }

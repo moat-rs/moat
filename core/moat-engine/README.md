@@ -2,6 +2,34 @@
 
 The sole storage engine in this repository implements [unified immutable frames](../../docs/design/engine-frame-layout.md), owner-driven I/O, and an append-only multi-segment device lifecycle. Shared IDs, CRC32C, aligned memory, and pools come from `moat-common`.
 
+`engine::SyncMode` controls explicit device persistence barriers. Set
+`FormatOptions::sync_mode` when formatting and `Options::sync_mode` when opening
+an owner; these are runtime choices and are not recorded in the device format.
+`Options::default()` uses `SyncMode::Enabled`, preserving existing durability.
+Server adapters propagate `storage::Options::sync_mode` to their engine owner.
+This selects fsync/fdatasync barriers, not synchronous versus asynchronous APIs:
+online operations retain their ticket/poll interface in both modes.
+
+`SyncMode::Disabled` skips **all** engine-issued device syncs: format,
+allocation, sealing, rollover, explicit flush, and close. Writes and lifecycle
+dependencies still wait for successful I/O completion. Explicit `flush()` remains
+an ordered write fence with a ticket and reports preceding write failures, but
+does not submit a sync operation. Disabled mode is appropriate for disposable
+cache contents or a backing device whose completion contract already guarantees
+durability. It does not detect PLP or change kernel/device write-cache settings.
+Without that backing guarantee, reinitialize disposable contents after an
+unclean shutdown; disabled flush completion alone is not durability.
+
+```rust,ignore
+let sync_mode = moat_engine::engine::SyncMode::Disabled;
+let options = moat_engine::engine::Options {
+    sync_mode,
+    ..Default::default()
+};
+// Use the same sync_mode in FormatOptions when creating the device.
+let (engine, open_ticket) = moat_engine::engine::Engine::open_with_options(device, queue, options)?;
+```
+
 Server, cache-store, and cache use the engine through [`moat-server::storage`](../moat-server/src/storage/mod.rs). The legacy v1 implementation has been removed; the engine does not read its format. Physical reclamation and segment reuse remain unimplemented. See the [device lifecycle](../../docs/design/engine-device-lifecycle.md) and [migration guide](../../docs/design/engine-migration.md) for current boundaries.
 
 ## Usage
@@ -28,6 +56,30 @@ assert_eq!(frame.value(1), None); // Tombstone, distinct from empty data.
 For a prepared value, allocate `PreparedFrame::required_len(limits, value_len)` bytes, borrow the buffer with `PreparedFrame::new`, fill `value_mut()`, then call `finish(position, key, lsn)`. The payload already occupies its final page-aligned region. Finishing computes checksums and writes metadata and padding without copying the payload. The caller's buffer remains available if finalization fails.
 
 The codec accepts byte slices. The I/O layer must supply an aligned buffer address, retain the buffer until completion, and prevent modification after submission. `AlignedBuf` and registered buffers from `moat-common` provide suitable storage; the codec does not allocate or submit those buffers.
+
+## Engine progress API
+
+`Engine::open(device, queue)` returns `Result<(Engine, Ticket)>`. Drive
+`poll(wait, &mut Vec<engine::Completion>)` until the open lifecycle completion
+succeeds; layout/index queries return `NotReady` before that. `seal`, `rollover`,
+`rollover_to`, and `close` return tickets through the same completion stream.
+`open_with_options` configures `ResourceLimits` and `PollBudget`; explicitly named
+blocking helpers support synchronous tools.
+
+A first write or segment/metadata exhaustion starts allocation/rollover and returns
+`Backpressure` with the original buffer. Poll and retry. Rollover drains writes
+and flushes while admitted reads retain their original storage. `close` rejects
+new work and drains/seals asynchronously; dropping early can still block to keep
+kernel-visible buffers alive. Fatal queue failures terminate accepted tickets
+with `Completion::Failed`, retaining buffers that cannot yet be safely released.
+
+Resource limits include tombstones and pending metadata, independently of the
+buffer pool. Poll budgets yield between frames; encoding and checksumming one
+frame remain synchronous and bounded by the frame limit. Cursor traversal yields
+between caller-selected key batches. For external event loops, use
+`UringQueue::with_notifications`, `has_ready`, and `notification_fd`; notification
+mode avoids deferred kernel task work. See the [lifecycle contract](../../docs/design/engine-device-lifecycle.md)
+for limits, shutdown, recovery, and blocking-backend details.
 
 ## Persistent encoding
 
@@ -170,7 +222,7 @@ The caller receives one completion after every subrequest finishes, retaining th
 
 `io::FileQueue` is a blocking functional backend. On Linux, `io::UringQueue::with_pool(file, depth, pool)` registers the shared `moat-common::BufferPool` arenas and uses fixed-buffer reads/writes for their buffers. `UringQueue::new(file, depth)` supports ordinary aligned buffers. Both constructors register the file, batch submissions, and request `SINGLE_ISSUER` with `DEFER_TASKRUN`; unsupported kernels fall back to a basic ring, observable through `deferred_taskrun()`. Registration failures remain errors. The index, operation slots, and write publication queue have a single mutable owner. `Engine::rollover_to` exposes caller-directed selection of unused slots; reclamation safety remains separate work.
 
-`io::Buffer` owns either an `AlignedBuf` or a `PooledBuf`. Write methods and `ReadBuffers::new` accept either through `Into<Buffer>`; explicit `ReadBuffers` fields take `.into()`. Completion and rejection return the same allocation without copying its contents or cloning its pool owner. A registered queue rejects buffers from another pool before I/O, while heap buffers use ordinary reads/writes. Registered storage stays alive until the ring is closed, and accepted requests are drained before their memory is released.
+`io::Buffer` owns either an `AlignedBuf` or a `PooledBuf`. Write methods and `ReadBuffers::new` accept either through `Into<Buffer>`; explicit `ReadBuffers` fields take `.into()`. Normal completion and rejection return the same allocation without copying its contents or cloning its pool owner. Fatal queue failures instead terminate tickets while retaining OS-visible buffers until safe teardown. A registered queue rejects buffers from another pool before I/O, while heap buffers use ordinary reads/writes. Registered storage stays alive until the ring is closed, and accepted requests are drained before their memory is released.
 
 Create the pool and queue on the thread that drives I/O. `UringQueue` is neither `Send` nor `Sync`, enforcing the kernel's issuer constraint even when a particular kernel falls back to a basic ring. Allocate buffers during setup and recycle completions in the hot path. The queue adds no locks; pool allocation and release retain the shared allocator's existing accounting.
 

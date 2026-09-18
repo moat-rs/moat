@@ -58,22 +58,23 @@ device. The lease does not replace cross-process file locking.
    append headroom is exhausted, without repeatedly invoking GC or deleting
    more live entries in an attempt to reclaim unavailable physical space.
    Existing entries remain readable; callers must arrange cache rebuilding.
-3. **No hard index memory bound.** Initial reservation and cache live-entry
-   limits do not bound the engine's latest-version index. Tombstones still occupy it.
+3. **Logical resource bounds are not an exact RSS cap.** Native engine options
+   bound indexed versions (including tombstones), pending metadata, frame buffers,
+   and segment metadata. Allocator overhead and caller-owned buffers are additional.
 4. **One frame per mutation in the transition adapter.** Large values use
    prepared buffers; small values are not batched across requests. Small-write
    throughput and space amplification cannot inherit v1 packing assumptions.
    The native benchmark directly uses the engine's batching APIs.
-5. **Allocation and seal are synchronous cold paths.** When a server worker
-   owns several disks, rollover on one can delay the others. Cache-store keeps
-   one worker per disk.
+5. **Adapter setup/shutdown wrappers remain synchronous.** Native open, rollover,
+   seal, and close are ticketed and poll-driven. Session startup and its seal helper
+   explicitly drive blocking wrappers. A Sync queue backend still blocks on I/O.
 6. **Reopen consumes new segments.** The engine does not continue appending to an old
    active tail, even when that tail has unused space.
 
 ## Future rebuild priorities
 
-First implement safe physical reclamation, segment reuse, and bounded index
-resources, covering read pins, tombstone lifetimes, and crash recovery. Then
+First implement safe physical reclamation and segment reuse, covering read pins,
+tombstone lifetimes, and crash recovery. Then
 rebuild owner scheduling and routing, followed by frame batching and prepared
 buffer retries. Adjust cache capacity controls using measurements of those paths.
 

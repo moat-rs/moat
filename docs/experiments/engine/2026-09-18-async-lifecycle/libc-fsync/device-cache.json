@@ -1,0 +1,127 @@
+{
+  "devices": [
+    {
+      "device": 0,
+      "write_cache": "write through",
+      "vwc": 6,
+      "volatile_write_cache_present": false
+    },
+    {
+      "device": 1,
+      "write_cache": "write through",
+      "vwc": 6,
+      "volatile_write_cache_present": false
+    },
+    {
+      "device": 2,
+      "write_cache": "write through",
+      "vwc": 6,
+      "volatile_write_cache_present": false
+    },
+    {
+      "device": 3,
+      "write_cache": "write through",
+      "vwc": 6,
+      "volatile_write_cache_present": false
+    },
+    {
+      "device": 4,
+      "write_cache": "write through",
+      "vwc": 6,
+      "volatile_write_cache_present": false
+    },
+    {
+      "device": 5,
+      "write_cache": "write through",
+      "vwc": 6,
+      "volatile_write_cache_present": false
+    },
+    {
+      "device": 6,
+      "write_cache": "write through",
+      "vwc": 6,
+      "volatile_write_cache_present": false
+    },
+    {
+      "device": 7,
+      "write_cache": "write through",
+      "vwc": 6,
+      "volatile_write_cache_present": false
+    },
+    {
+      "device": 8,
+      "write_cache": "write through",
+      "vwc": 6,
+      "volatile_write_cache_present": false
+    },
+    {
+      "device": 9,
+      "write_cache": "write through",
+      "vwc": 6,
+      "volatile_write_cache_present": false
+    },
+    {
+      "device": 10,
+      "write_cache": "write through",
+      "vwc": 6,
+      "volatile_write_cache_present": false
+    },
+    {
+      "device": 11,
+      "write_cache": "write through",
+      "vwc": 6,
+      "volatile_write_cache_present": false
+    },
+    {
+      "device": 12,
+      "write_cache": "write through",
+      "vwc": 6,
+      "volatile_write_cache_present": false
+    },
+    {
+      "device": 13,
+      "write_cache": "write through",
+      "vwc": 6,
+      "volatile_write_cache_present": false
+    },
+    {
+      "device": 14,
+      "write_cache": "write through",
+      "vwc": 6,
+      "volatile_write_cache_present": false
+    },
+    {
+      "device": 15,
+      "write_cache": "write through",
+      "vwc": 6,
+      "volatile_write_cache_present": false
+    },
+    {
+      "device": 16,
+      "write_cache": "write through",
+      "vwc": 6,
+      "volatile_write_cache_present": false
+    },
+    {
+      "device": 17,
+      "write_cache": "write through",
+      "vwc": 6,
+      "volatile_write_cache_present": false
+    },
+    {
+      "device": 18,
+      "write_cache": "write through",
+      "vwc": 6,
+      "volatile_write_cache_present": false
+    },
+    {
+      "device": 19,
+      "write_cache": "write through",
+      "vwc": 6,
+      "volatile_write_cache_present": false
+    }
+  ],
+  "all_idle": true,
+  "no_open_users": true,
+  "observation_seconds": 2
+}
