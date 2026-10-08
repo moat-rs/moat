@@ -1,5 +1,7 @@
 # Cache design for bounded memory and large disks
 
+English | [简体中文](cache-bounded-memory.zh-CN.md)
+
 Status: proposal, 2026-10-08. This document does not describe implemented behavior
 or measured performance. It builds on unpublished packed-cache and generic
 segment-reclaim prototypes reviewed alongside this proposal. References below
