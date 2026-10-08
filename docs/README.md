@@ -47,6 +47,7 @@ The v1 designs and experiments explain historical decisions. The engine and the 
 | [Disk cache adapter](design/cache-store.md) | Async requests, budgets, and read coalescing |
 | [Hybrid cache](design/cache-hybrid.md) | Stable key identity, disk catalog, and conditional population |
 | [Cache views](design/cache-views.md) | Zero-copy views and retention limits |
+| [Bounded-memory disk cache proposal](design/cache-bounded-memory.md) | Home buckets, inline/external placement, total memory accounting, lazy cache recovery, and engine scaling requirements |
 | [Cache implementation plan](design/cache-implementation.md) | Implementation stages and acceptance criteria |
 
 ## Validating changes
