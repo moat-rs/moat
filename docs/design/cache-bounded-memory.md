@@ -10,6 +10,15 @@ prototypes, not functionality already merged into `main`. They are not included
 in this documentation-only change. An earlier September 20 packed-cache
 benchmark predates this proposal and cannot validate it.
 
+## Visual reading guide
+
+Start with the four diagrams below: [placement](#decision-and-scope),
+[eviction decisions](#eviction-and-admission-policy),
+[safe publication and retirement](#mutation-visibility-and-crash-ordering), and
+[recovery](#recovery-and-readiness). The recommended first version uses local
+FIFO for bucket pressure and age-ordered external-extent eviction. Bounded
+frequency-based admission and hot-record retention are subsequent experiments.
+
 ## Decision and scope
 
 Use a deterministic home bucket as the authoritative directory for every key.
@@ -30,6 +39,33 @@ eliminate the Chunk Engine's per-chunk index. There are two delivery stages:
 The cache owns size placement, admission and logical eviction. The engine owns
 physical addressing, crash recovery and segment reuse. No cache policy moves
 into the engine. The resident cache remains independently budgeted.
+
+```mermaid
+flowchart TB
+    K["Key / request"] --> R{"Resident hit?"}
+    R -->|Yes| V["Return value"]
+    R -->|No| H["Hash to one stable home bucket"]
+    subgraph RAM["RAM: explicit byte budgets"]
+        R
+        C["Bucket + descriptor caches"]
+        P["Engine map + I/O + maintenance"]
+    end
+    H --> C
+    C -->|Cold lookup| B["Home bucket: full key + version"]
+    subgraph DISK["Disk: authoritative data"]
+        B --> S["Small: inline value"]
+        B --> L["Large: extent descriptor"]
+        L --> E["Immutable packed extent"]
+    end
+    P -.->|Resolve physical locations| B
+    P -.-> E
+    S --> V
+    E --> V
+```
+
+Figure 1. A cold inline hit reads its bucket; a cold external hit also reads an
+extent. A cached bucket or valid descriptor skips the corresponding directory
+read. Physical verification and engine-map misses can add I/O.
 
 ## Goals and explicit tradeoffs
 
@@ -167,6 +203,152 @@ Increasing a bucket's bytes does not reduce index cardinality. If the engine
 index budget is the limiting factor, stop allocating new bucket IDs or reject
 the capacity configuration; a placement controller cannot hide that limit.
 
+## Eviction and admission policy
+
+### Separate the resources being released
+
+| Pressure | Selection unit and first policy | What is actually released |
+|---|---|---|
+| Resident value RAM | Existing configured resident policy, byte-weighted | Residency; held versions stay charged |
+| Bucket/descriptor RAM | Byte-weighted SIEVE over the bounded cache | Clean cached copies; disk contents remain |
+| Bucket image space | Oldest logical insertion/overwrite in that bucket | Inline or descriptor bytes in the next image |
+| External allocation budget | Oldest sealed extent in the pressured allocation stream | References first, then extent storage after safe collection |
+| Engine physical reserve | Generic invalid-byte-ratio reclaim | Reusable physical segments after durable retirement |
+
+Dirty bucket images belong to the charged write pipeline, not the clean metadata
+cache. Pinning can prevent immediate RAM release; admission backpressures rather
+than exceeding the budget. Metadata-cache eviction invalidates descriptor tokens
+but never deletes disk records. Disk eviction removes disk residency only: a
+still-valid resident value may remain under its independent policy. Explicit
+invalidation removes both through the existing logical-key coordination.
+
+```mermaid
+flowchart TB
+    P["Budget pressure"] -->|RAM| M["Evict clean cached copies"]
+    P -->|Bucket bytes| B["Bounded growth / local FIFO"]
+    P -->|External bytes| E["Oldest sealed extent / bounded hot retention"]
+    P -->|Physical reserve| G["Engine reclaim"]
+    M --> R["RAM credits released; disk data stays"]
+    B --> A["Reserve work credits; check key/version/source"]
+    E --> A
+    A --> D["Remove authoritative references; persist buckets"]
+    D --> T["Drain readers; delete unreferenced extents"]
+    T --> G
+    G --> F["Durable segment retirement: space reusable"]
+    A -.->|Cannot reserve| X["Reject / backpressure"]
+    classDef memory fill:#e6f0ff,stroke:#5078a0
+    classDef logical fill:#fff1d6,stroke:#ac7d2e
+    classDef physical fill:#e4f3e5,stroke:#5a865e
+    class M,R memory
+    class B,E,A,D logical
+    class T,G,F physical
+```
+
+Figure 2. This is the response to pressure, not a claim that every write runs
+every branch. Freed descriptor bytes are not freed extent bytes, and a deleted
+chunk is not yet a reusable segment. If all candidate RAM is pinned, the RAM
+branch also backpressures. A bucket replacement still consumes append space.
+A reclaim pass that cannot make progress also backpressures; no arrow promises
+that space is always available. Blue releases RAM, amber changes logical
+residency, and green retires physical storage.
+
+### Bucket-local replacement and admission
+
+Use bucket FIFO as the reference policy. Persist insertion order in the bucket
+image; a logical overwrite joins the tail, while relocation preserves its age.
+Hit processing must not rewrite a bucket merely to maintain recency. Before an
+insertion, compute the complete victim set needed for the candidate's encoded
+bucket bytes, including key/properties/descriptor overhead and any class change.
+Replacing an external descriptor releases only its directory bytes locally.
+
+Reserve all destination, barrier and maintenance credits before publishing any
+eviction. If the candidate cannot proceed, do not discard unrelated victims
+just to discover that there is still no physical space. Reject it before logical
+mutation and leave the previously committed version of that key unchanged.
+The existing insert contract must not silently turn into a successful no-op.
+A future best-effort fill API would need its own explicit non-admission result.
+
+As an optional second experiment, add TinyLFU-style frequency admission using a
+fixed-size, aging sketch shared by a bounded number of shards. Charge it to `H`,
+including counters, locks and reset work. Sample requests on all paths, including
+resident hits and misses, so the signal is not biased toward disk misses. Sketch
+collisions or eviction of history affect policy quality only, never identity,
+version checks, or authoritative negative lookups. Restart with empty history;
+use FIFO during a bounded warm-up instead of blocking recovery to restore heat.
+
+Start by comparing candidate frequency with the aggregate estimated frequency
+of the complete FIFO victim set, with a configurable margin. This targets object
+hit rate and deliberately does not claim to optimize byte hit rate. Experiment
+separately with byte-hit/source-cost objectives; report both and prevent one
+large entry from winning solely because it is large. Overwrites cannot bypass
+capacity accounting or preserve an old disk value while reporting a new value
+as successfully stored. Re-evaluate victims under bucket serialization.
+
+Do not call sketch-assisted FIFO exact SIEVE or LRU. Exact all-entry recency or
+visited bits either restore RAM proportional to KV count or create hit-time disk
+writes. The bounded metadata cache can afford SIEVE; the full disk population
+uses persisted FIFO order and optional approximate popularity.
+
+### External capacity and hot-record retention
+
+Bucket-local FIFO alone cannot control external bytes: a 1-MiB value may occupy
+only a small descriptor in its bucket. Track allocated extent bytes, including
+dead records and orphans, against coarse per-disk/per-stream budgets. Maintain a
+durable extent allocation ledger and bounded cursors, not an all-KV eviction list.
+Pool accounting/checkpoints need bounded replay; do not recover exact logical
+live-byte counts by scanning every KV before serving. Until accounting is
+validated, conservatively withhold uncertain credits. Physical segment reserve
+is a separate hard admission condition.
+
+For the baseline, walk sealed extents in allocation order in the pressured
+stream. Pending descriptor publications keep a sealed extent ineligible for
+collection until their references are durable or abandoned; sealing alone is
+not proof of eligibility. Verify each record against its home bucket and
+conditionally evict only the matching version/source. A concurrent overwrite is never a victim merely
+because an old copy resides in the selected extent. This cache policy may evict
+live records; engine reclaim itself continues to preserve every referenced chunk.
+
+Optionally copy popular survivors before retiring the extent. Limit both copied
+bytes and work per pass, charge destination credits, and cap retention rounds.
+An all-hot victim must cause selection of another bounded candidate, policy-
+authorized eviction, or backpressure; it cannot cause endless copying. Preserve
+logical insertion age through relocation so repeated copies do not become
+permanently young. Recency and physical allocation order are separate signals.
+
+Keep a small number of shared inline/external or size streams, with minimum
+space guarantees and soft limits that may borrow unused allocation credits.
+Tune their shares slowly using object/byte hit rate, eviction age, size-specific
+misses, copying cost and device write budget. Moving a limit does not instantly
+free bytes: the donor shrinks only after completed safe collection. Bucket count
+and hash routing stay fixed. A skewed bucket cannot spend unlimited global space
+or evict keys from arbitrary other buckets; admission can reject even when some
+other buckets have room. Measure this associativity loss explicitly.
+
+Persist priority with a record if disk priority is enabled, reserve a bounded
+protected share, and treat high priority as a preference rather than an infinite
+pin. Never infer absolute disk pinning from a resident handle. Existing pins
+delay freeing the old bytes, not the logical selection decision. First-version
+policy names must distinguish local FIFO from the existing global disk SIEVE;
+do not silently map one enum value to a different eviction contract.
+
+### Eviction correctness and evaluation
+
+Eviction uses the same key/version/source checks, resident-generation fencing,
+and descriptor invalidation as ordinary mutation. Commit bucket removals before
+deleting their referenced extents. Do not revive an evicted entry from orphan
+data after restart. Resetting frequency/recency hints is permitted; losing the
+authoritative removal ordering is not. Invoke user notifications outside locks,
+and distinguish RAM eviction, disk eviction, admission rejection and explicit
+invalidation in counters and any future callbacks.
+
+Compare FIFO alone, FIFO plus frequency admission, and bounded hot retention
+under equal RAM and write budgets. Include scans, Zipf skew, phase changes,
+same-bucket collisions, large/small competition, repeated overwrite, pinned
+readers, all-hot extents, and crashes between logical eviction and physical reuse.
+Report victim bytes versus newly reusable bytes, object/byte hit rates, per-size
+eviction age, rejected writes, GC copy bytes, p99/p99.9 and recovery warm-up loss.
+No policy should be selected from throughput alone.
+
 ## Read path and bounded hot state
 
 | State | Data-path reads, before engine-map misses and queue splitting |
@@ -221,7 +403,32 @@ External insertion or replacement uses a reference-publication protocol:
 2. Persist its data with a successful barrier on every participating extent disk.
 3. Under bucket serialization, publish images containing the new descriptors.
 4. Complete visibility replies after bucket writes complete. An explicit Cache
-   flush subsequently persists these bucket images before reporting durability.
+flush subsequently persists these bucket images before reporting durability.
+
+```mermaid
+sequenceDiagram
+    participant C as Cache coordinator
+    participant E as Extent owner
+    participant B as Bucket owner
+    participant G as Cache GC / engine reclaim
+    C->>E: Write new immutable extent
+    C->>E: Flush dependency
+    E-->>C: New value durable
+    C->>B: Publish descriptor and invalidate old token
+    B-->>C: Write complete: new value visible
+    C->>B: Persist replacement or eviction image
+    B-->>C: Old reference durably removed
+    C->>G: Drain old readers and verify no live reference
+    G->>E: Delete unreferenced old extent
+    G->>G: Reclaim and durably retire segment
+    Note over C,G: Reusable space is credited only after physical retirement
+```
+
+Figure 3. External replacement is shown. Pure eviction skips creation of the
+new extent but keeps removal persistence and reader draining. Background cleanup
+may supply the bucket barrier without a caller flush. Pure compaction must copy
+all still-referenced survivors; policy-driven eviction can intentionally remove
+selected records first.
 
 Batch step 2 across many extents to amortize synchronization. It remains a real
 barrier before publishing references, even if the caller has not requested a
@@ -273,6 +480,22 @@ it must not loop indefinitely or delete a still-referenced live extent.
 
 There are two separate recovery costs. Removing the cache's KV scan only solves
 the second one:
+
+```mermaid
+flowchart LR
+    O["Open devices"] --> E["Recover engine map + retirement state"]
+    E --> M["Validate namespace + capacity accounting"]
+    M --> R["Ready for cold lookups"]
+    R --> B["Load requested bucket / extent only"]
+    R -.-> W["Warm bounded caches + frequency sketch"]
+    R -.-> G["Resume orphan cleanup with I/O limits"]
+    C["Future: checkpoint + bounded replay"] -.-> E
+    N["No mandatory all-KV scan or heat rebuild"] -.-> R
+```
+
+Figure 4. Engine recovery remains on the readiness path. Unvalidated allocation
+credits can keep writes backpressured while reads are served. The checkpoint
+path is proposed engine work, not a capability of the current prototype.
 
 1. **Engine recovery:** current code visits physical slots, restores sealed
    footer metadata, and scans active/unusable-footer allocations. It rebuilds
